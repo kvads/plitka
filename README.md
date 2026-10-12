@@ -19,7 +19,7 @@ docker compose up --build -d --wait
 
 ## Docker: production
 
-Используется отдельный Compose-файл: единый образ содержит собранный интерфейс и FastAPI, запускается от непривилегированного пользователя. PostgreSQL должен уже работать в общей Docker-сети на том же Docker Engine. Заранее создайте в нём базу и пользователя приложения.
+Используется отдельный Compose-файл: единый образ содержит собранный интерфейс и FastAPI, запускается от непривилегированного пользователя. PostgreSQL должен уже работать в общей Docker-сети на том же Docker Engine. В существующей общей БД (например, `apps`) заранее создайте отдельного пользователя и схему `plitka`, принадлежащую этому пользователю. Предоставьте ему `CONNECT` к общей БД. `PGOPTIONS='-c search_path=plitka'` задаёт схему для подключений; отдельная БД приложения в production не нужна.
 
 ```sh
 cp .env.production.example .env.production
@@ -27,7 +27,9 @@ cp .env.production.example .env.production
 docker compose --env-file .env.production -f compose.production.yaml up --build -d --wait
 ```
 
-`POSTGRES_NETWORK` — имя существующей сети, к которой подключён контейнер PostgreSQL. `PGHOST` — имя контейнера или его alias в этой сети, `PGPORT` — внутренний порт PostgreSQL (обычно 5432), а не опубликованный порт хоста. Production-конфигурация не создаёт контейнер БД, сеть, пользователя или схему. Не объединяйте её с локальным `compose.yaml`.
+`POSTGRES_NETWORK` — имя существующей сети, к которой подключён контейнер PostgreSQL. `PGHOST` — имя контейнера или его alias в этой сети, `PGPORT` — внутренний порт PostgreSQL (обычно 5432), а не опубликованный порт хоста. `PGDATABASE` — общая база, `PGOPTIONS` — параметры сессии, включая `search_path`. Production-конфигурация не создаёт контейнер БД, сеть, пользователя или схему. Не объединяйте её с локальным `compose.yaml`.
+
+На VXR_01 используется `https://plitka.obhodunet.ru`, сеть `shared-postgres`, база `apps`, схема и пользователь `plitka`. Релизы лежат в `/opt/plitka/releases/<commit>`, текущий — `/opt/plitka/current`, настройки подключения — `/opt/plitka/.env.production`. Приложение слушает `127.0.0.1:18082` за Nginx с HTTPS.
 
 Приложение доступно на http://localhost:8080. По умолчанию порт опубликован только на loopback для reverse proxy на хосте; `APP_BIND` и `APP_PORT` настраиваются. Reverse proxy в той же Docker-сети может обращаться к `app:8000`. Файлы `.env` и `.env.production` не входят в образ и исключены из Git. Пароли с `$` в env-файлах заключайте в одинарные кавычки.
 

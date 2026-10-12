@@ -16,10 +16,15 @@ def test_database_is_optional_outside_docker(monkeypatch):
 
 def test_database_checks_query(monkeypatch):
     monkeypatch.setenv("PGHOST", "db")
+    monkeypatch.setenv("PGOPTIONS", "-c search_path=plitka")
     connection = MagicMock()
     with patch("backend.database.psycopg.connect") as connect:
         connect.return_value.__enter__.return_value = connection
         assert check_database() == "ok"
+        connect.assert_called_once_with(
+            connect_timeout=3,
+            options="-c search_path=plitka -c statement_timeout=3000",
+        )
     connection.execute.assert_called_once_with("SELECT 1")
 
 

@@ -9,6 +9,7 @@ def check_database() -> str:
     if not os.environ.get("PGHOST"):
         return "not_configured"
     # libpq reads PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD, PGSSLMODE.
-    with psycopg.connect(connect_timeout=3, options="-c statement_timeout=3000") as connection:
+    options = os.environ.get("PGOPTIONS", "") + " -c statement_timeout=3000"
+    with psycopg.connect(connect_timeout=3, options=options.strip()) as connection:
         connection.execute("SELECT 1")
     return "ok"
