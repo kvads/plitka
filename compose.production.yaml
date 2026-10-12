@@ -1,0 +1,25 @@
+name: plitka-production
+
+services:
+  app:
+    image: ${APP_IMAGE:-plitka:production}
+    build:
+      context: .
+      target: production
+    restart: unless-stopped
+    environment:
+      PGHOST: ${PGHOST:?Set PGHOST to the PostgreSQL network alias}
+      PGPORT: ${PGPORT:-5432}
+      PGDATABASE: ${PGDATABASE:?Set PGDATABASE}
+      PGUSER: ${PGUSER:?Set PGUSER}
+      PGPASSWORD: ${PGPASSWORD:?Set PGPASSWORD}
+      PGSSLMODE: ${PGSSLMODE:-prefer}
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:8000"
+    networks:
+      - database
+
+networks:
+  database:
+    external: true
+    name: ${POSTGRES_NETWORK:?Set POSTGRES_NETWORK to the existing Docker network}
