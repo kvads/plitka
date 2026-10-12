@@ -31,6 +31,8 @@ docker compose --env-file .env.production -f compose.production.yaml up --build 
 
 На VXR_01 используется `https://plitka.obhodunet.ru`, сеть `shared-postgres`, база `apps`, схема и пользователь `plitka`. Релизы лежат в `/opt/plitka/releases/<commit>`, текущий — `/opt/plitka/current`, настройки подключения — `/opt/plitka/.env.production`. Приложение слушает `127.0.0.1:18082` за Nginx с HTTPS.
 
+Для публикации порта Compose создаёт отдельную сеть `ingress`; сеть PostgreSQL может оставаться изолированной (`internal: true`). Контейнер приложения подключён к обеим сетям.
+
 Приложение доступно на http://localhost:8080. По умолчанию порт опубликован только на loopback для reverse proxy на хосте; `APP_BIND` и `APP_PORT` настраиваются. Reverse proxy в той же Docker-сети может обращаться к `app:8000`. Файлы `.env` и `.env.production` не входят в образ и исключены из Git. Пароли с `$` в env-файлах заключайте в одинарные кавычки.
 
 `/api/health` проверяет процесс, `/api/ready` дополнительно выполняет `SELECT 1` в настроенной базе и возвращает 503 при ошибке подключения. Docker использует `/api/ready` для healthcheck. При временной недоступности внешней базы проверка повторяется и восстанавливается после её возвращения. Без `PGHOST` сервер работает без базы, readiness возвращает `database: not_configured`.

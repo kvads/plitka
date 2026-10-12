@@ -18,9 +18,11 @@ services:
     ports:
       - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:8000"
     networks:
+      - ingress
       - database
 
 networks:
+  ingress:
   database:
     external: true
     name: ${POSTGRES_NETWORK:?Set POSTGRES_NETWORK to the existing Docker network}
