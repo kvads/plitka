@@ -1,5 +1,22 @@
 import { expect, type Page } from "@playwright/test";
 import { initial } from "../../src/types";
+
+export type TouchPoint = { id: number; x: number; y: number };
+
+export async function touchSession(page: Page) {
+  const client = await page.context().newCDPSession(page);
+  const canvas = page.locator("svg[data-geometry]");
+  return {
+    dispatch: (type: "touchStart" | "touchMove" | "touchEnd" | "touchCancel", points: TouchPoint[]) =>
+      client.send("Input.dispatchTouchEvent", { type, touchPoints: points }),
+    snapshot: async () => ({
+      geometry: await canvas.getAttribute("data-geometry"),
+      layout: await canvas.getAttribute("data-layout"),
+    }),
+    close: () => client.detach(),
+  };
+}
+
 export async function openProject(page: Page, plan = initial) {
   await page.addInitScript((p) => {
     if (!localStorage.getItem("plitka-projects-v1"))

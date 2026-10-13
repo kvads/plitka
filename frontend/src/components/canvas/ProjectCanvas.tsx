@@ -11,7 +11,7 @@ import {
   VERTEX_SAFETY_RADIUS,
 } from "../../domain/plan/vertex-safety";
 import DimensionOverlay from "./DimensionOverlay";
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useLayoutEffect } from "react";
 import type {
   GraphSnapshot,
   FaceCandidate,
@@ -97,6 +97,9 @@ export default function ProjectCanvas({
   children: React.ReactNode;
 }) {
   const svg = useRef<SVGSVGElement>(null),
+    touches = useRef(new Map<number, Point>()),
+    pinch = useRef<{ distance: number; zoom: number; anchor: Point } | null>(null),
+    suppressTouch = useRef(false),
     gesture = useRef<{
       id: number;
       client: Point;
@@ -109,11 +112,14 @@ export default function ProjectCanvas({
   const [preview, setPreview] = useState<(Point & { type: string }) | null>(
       null,
     ),
-    [dragPoint, setDragPoint] = useState<Point | null>(null);
+    [dragPoint, setDragPoint] = useState<Point | null>(null),
+    [pendingPoint, setPendingPoint] = useState<Point | null>(null),
+    [pendingMove, setPendingMove] = useState<{ vertexId: string; point: Point } | null>(null);
   const [size, setSize] = useState({
     width: window.innerWidth,
     height: window.innerHeight,
   });
+  const [panelLift, setPanelLift] = useState(0);
   useEffect(() => {
     const observer = new ResizeObserver(([entry]) =>
       setSize({
@@ -124,15 +130,37 @@ export default function ProjectCanvas({
     if (svg.current) observer.observe(svg.current);
     return () => observer.disconnect();
   }, []);
+  useLayoutEffect(() => {
+    const canvas = svg.current?.parentElement;
+    if (!canvas || !svg.current || !panelOpen || size.width > 700) {
+      setPanelLift(0);
+      return;
+    }
+    const panel = canvas.querySelector<HTMLElement>(".canvas-panel");
+    const tools = canvas.querySelector<HTMLElement>(".canvas-tools");
+    const header = canvas.querySelector<HTMLElement>(".canvas-top");
+    if (!panel) {
+      setPanelLift(0);
+      return;
+    }
+    const measure = () => {
+      const rect = svg.current!.getBoundingClientRect();
+      const top = Math.max(header?.getBoundingClientRect().bottom ?? rect.top, tools?.getBoundingClientRect().bottom ?? rect.top) - rect.top;
+      const bottom = panel.getBoundingClientRect().top - rect.top;
+      const visibleCenter = (top + Math.max(top, bottom)) / 2;
+      const next = Math.max(0, rect.height / 2 - visibleCenter);
+      setPanelLift((current) => Math.abs(current - next) < 0.5 ? current : next);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    for (const element of [svg.current, panel, tools, header]) if (element) observer.observe(element);
+    return () => observer.disconnect();
+  }, [panelOpen, size.width, size.height]);
   const width = 9000 / viewport.zoom,
     height = (width * size.height) / Math.max(1, size.width),
     left = viewport.centerX - width / 2,
-    lift =
-      size.width <= 700 && panelOpen
-        ? Math.max(0, size.height / 2 - (260 + (size.height * 0.64 - 112)) / 2)
-        : 0,
     bottom =
-      viewport.centerY - height / 2 - (lift * width) / Math.max(1, size.width);
+      viewport.centerY - height / 2 - (panelLift * width) / Math.max(1, size.width);
   const vs = new Map(graph.vertices.map((v) => [v.id, v]));
   // The viewBox shares the observed viewport aspect ratio, so scale is uniform.
   // Derive render sizes from current props, never the previous render's CTM.
@@ -147,10 +175,11 @@ export default function ProjectCanvas({
       graph.vertices.map((v) => ({ id: v.id, x: screen(v).x, y: screen(v).y })),
     );
   };
+  const placementPoint = pendingPoint && tool === "addVertex" ? { ...pendingPoint, type: "Вершина" } : preview;
   const previewBlocked =
-    preview && tool === "addVertex"
+    placementPoint && tool === "addVertex"
       ? blockingVertices(
-          { x: preview.x * screenScale(), y: preview.y * screenScale() },
+          { x: placementPoint.x * screenScale(), y: placementPoint.y * screenScale() },
           graph.vertices.map((v) => ({
             id: v.id,
             x: v.x * screenScale(),
@@ -158,14 +187,15 @@ export default function ProjectCanvas({
           })),
         )
       : [];
-  const world = (e: React.PointerEvent) => {
+  const clientWorld = (clientX: number, clientY: number) => {
     const matrix = svg.current?.getScreenCTM();
     if (!matrix) return null;
-    const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(
+    const p = new DOMPoint(clientX, clientY).matrixTransform(
       matrix.inverse(),
     );
     return { x: p.x, y: -p.y };
   };
+  const world = (e: React.PointerEvent) => clientWorld(e.clientX, e.clientY);
   const target = (p: Point, r: number) => {
     const vertex = graph.vertices.find(
       (v) => Math.hypot(v.x - p.x, v.y - p.y) <= r,
@@ -199,8 +229,8 @@ export default function ProjectCanvas({
     }
     return best;
   };
-  const snapped = (e: React.PointerEvent) => {
-    const p = world(e);
+  const snapped = (e: React.PointerEvent, offset = 0) => {
+    const p = clientWorld(e.clientX, e.clientY - offset);
     if (!p) return null;
     const r = (e.pointerType === "mouse" ? 8 : 12) / screenScale(),
       hit = target(p, r);
@@ -212,7 +242,7 @@ export default function ProjectCanvas({
     setDragPoint(null);
     setPreview(null);
   };
-  useEffect(() => clear(), [tool]);
+  useEffect(() => { clear(); setPendingPoint(null); setPendingMove(null); touches.current.clear(); pinch.current = null; }, [tool]);
   const [active, setActive] = useState(""),
     [cursor, setCursor] = useState<Point>({
       x: viewport.centerX,
@@ -228,7 +258,35 @@ export default function ProjectCanvas({
     setKeyboardMove(null);
     setCursor({ x: viewport.centerX, y: viewport.centerY });
     clear();
+    setPendingPoint(null);
+    setPendingMove(null);
+    touches.current.clear();
+    pinch.current = null;
   }, [resetEpoch]);
+  const touchPoint = (e: React.PointerEvent) => snapped(e, e.pointerType === "touch" && (tool === "addVertex" || tool === "move") ? 48 : 0);
+  const beginPinch = () => {
+    const [a, b] = [...touches.current.values()];
+    const anchor = clientWorld((a.x + b.x) / 2, (a.y + b.y) / 2);
+    if (!anchor) return;
+    pinch.current = { distance: Math.hypot(a.x - b.x, a.y - b.y), zoom: viewport.zoom, anchor };
+    suppressTouch.current = true;
+    setPendingPoint(null);
+    setPendingMove(null);
+    clear();
+  };
+  const updatePinch = () => {
+    if (!pinch.current || touches.current.size < 2 || !svg.current) return;
+    const [a, b] = [...touches.current.values()];
+    const middle = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const distance = Math.hypot(a.x - b.x, a.y - b.y);
+    const zoom = Math.max(0.2, Math.min(8, pinch.current.zoom * distance / Math.max(1, pinch.current.distance)));
+    const rect = svg.current.getBoundingClientRect();
+    const span = 9000 / zoom;
+    onViewport({ ...viewport, zoom,
+      centerX: pinch.current.anchor.x - (middle.x - rect.left - rect.width / 2) * span / rect.width,
+      centerY: pinch.current.anchor.y + (middle.y - rect.top - rect.height / 2 + panelLift) * span / rect.width,
+    });
+  };
   const voidRings = graph.voids.map((v) => ({
     id: v.id,
     points: v.boundary.map((ref) => {
@@ -402,6 +460,8 @@ export default function ProjectCanvas({
       onKeyDown={(e) => {
         if (e.key === "Escape") {
           clear();
+          setPendingPoint(null);
+          setPendingMove(null);
           onCancel();
         }
       }}
@@ -427,6 +487,8 @@ export default function ProjectCanvas({
             e.stopPropagation();
             setKeyboardMove(null);
             clear();
+            setPendingPoint(null);
+            setPendingMove(null);
             onCancel();
             return;
           }
@@ -525,12 +587,25 @@ export default function ProjectCanvas({
         data-geometry={JSON.stringify(graph)}
         data-layout={
           layout
-            ? JSON.stringify({ parts: layout.parts, metrics: layout.metrics })
+            ? JSON.stringify({ offset_x: layout.offset_x, offset_y: layout.offset_y, parts: layout.parts, metrics: layout.metrics })
             : undefined
         }
         viewBox={`${left} ${-bottom - height} ${width} ${height}`}
         onPointerDown={(e) => {
           if (e.button !== 0) return;
+          if (e.pointerType === "touch") {
+            e.preventDefault();
+            touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (touches.current.size === 2) beginPinch();
+            if (touches.current.size > 1) {
+              e.currentTarget.setPointerCapture(e.pointerId);
+              return;
+            }
+            suppressTouch.current = false;
+            setPendingPoint(null);
+            setPendingMove(null);
+            setPreview(touchPoint(e));
+          }
           const p = world(e);
           if (!p) return;
           const hit = target(
@@ -553,25 +628,58 @@ export default function ProjectCanvas({
             e.currentTarget.setPointerCapture(e.pointerId);
         }}
         onPointerMove={(e) => {
-          setPreview(snapped(e));
+          if (e.pointerType === "touch" && touches.current.has(e.pointerId)) {
+            touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (pinch.current) { updatePinch(); return; }
+            if (suppressTouch.current) return;
+          }
+          setPreview(touchPoint(e));
           const g = gesture.current;
           if (!g) return;
           if (Math.hypot(e.clientX - g.client.x, e.clientY - g.client.y) > 4)
             g.dragged = true;
-          if (tool === "move" && g.vertexId) setDragPoint(snapped(e));
+          if (tool === "move" && g.vertexId) setDragPoint(touchPoint(e));
           if (tool === "pan" && g.dragged) setDragPoint(world(e));
         }}
-        onPointerCancel={() => {
+        onPointerCancel={(e) => {
+          const wasPinching = !!pinch.current;
+          touches.current.delete(e.pointerId);
+          pinch.current = null;
+          setPendingPoint(null);
+          setPendingMove(null);
           clear();
-          onCancel();
+          if (!wasPinching) onCancel();
         }}
-        onLostPointerCapture={clear}
+        onLostPointerCapture={(e) => {
+          touches.current.delete(e.pointerId);
+          if (!touches.current.size) { pinch.current = null; suppressTouch.current = false; }
+          clear();
+        }}
         onPointerUp={(e) => {
+          if (e.pointerType === "touch") {
+            touches.current.delete(e.pointerId);
+            if (pinch.current || suppressTouch.current) {
+              if (!touches.current.size) { pinch.current = null; suppressTouch.current = false; }
+              clear();
+              return;
+            }
+          }
           const g = gesture.current;
           if (!g) return;
           const p = world(e),
-            s = snapped(e);
+            s = touchPoint(e);
           if (!p || !s) {
+            clear();
+            return;
+          }
+          if (tool === "addVertex" && e.pointerType === "touch") {
+            setPendingPoint({ x: s.x, y: s.y });
+            setPreview(s);
+            gesture.current = null;
+            return;
+          }
+          if (tool === "move" && e.pointerType === "touch" && g.dragged && g.vertexId) {
+            setPendingMove({ vertexId: g.vertexId, point: { x: s.x, y: s.y } });
             clear();
             return;
           }
@@ -871,10 +979,10 @@ export default function ProjectCanvas({
               </g>
             );
           })}
-          {preview && ["addVertex", "connect", "move"].includes(tool) && (
+          {placementPoint && ["addVertex", "connect", "move"].includes(tool) && (
             <circle
-              cx={preview.x}
-              cy={preview.y}
+              cx={placementPoint.x}
+              cy={placementPoint.y}
               r={8 / screenScale()}
               fill="none"
               stroke={previewBlocked.length ? "#a5352b" : "#b86b38"}
@@ -902,10 +1010,22 @@ export default function ProjectCanvas({
           )}
           {dragPoint && gesture.current?.vertexId && (
             <circle
+              data-drag-preview
               cx={dragPoint.x}
               cy={dragPoint.y}
               r={8 / screenScale()}
               fill="#b86b38"
+              pointerEvents="none"
+            />
+          )}
+          {pendingMove && (
+            <circle
+              cx={pendingMove.point.x}
+              cy={pendingMove.point.y}
+              r={10 / screenScale()}
+              fill="none"
+              stroke="#b86b38"
+              strokeWidth={2 / screenScale()}
               pointerEvents="none"
             />
           )}
@@ -961,13 +1081,36 @@ export default function ProjectCanvas({
           </g>
         )}
       </svg>
-      {preview && (
+      {placementPoint && (
         <span className="snap-status" aria-live="off">
           {previewBlocked.length
             ? "Зона безопасности: точку создать нельзя"
-            : preview.type}{" "}
-          · {formatPlanLength(preview.x)} × {formatPlanLength(preview.y)}
+            : placementPoint.type}{" "}
+          · {formatPlanLength(placementPoint.x)} × {formatPlanLength(placementPoint.y)}
         </span>
+      )}
+      {pendingPoint && tool === "addVertex" && (
+        <div className="mobile-placement" data-overlay role="group" aria-label="Размещение вершины">
+          <span>{formatPlanLength(pendingPoint.x)} × {formatPlanLength(pendingPoint.y)}</span>
+          <button onClick={() => {
+            const ids = blockers(pendingPoint);
+            if (ids?.length) onBlocked(ids, pendingPoint);
+            else if (ids) onPoint(pendingPoint, {});
+            setPendingPoint(null);
+            setPreview(null);
+          }}>Поставить вершину</button>
+          <button onClick={() => { setPendingPoint(null); setPreview(null); }}>Отмена</button>
+        </div>
+      )}
+      {pendingMove && tool === "move" && (
+        <div className="mobile-placement" data-overlay role="group" aria-label="Перемещение вершины">
+          <span>{formatPlanLength(pendingMove.point.x)} × {formatPlanLength(pendingMove.point.y)}</span>
+          <button onClick={() => {
+            onMove(pendingMove.vertexId, pendingMove.point);
+            setPendingMove(null);
+          }}>Переместить вершину</button>
+          <button onClick={() => setPendingMove(null)}>Отмена</button>
+        </div>
       )}
       {children}
     </div>

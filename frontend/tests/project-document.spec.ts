@@ -1,4 +1,4 @@
-import { addPoint, canvasPick } from "./fixtures/projects";
+import { addPoint, canvasPick, graphConflict, graphRectangle, openGraph, touchSession } from "./fixtures/projects";
 import { test, expect } from "@playwright/test";
 import {
   openProject,
@@ -12,6 +12,57 @@ const envelope = async (page: any) => ({
   format: "plitka-project",
   version: 3,
   project: await stored(page),
+});
+
+test("touch viewport persists without changing the graph or grid", async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: "http://127.0.0.1:5173", viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  await openGraph(page, graphRectangle());
+  const before = await stored(page);
+  const touch = await touchSession(page);
+  await touch.dispatch("touchStart", [{ id: 31, x: 160, y: 420 }, { id: 32, x: 220, y: 420 }]);
+  await touch.dispatch("touchMove", [{ id: 31, x: 135, y: 445 }, { id: 32, x: 250, y: 445 }]);
+  await touch.dispatch("touchEnd", []);
+  await expect.poll(async () => (await stored(page)).viewport.zoom).not.toBe(before.viewport.zoom);
+  const after = await stored(page);
+  expect(after.plan.draft).toEqual(before.plan.draft);
+  expect(after.viewport.gridStepMm).toBe(before.viewport.gridStepMm);
+  await page.reload();
+  await settle(page);
+  expect((await stored(page)).viewport).toEqual(after.viewport);
+  await touch.close();
+  await context.close();
+});
+
+test("confirmed mobile point survives v3 export and import", async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: "http://127.0.0.1:5173", viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  await openGraph(page, graphRectangle());
+  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
+  const target = await screenPoint(page, 2000, 1500);
+  await page.touchscreen.tap(target.x, target.y + 48);
+  await page.getByRole("button", { name: "Поставить вершину" }).click();
+  await expect.poll(async () => (await stored(page)).plan.draft.vertices.length).toBe(5);
+  await settle(page);
+  const before = await stored(page);
+  expect(before.plan.draft.vertices).toHaveLength(5);
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Скачать проект", exact: true }).click();
+  const chunks: Buffer[] = [];
+  for await (const part of (await (await download).createReadStream())!) chunks.push(Buffer.from(part));
+  const file = JSON.parse(Buffer.concat(chunks).toString());
+  expect(file.format).toBe("plitka-project");
+  expect(file.version).toBe(3);
+  expect(file.project.schemaVersion).toBe(3);
+  expect(file.project.plan.draft).toEqual(before.plan.draft);
+  expect(file.project.viewport).toEqual(before.viewport);
+  await importFile(page, file);
+  await page.reload();
+  await settle(page);
+  const after = await stored(page);
+  expect(after.plan.draft).toEqual(before.plan.draft);
+  expect(after.viewport).toEqual(before.viewport);
+  await context.close();
 });
 async function wall(page: any) {
   await page.getByRole("button", { name: "Выбрать", exact: true }).click();
@@ -227,7 +278,6 @@ test("old v2 tab change is reported without merging", async ({ page }) => {
   );
   await expect(page.getByRole("alert")).toContainText("Старый редактор");
 });
-import { graphConflict, openGraph } from "./fixtures/projects";
 test("conflicting values repair jointly and survive reload", async ({
   page,
 }) => {
@@ -527,7 +577,6 @@ test("safety failed size preserves conditions and pending through reload retry c
 import {
   legacySafetyPending,
   legacySafetyCoincident,
-  graphRectangle,
 } from "./fixtures/projects";
 test("safety v2 migration preserves distinct invalid draft basis and confirmed snapshots", async ({
   page,

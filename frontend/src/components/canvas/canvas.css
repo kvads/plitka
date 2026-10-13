@@ -11,6 +11,25 @@
   height: 100%;
   touch-action: none;
 }
+.mobile-placement {
+  position: absolute;
+  z-index: 4;
+  left: 50%;
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - 16px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid #d7ded4;
+  border-radius: 12px;
+  background: #fffefa;
+  box-shadow: 0 4px 20px #263b3025;
+  font-size: 13px;
+}
+.mobile-placement button:first-of-type { background: #284e3f; color: #fff; }
 .canvas-grid line {
   stroke: #dbe0d8;
   stroke-width: 1;
@@ -103,7 +122,7 @@
 .canvas-panel {
   top: 96px;
   right: 12px;
-  bottom: 86px;
+  bottom: calc(86px + env(safe-area-inset-bottom, 0px));
   width: 330px;
   overflow: auto;
   padding: 18px;
@@ -175,7 +194,7 @@
   font-size: 12px;
 }
 .canvas-status {
-  bottom: 12px;
+  bottom: max(12px, env(safe-area-inset-bottom, 0px));
   left: 12px;
   right: 12px;
   padding: 6px 12px;
@@ -280,7 +299,7 @@
     top: auto;
     left: 6px;
     right: 6px;
-    bottom: 112px;
+    bottom: calc(112px + env(safe-area-inset-bottom, 0px));
     width: auto;
     max-height: 43dvh;
     padding: 12px;
@@ -288,7 +307,7 @@
   .canvas-status {
     left: 6px;
     right: 6px;
-    bottom: 6px;
+    bottom: max(6px, env(safe-area-inset-bottom, 0px));
     gap: 4px;
     padding: 5px;
     font-size: 11px;
@@ -492,6 +511,48 @@ button.danger {
 @media(max-width:700px) {
  .project-canvas:has(.canvas-status[data-pending="true"]) .canvas-panel,
  .project-canvas:has(.canvas-status[data-pending="true"]) .canvas-error { bottom: 162px; }
+}
+@media (max-width: 700px) {
+  .project-canvas { overscroll-behavior: contain; }
+  .canvas-tools {
+    top: 150px;
+    left: 6px;
+    right: 6px;
+    width: auto;
+    display: flex;
+    flex-direction: row;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    gap: 8px;
+  }
+  .canvas-tools button {
+    flex: 0 0 auto;
+    min-height: 44px;
+    min-width: 88px;
+    font-size: 12px;
+  }
+  .canvas-panel,
+  .canvas-panel.interaction-panel {
+    bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+    max-height: min(45dvh, 360px);
+  }
+  .canvas-status {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    min-height: 58px;
+    gap: 8px;
+    scrollbar-width: thin;
+  }
+  .canvas-status > * { flex: 0 0 auto; }
+  .canvas-status button { min-width: 44px; min-height: 44px; }
+  .mobile-placement {
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .mobile-placement span { flex-basis: 100%; text-align: center; }
+  .snap-status { top: 216px; left: 8px; right: 8px; width: fit-content; }
 }
 
 /* Shared project deletion dialog also appears outside the canvas. */

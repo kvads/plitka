@@ -108,6 +108,33 @@ test("mobile overlays do not add points and keyboard focus remains usable", asyn
   ).toBeVisible();
   await page.screenshot({ path: "/tmp/plitka-graph-mobile.png" });
 });
+test("mouse and keyboard edits keep immediate commands and Undo", async ({ page }) => {
+  await openGraph(page, graphRectangle());
+  const canvas = page.locator("svg[data-geometry]");
+  const before = (await stored(page)).plan.draft;
+  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
+  const point = await screenPoint(page, 2000, 1500);
+  await page.mouse.click(point.x, point.y);
+  await expect.poll(async () => (await stored(page)).plan.draft.vertices.length).toBe(5);
+  await expect(page.getByRole("group", { name: "Размещение вершины" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Переместить вершину", exact: true }).click();
+  const origin = await screenPoint(page, 4000, 0);
+  await page.mouse.move(origin.x, origin.y);
+  await page.mouse.down();
+  await page.mouse.move(origin.x - 35, origin.y - 35);
+  await page.mouse.up();
+  await expect.poll(async () => (await stored(page)).plan.draft.vertices.find((v: any) => v.id === "av1").x).not.toBe(4000);
+  await expect(page.getByRole("group", { name: "Перемещение вершины" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
+  await canvas.focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(async () => (await stored(page)).plan.draft.vertices.length).toBe(6);
+  await expect(page.getByRole("group", { name: "Размещение вершины" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Отменить правку", exact: true }).click();
+  await settle(page);
+  expect((await stored(page)).plan.draft.vertices).toHaveLength(5);
+  expect((await stored(page)).plan.draft).not.toEqual(before);
+});
 test("numeric inset may launch and fail without losing input", async ({
   page,
 }) => {
@@ -233,6 +260,8 @@ test("touch adds one independent point and undo restores whole graph", async ({
       .tap();
   const p = await screenPoint(page, 2500, 1800);
   await page.touchscreen.tap(p.x, p.y);
+  await expect(page.getByRole("group", { name: "Размещение вершины" })).toBeVisible();
+  await page.getByRole("button", { name: "Поставить вершину" }).tap();
   await expect
     .poll(async () => (await stored(page)).plan.draft.vertices.length)
     .toBe(before.vertices.length + 1);
