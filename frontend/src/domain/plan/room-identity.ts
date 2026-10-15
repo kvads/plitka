@@ -25,4 +25,4 @@ export async function boundaryMemory(graph: GraphSnapshot, outer: DirectedSegmen
     geometryKey: await digest([cycle(points), cycle([...points].reverse())].sort()[0]),
   };
 }
-export const faceMemory = (g: GraphSnapshot, f: FaceCandidate) => boundaryMemory(g, f.outer, f.polygon.outline);
+export const faceMemory = (g: GraphSnapshot, f: FaceCandidate) => boundaryMemory(g, f.outer, f.axisPolygon.outline);

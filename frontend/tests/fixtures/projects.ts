@@ -1,7 +1,24 @@
 import { expect, type Page } from "@playwright/test";
 import { initial } from "../../src/types";
+import { createV4 } from "../../src/domain/plan/migration";
+import { newRoom } from "../../src/domain/plan/rooms";
 
 export type TouchPoint = { id: number; x: number; y: number };
+
+export async function setSidebarOpen(page: Page, open: boolean) {
+  const toggle = page.getByRole("button", {
+    name: open ? "Раскрыть меню" : "Свернуть меню",
+    exact: true,
+  });
+  const sidebar = page.getByRole("button", { name: "Раскрыть меню", exact: true });
+  const current = await page.locator(".canvas-sidebar-toggle").getAttribute("aria-expanded");
+  if (current !== String(open)) await toggle.click();
+  await expect(page.locator(".canvas-sidebar-toggle")).toHaveAttribute(
+    "aria-expanded",
+    String(open),
+  );
+  if (!open) await expect(sidebar).toBeVisible();
+}
 
 export async function touchSession(page: Page) {
   const client = await page.context().newCDPSession(page);
@@ -17,23 +34,28 @@ export async function touchSession(page: Page) {
   };
 }
 
-export async function openProject(page: Page, plan = initial) {
-  await page.addInitScript((p) => {
-    if (!localStorage.getItem("plitka-projects-v1"))
-      localStorage.setItem(
-        "plitka-projects-v1",
-        JSON.stringify([
-          {
-            id: "test",
-            name: "Тестовый проект",
-            address: "Тестовый адрес",
-            plan: p,
-          },
-        ]),
-      );
-    if (!location.hash) location.hash = "project/test";
-  }, plan);
+export async function openProject(page: Page, plan = initial, openSidebar = true) {
   await page.goto("/");
+  const graph = graphRectangle(plan.outline[1][0], plan.outline[2][1]);
+  const response = await graphValidate(page, graph);
+  const document = createV4("Тестовый проект", "Тестовый адрес", "test");
+  document.plan.draft = graph;
+  document.viewport.centerX = plan.outline[1][0] / 2;
+  document.viewport.centerY = plan.outline[2][1] / 2;
+  const room = newRoom(response.faces[0].topologyKey, "Помещение 1");
+  room.material = { tile: plan.tile, grout: plan.grout };
+  room.rules = { gap: plan.gap, threshold: plan.threshold, angle: plan.angle };
+  document.rooms = [room];
+  document.selectedRoomId = room.id;
+  await page.evaluate((document) => {
+    localStorage.setItem("plitka-projects-v4", JSON.stringify({ schemaVersion: 4, projects: [document] }));
+    location.hash = "project/test";
+  }, document);
+  await page.reload();
+  if (openSidebar) {
+    await expect(page.locator(".canvas-sidebar-toggle")).toBeVisible();
+    await setSidebarOpen(page, true);
+  }
 }
 export async function confirmRoom(page: Page) {
   await page
@@ -76,23 +98,42 @@ export async function commit(page: Page, label: string, value: string) {
 }
 export async function stored(page: Page) {
   return page.evaluate(
-    () => JSON.parse(localStorage.getItem("plitka-projects-v3")!).projects[0],
+    () => JSON.parse(localStorage.getItem("plitka-projects-v4")!).projects[0],
   );
 }
-export async function settle(page: Page) {
+export async function settle(page: Page, openSidebar = true) {
+  if (openSidebar) {
+    await expect(page.locator(".canvas-sidebar-toggle")).toBeVisible();
+    await setSidebarOpen(page, true);
+  }
   await expect(
     page.getByText("Проверяем геометрию…", { exact: true }),
   ).toHaveCount(0);
-  await expect(page.getByText("Сохранено", { exact: true })).toBeVisible();
+  if (openSidebar)
+    await expect(page.getByText("Сохранено", { exact: true })).toBeVisible();
 }
 export async function importFile(page: Page, data: unknown) {
-  await page.locator("input[type=file]").setInputFiles({
-    name: "project.json",
-    mimeType: "application/json",
-    buffer: Buffer.from(JSON.stringify(data)),
-  });
-  await page.getByRole("button", { name: "Заменить открытый проект" }).click();
+  await page.evaluate(async (value) => {
+    // @ts-ignore Vite serves this browser module from the project root.
+    const storage = await import("/src/domain/plan/storage.ts");
+    // @ts-ignore Vite serves this browser module from the project root.
+    const lifecycle = await import("/src/domain/plan/project-lifecycle.ts");
+    const current = storage.readV3().find((row: any) => row.id === location.hash.split("/")[1]);
+    if (!current) throw new Error("Открытый проект не найден.");
+    const file = new File([JSON.stringify(value)], "project.json", { type: "application/json" });
+    const parsed = await storage.importV3(file, current);
+    await storage.saveV3(lifecycle.restoredProject(current, { ...parsed, id: current.id }), current.documentRevision);
+  }, data);
+  await page.reload();
   await settle(page);
+}
+
+export async function parseImportFixture(page: Page, data: unknown) {
+  return page.evaluate(async (value) => {
+    // @ts-ignore Vite serves this browser module from the project root.
+    const { importV3 } = await import("/src/domain/plan/storage.ts");
+    return importV3(new File([JSON.stringify(value)], "project.json", { type: "application/json" }));
+  }, data);
 }
 
 // Small independent fixtures for the graph editor. Never populate user storage.
@@ -117,12 +158,44 @@ export function graphRectangle(width = 4000, height = 3000, prefix = "a") {
       startVertexId: s.startVertexId,
       endVertexId: s.endVertexId,
       segmentIds: [s.id],
+      thicknessMm: 100,
     })),
     voids: [],
     constraints: [],
     fieldInputs: {},
   };
 }
+
+// V4 fixtures are literal documents; they do not pass through the v3 migration.
+export const v4EmptyCatalog = { schemaVersion: 4, projects: [] };
+export const v4LegacyKeys = [
+  "plitka-project-v1",
+  "plitka-projects-v1",
+  "plitka-projects-v2",
+  "plitka-projects-v3",
+] as const;
+export const v4WallGraph = () => ({
+  ...graphRectangle(2000, 2000, "v4"),
+  chains: graphRectangle(2000, 2000, "v4").chains.map((chain) => ({
+    ...chain,
+    thicknessMm: 100,
+  })),
+});
+export const v4FilledCatalog = () => ({
+  schemaVersion: 4,
+  projects: [{
+    schemaVersion: 4,
+    id: "v4-example",
+    name: "Новый проект",
+    address: "",
+    documentRevision: 0,
+    plan: { draft: v4WallGraph(), draftRevision: 0, pendingEdit: null, restorePoint: null },
+    rooms: [],
+    selectedRoomId: null,
+    workflow: { requestedStage: "object" },
+    viewport: { centerX: 1000, centerY: 1000, zoom: 1, gridStepMm: 100 },
+  }],
+});
 export function graphTwoRooms() {
   const a = graphRectangle(),
     b = graphRectangle(2000, 2000, "b");
@@ -191,7 +264,7 @@ export async function graphCommand(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          schemaVersion: 3,
+          schemaVersion: 4,
           commandId,
           draftRevision: 1,
           basisKey: "e2e",
@@ -210,7 +283,7 @@ export async function graphValidate(page: Page, graph: unknown) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         requestId: "e2e",
         draftRevision: 0,
         basisKey: "e2e",
@@ -224,9 +297,10 @@ export async function openGraph(
   page: Page,
   graph: unknown,
   viewport: Record<string, number> = {},
+  openSidebar = true,
 ) {
   const document = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     id: "test",
     name: "Тестовый проект",
     address: "Тестовый адрес",
@@ -249,16 +323,20 @@ export async function openGraph(
     },
   };
   await page.addInitScript((document) => {
-    if (!localStorage.getItem("plitka-projects-v3"))
+    if (!localStorage.getItem("plitka-projects-v4"))
       localStorage.setItem(
-        "plitka-projects-v3",
-        JSON.stringify({ schemaVersion: 3, projects: [document] }),
+        "plitka-projects-v4",
+        JSON.stringify({ schemaVersion: 4, projects: [document] }),
       );
     if (!location.hash) location.hash = "project/test";
   }, document);
   await page.goto("/");
-  await settle(page);
-  if((await page.getByRole("button",{name:"Параметры",exact:true}).textContent())?.includes(" · "))await page.getByRole("button",{name:"Параметры",exact:true}).click();
+  await settle(page, openSidebar);
+  const parameters = page.getByRole("button", { name: "Параметры", exact: true });
+  if (openSidebar && (await graphValidate(page, graph)).issues?.length) {
+    await expect.poll(async () => Number(await parameters.getAttribute("data-issues"))).toBeGreaterThan(0);
+    await parameters.click();
+  }
 }
 export function graphConflict() {
   const g: any = graphRectangle(4200, 3600);
@@ -359,6 +437,7 @@ export function graphCoincident(short = false) {
     startVertexId: "av0",
     endVertexId: "duplicate",
     segmentIds: ["zero"],
+    thicknessMm: 100,
   });
   return g;
 }
@@ -382,7 +461,7 @@ export function graphSafetySolve() {
     ],
     segments: [{ id: "s", startVertexId: "a", endVertexId: "b", chainId: "c" }],
     chains: [
-      { id: "c", startVertexId: "a", endVertexId: "b", segmentIds: ["s"] },
+      { id: "c", startVertexId: "a", endVertexId: "b", segmentIds: ["s"], thicknessMm: 100 },
     ],
     constraints: [],
     voids: [],
@@ -476,6 +555,7 @@ export function graphNeighbours() {
       startVertexId,
       endVertexId,
       segmentIds: [id],
+      thicknessMm: 100,
     });
   }
   return g;
@@ -502,6 +582,7 @@ export function graphRange(fixed?: boolean) {
     startVertexId: "v0",
     endVertexId: "v3",
     segmentIds: ["s0", "s1", "s2"],
+    thicknessMm: 100,
   });
   if (fixed !== undefined)
     g.constraints.push(
@@ -558,6 +639,7 @@ export function graphJunction() {
       startVertexId: a,
       endVertexId: b,
       segmentIds: [id],
+      thicknessMm: 100,
     });
   }
   return g;
@@ -569,10 +651,10 @@ export function graphDamagedVoid() {
 }
 
 export async function fullGraphDocument(
-  pending: "graphV3" | "legacyV2" | null = null,
+  pending: "graphV4" | "legacyV2" | null = null,
 ) {
   const { migrateV2 } = await import("../../src/domain/plan/migration");
-  const d = await migrateV2(legacyV2Fixture(pending === "legacyV2"));
+  const d = await migrateV2(legacyV2Fixture(false));
   const detached = structuredClone(d.rooms[0]);
   detached.id = "detached";
   detached.topologyKey = null;
@@ -589,10 +671,10 @@ export async function fullGraphDocument(
     })),
     selectedRoomId: d.selectedRoomId,
   };
-  if (pending === "graphV3") {
+  if (pending === "graphV4") {
     d.plan.draftRevision++;
     d.plan.pendingEdit = {
-      kind: "graphV3",
+      kind: "graphV4",
       commandId: "pending-add",
       command: { type: "addVertex", point: { x: 7000, y: 7000 } },
       basisGraph: structuredClone(d.plan.draft),
@@ -603,10 +685,10 @@ export async function fullGraphDocument(
 }
 export async function openDocument(page: Page, document: unknown) {
   await page.addInitScript((document) => {
-    if (!localStorage.getItem("plitka-projects-v3"))
+    if (!localStorage.getItem("plitka-projects-v4"))
       localStorage.setItem(
-        "plitka-projects-v3",
-        JSON.stringify({ schemaVersion: 3, projects: [document] }),
+        "plitka-projects-v4",
+        JSON.stringify({ schemaVersion: 4, projects: [document] }),
       );
     if (!location.hash) location.hash = "project/test";
   }, document);
@@ -695,17 +777,18 @@ export async function chooseAngle(
 
 /** Isolated migration fixture; seed once so reload can detect resurrection. */
 export async function deletionProjects(page: Page, count = 2) {
-  await page.addInitScript(({ plan, count }) => {
+  const projects = Array.from({ length: count }, (_, i) =>
+    createV4("Одинаковое имя", `Адрес ${i}`, `delete-${i}`));
+  await page.addInitScript((projects) => {
     if (localStorage.getItem('delete-fixture-seeded')) return;
     localStorage.setItem('delete-fixture-seeded', 'yes');
-    localStorage.setItem('plitka-projects-v1', JSON.stringify(
-      Array.from({ length: count }, (_, i) => ({ id: `delete-${i}`, name: 'Одинаковое имя', address: `Адрес ${i}`, plan }))));
-  }, { plan: initial, count });
+    localStorage.setItem('plitka-projects-v4', JSON.stringify({ schemaVersion: 4, projects }));
+  }, projects);
   await page.goto('/');
   await expect(page.locator('.project-row')).toHaveCount(count);
 }
 export async function projectCatalog(page: Page) {
-  return page.evaluate(() => JSON.parse(localStorage.getItem('plitka-projects-v3')!));
+  return page.evaluate(() => JSON.parse(localStorage.getItem('plitka-projects-v4')!));
 }
 export async function openDelete(page: Page, row = 0) {
   await page.locator('.project-row').nth(row).getByRole('button', { name: 'Удалить проект', exact: true }).click();

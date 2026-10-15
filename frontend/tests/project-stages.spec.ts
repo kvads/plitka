@@ -4,12 +4,90 @@ import {
   openProject,
   openGraph,
   graphTwoRooms,
+  graphValidate,
   confirmRoom,
   toRules,
   commit,
   settle,
   stored,
 } from "./fixtures/projects";
+
+test("wall thickness keeps room identity and blocks an unusable room", async ({ page }) => {
+  await openGraph(page, graphRectangle(2000, 2000), { centerX: 1000, centerY: 1000, zoom: 2 });
+  await expect.poll(async () => (await stored(page)).rooms.length).toBe(1);
+  await confirmRoom(page);
+  const roomId = (await stored(page)).rooms[0].id;
+  await canvasPick(page, "segment", "as0");
+  const field = page.getByLabel("Толщина выбранной стены");
+  await field.fill("200");
+  await field.press("Enter");
+  await expect.poll(async () => (await stored(page)).plan.draft.chains[0].thicknessMm).toBe(200);
+  expect((await stored(page)).rooms[0].id).toBe(roomId);
+  await field.fill("5000");
+  await field.press("Enter");
+  await expect.poll(async () => (await stored(page)).plan.draft.chains[0].thicknessMm).toBe(5000);
+  await page.reload();
+  await settle(page);
+  expect((await stored(page)).rooms[0].id).toBe(roomId);
+  expect((await stored(page)).plan.draft.chains[0].thicknessMm).toBe(5000);
+  await page.getByRole("button", { name: "2. Варианты", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Подобрать раскладку", exact: true })).toBeDisabled();
+});
+
+test("diagnostic vertices have names without numeric coordinates", async ({ page }) => {
+  const graph = graphRectangle();
+  graph.vertices[1].x = graph.vertices[0].x;
+  graph.vertices[1].y = graph.vertices[0].y;
+  await openGraph(page, graph);
+  const parameters = page.getByRole("button", { name: "Параметры", exact: true });
+  if (await parameters.getAttribute("aria-expanded") === "false") await parameters.click();
+  const issues = page.locator(".geometry-issues");
+  await expect(issues).toContainText("Вершина");
+  await expect(issues).not.toContainText(/\(\s*-?\d+\s*;\s*-?\d+\s*\)\s*мм/);
+});
+
+test("precise X and Y fields still add a new vertex", async ({ page }) => {
+  await openGraph(page, graphRectangle());
+  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
+  const parameters = page.getByRole("button", { name: "Параметры", exact: true });
+  if (await parameters.getAttribute("aria-expanded") === "false") await parameters.click();
+  await page.getByText("Точное положение", { exact: true }).click();
+  await commit(page, "Новая вершина X", "2000");
+  await commit(page, "Новая вершина Y", "1500");
+  await page.getByRole("button", { name: "Поставить точку", exact: true }).click();
+  await expect.poll(async () => (await stored(page)).plan.draft.vertices.length).toBe(5);
+  expect((await stored(page)).plan.draft.vertices.at(-1)).toMatchObject({ x: 2000, y: 1500 });
+});
+
+test("mouse sidebar stays open in a narrow window and closed controls leave tab order", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await openGraph(page, graphRectangle(), {}, false);
+  const toggle = page.locator(".canvas-sidebar-toggle");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  const stage = page.getByRole("button", { name: "1. План", exact: true });
+  await expect(stage).toHaveAttribute("aria-current", "step");
+  const tool = page.getByRole("button", { name: "Выбрать", exact: true });
+  await expect(tool).toHaveAttribute("aria-pressed", "true");
+  await expect(tool).toHaveAttribute("title", "Выбрать");
+  await page.getByRole("button", { name: "2. Варианты", exact: true }).focus();
+  await page.keyboard.press("Tab");
+  await expect(tool).toBeFocused();
+  await expect(page.locator(".sidebar-tooltip")).toHaveText("Выбрать");
+  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
+  await page.getByRole("button", { name: "Свернуть меню", exact: true }).click();
+  await expect(toggle).toBeFocused();
+  await expect(tool).toHaveCount(0);
+  await expect(stage).toHaveCount(0);
+  await page.keyboard.press("Tab");
+  await expect(toggle).not.toBeFocused();
+  await page.getByRole("button", { name: "Раскрыть меню", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Добавить вершину", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "2. Варианты", exact: true }).click();
+  await expect(page.getByRole("button", { name: "2. Варианты", exact: true })).toHaveAttribute("aria-current", "step");
+  await page.getByRole("button", { name: "Свернуть меню", exact: true }).click();
+  await page.getByRole("button", { name: "Раскрыть меню", exact: true }).click();
+  await expect(page.getByRole("button", { name: "2. Варианты", exact: true })).toHaveAttribute("aria-current", "step");
+});
 test("two pages use one canvas and retain values", async ({page}) => {
   await openProject(page); await expect(page.locator('[data-project-canvas]')).toHaveCount(1);
   await toRules(page); await commit(page,'Сторона плитки','650');
@@ -143,7 +221,7 @@ test("numeric inset may launch and fail without losing input", async ({
   graph.segments = graph.segments.filter((v) => v.id.startsWith("a"));
   graph.chains = graph.chains.filter((v) => v.id.startsWith("a"));
   graph.vertices.forEach((v) => {
-    v.x *= 0.02;
+    v.x *= 0.05;
   });
   await openGraph(page, graph);
   await toRules(page);
@@ -186,7 +264,7 @@ for (const width of [375, 1440])
     await openProject(page);
     await settle(page);
     await page.evaluate(() => {
-      const key = "plitka-projects-v3",
+      const key = "plitka-projects-v4",
         c = JSON.parse(localStorage.getItem(key)!);
       c.projects[0].viewport = {
         centerX: 2100,
@@ -239,7 +317,7 @@ test("touch adds one independent point and undo restores whole graph", async ({
   browser,
 }) => {
   const context = await browser.newContext({
-    baseURL: "http://127.0.0.1:5173",
+    baseURL: process.env.PW_BASE_URL || "http://127.0.0.1:5173",
     viewport: { width: 375, height: 900 },
     hasTouch: true,
   });
@@ -327,7 +405,8 @@ test("failed dimension in independent room does not block selected room", async 
   await settle(page);
   const d = await stored(page),
     selected = d.rooms.find((r: any) => r.id === d.selectedRoomId),
-    prefix = selected.confirmed.graph.vertices[0].id[0] === "a" ? "b" : "a";
+    selectedFace = (await graphValidate(page, d.plan.draft)).faces.find((face: any) => face.topologyKey === selected.topologyKey),
+    prefix = selectedFace.outer[0].segmentId[0] === "a" ? "b" : "a";
   await page.getByRole("button", { name: "Выбрать", exact: true }).click();
   await canvasPick(page, "segment", prefix + "s0");
   await commit(page, "Общая длина стены", "-1");
@@ -372,55 +451,6 @@ test("clear project ignores an old geometry response after clear and Undo", asyn
 });
 
 import { clearProject, fullGraphDocument } from "./fixtures/projects";
-for (const reject of [false, true])
-  test(`clear project discards delayed File.text ${reject ? "error" : "success"} after Undo`, async ({
-    page,
-  }) => {
-    await openGraph(page, graphTwoRooms());
-    const before = await stored(page),
-      incoming = await fullGraphDocument();
-    incoming.name = "Запоздавший импорт";
-    await page.evaluate(() => {
-      const original = File.prototype.text;
-      File.prototype.text = function () {
-        const file = this;
-        return new Promise<string>((resolve, reject) => {
-          (window as any).finishRead = async (fail: boolean) => {
-            if (fail) reject(new Error("Старая ошибка чтения"));
-            else resolve(await original.call(file));
-          };
-        });
-      };
-    });
-    await page.locator("input[type=file]").setInputFiles({
-      name: "late.json",
-      mimeType: "application/json",
-      buffer: Buffer.from(
-        JSON.stringify({
-          format: "plitka-project",
-          version: 3,
-          project: incoming,
-        }),
-      ),
-    });
-    await clearProject(page);
-    await page
-      .getByRole("button", { name: "Отменить правку", exact: true })
-      .click();
-    await settle(page);
-    await page.evaluate(async (reject) => {
-      await (window as any).finishRead(reject);
-    }, reject);
-    await expect(
-      page.getByRole("dialog", { name: "Импорт проекта" }),
-    ).toHaveCount(0);
-    await expect(
-      page.getByText("Старая ошибка чтения", { exact: true }),
-    ).toHaveCount(0);
-    expect((await stored(page)).name).toBe(before.name);
-    expect((await stored(page)).plan.draft).toEqual(before.plan.draft);
-  });
-
 test("context stage forms keep room settings when a wall is selected", async ({
   page,
 }) => {
@@ -464,7 +494,6 @@ import { openDocument, graphRectangle, chooseAngle } from "./fixtures/projects";
 for (const operation of [
   "command",
   "validate",
-  "legacy",
   "optimize",
   "layout",
 ] as const)
@@ -555,64 +584,6 @@ for (const operation of [
         ).toBeEnabled();
         expect((await stored(page)).plan).toEqual(after.plan);
       });
-for (const mode of ["clear", "close", "newRead"] as const)
-  for (const failure of [false, true])
-    test(`clear project File.text ${mode} ignores obsolete ${failure ? "error" : "success"}`, async ({
-      page,
-    }) => {
-      await openGraph(page, graphTwoRooms());
-      const incoming = await fullGraphDocument();
-      incoming.name = "Новый импорт";
-      await page.evaluate(() => {
-        const original = File.prototype.text;
-        (window as any).reads = [];
-        File.prototype.text = function () {
-          const file = this;
-          return new Promise<string>((resolve, reject) =>
-            (window as any).reads.push(async (fail: boolean) => {
-              if (fail) reject(new Error("Старая ошибка чтения"));
-              else resolve(await original.call(file));
-            }),
-          );
-        };
-      });
-      const file = {
-        name: "plan.json",
-        mimeType: "application/json",
-        buffer: Buffer.from(
-          JSON.stringify({
-            format: "plitka-project",
-            version: 3,
-            project: incoming,
-          }),
-        ),
-      };
-      await page.locator("input[type=file]").setInputFiles(file);
-      if (mode === "clear") await clearProject(page);
-      else if (mode === "close")
-        await page
-          .getByRole("button", { name: "← Проекты", exact: true })
-          .click();
-      else await page.locator("input[type=file]").setInputFiles(file);
-      await page.evaluate(async (failure) => {
-        await (window as any).reads[0](failure);
-      }, failure);
-      await expect(
-        page.getByRole("dialog", { name: "Импорт проекта" }),
-      ).toHaveCount(0);
-      await expect(
-        page.getByText("Старая ошибка чтения", { exact: true }),
-      ).toHaveCount(0);
-      if (mode === "newRead") {
-        await page.evaluate(async () => {
-          await (window as any).reads[1](false);
-        });
-        await expect(
-          page.getByRole("dialog", { name: "Импорт проекта" }),
-        ).toBeVisible();
-      }
-    });
-
 for (const target of ["object", "tile", "rules", "variants"] as const)
   test(`clear project available at ${target} stage preserves metadata and cancellation`, async ({
     page,
@@ -736,7 +707,6 @@ import { deleteFromEditor } from "./fixtures/projects";
 for (const operation of [
   "command",
   "validate",
-  "legacy",
   "optimize",
   "layout",
 ] as const)
@@ -819,50 +789,6 @@ for (const operation of [
         expect((await projectCatalog(page)).projects).toEqual([]);
       });
 
-for (const reject of [false, true])
-  test(`delete project discards delayed File.text ${reject ? "error" : "success"}`, async ({
-    page,
-  }) => {
-    await openGraph(page, graphTwoRooms());
-    const before = await stored(page),
-      incoming = await fullGraphDocument();
-    incoming.name = "Запоздавший импорт";
-    await page.evaluate(() => {
-      const original = File.prototype.text;
-      File.prototype.text = function () {
-        const file = this;
-        return new Promise<string>((resolve, reject) => {
-          (window as any).finishRead = async (fail: boolean) => {
-            if (fail) reject(new Error("Старая ошибка чтения"));
-            else resolve(await original.call(file));
-          };
-        });
-      };
-    });
-    await page.locator("input[type=file]").setInputFiles({
-      name: "late.json",
-      mimeType: "application/json",
-      buffer: Buffer.from(
-        JSON.stringify({
-          format: "plitka-project",
-          version: 3,
-          project: incoming,
-        }),
-      ),
-    });
-    await deleteFromEditor(page);
-    await page.evaluate(async (reject) => {
-      await (window as any).finishRead(reject);
-    }, reject);
-    await expect(
-      page.getByRole("dialog", { name: "Импорт проекта" }),
-    ).toHaveCount(0);
-    await expect(
-      page.getByText("Старая ошибка чтения", { exact: true }),
-    ).toHaveCount(0);
-    expect((await projectCatalog(page)).projects).toEqual([]);
-
-  });
 for (const width of [375, 1440])
 test(`delete project tile stage accessible dialog ${width}`, async ({ page }) => {
   await page.setViewportSize({ width, height: 900 });
@@ -1063,7 +989,7 @@ test('room flow physical area and request invariant under zoom resize',async({pa
   const first=await run();await expect(page.getByRole('button',{name:'План с размерами · SVG'})).toBeEnabled();
   await page.getByRole('button',{name:'Увеличить',exact:true}).click();await page.setViewportSize({width:1440,height:900});
   const second=await run();expect(second.input).toEqual(first.input);expect(second.output).toEqual(first.output);
-  expect(first.output.variants[0].metrics.room_area).toBeCloseTo(10.392305,5);
+  expect(first.output.variants[0].metrics.room_area).toBeCloseTo(9.7039,4);
 });
 test('room flow setting same length as fixed invalidates previous result',async({page})=>{
   await flowRoom(page);await page.getByRole('button',{name:'Подобрать раскладку',exact:true}).click();await expect(page.getByRole('button',{name:'План с размерами · SVG'})).toBeEnabled();

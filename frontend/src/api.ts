@@ -62,6 +62,9 @@ export async function api<T>(
         Array.isArray(r) &&
         r.every((p) => Array.isArray(p) && p.length === 2 && p.every(finite)),
     );
+  const polygon = (v: unknown): boolean =>
+    record(v) && Array.isArray(v.outline) && Array.isArray(v.holes) &&
+    rings([v.outline, ...v.holes]);
   const layout = (v: unknown): boolean =>
     record(v) &&
     Array.isArray(v.parts) &&
@@ -105,7 +108,7 @@ export async function api<T>(
     const target = object.target,
       impact = object.impact;
     valid =
-      object.schemaVersion === 3 &&
+      object.schemaVersion === 4 &&
       object.requestId === request.requestId &&
       object.draftRevision === request.draftRevision &&
       object.basisKey === request.basisKey &&
@@ -155,7 +158,7 @@ export async function api<T>(
       basisKey: string;
     };
     valid =
-      object.schemaVersion === 3 &&
+      object.schemaVersion === 4 &&
       object.requestId === request.requestId &&
       object.commandId === request.commandId &&
       object.draftRevision === request.draftRevision &&
@@ -164,6 +167,8 @@ export async function api<T>(
         object.status as string,
       ) &&
       Array.isArray(object.faces) &&
+      Array.isArray(object.wallArea) &&
+      object.wallArea.every(polygon) &&
       Array.isArray(object.issues) &&
       Array.isArray(object.measurements);
     if (valid) {
@@ -176,14 +181,10 @@ export async function api<T>(
               typeof f.topologyKey === "string" &&
               typeof f.dependencyKey === "string" &&
               typeof f.measurementKey === "string" &&
-              record(f.polygon) &&
-              rings([
-                f.polygon.outline,
-                ...(Array.isArray(f.polygon.holes) ? f.polygon.holes : []),
-              ]) &&
+              polygon(f.axisPolygon) &&
+              (f.polygon === null ? f.areaMm2 === null : polygon(f.polygon) && finite(f.areaMm2)) &&
               record(f.validation) &&
-              typeof f.validation.valid === "boolean" &&
-              finite(f.areaMm2),
+              typeof f.validation.valid === "boolean",
           ) &&
           (object.issues as unknown[]).every(
             (i) =>

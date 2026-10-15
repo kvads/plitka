@@ -3,7 +3,7 @@ import type {
   GraphSnapshot,
   RoomRecord,
   FaceCandidate,
-  ProjectDocumentV3,
+  ProjectDocumentV4,
   Measurement,
 } from "./types";
 export const uid = () => crypto.randomUUID();
@@ -30,7 +30,7 @@ export function normalizeRoomNames(rooms: RoomRecord[]) {
   for (const r of result) if (!r.name.trim()) r.name = nextRoomName(result);
   return result;
 }
-export async function bindRooms(doc: ProjectDocumentV3, faces: FaceCandidate[]): Promise<ProjectDocumentV3> {
+export async function bindRooms(doc: ProjectDocumentV4, faces: FaceCandidate[]): Promise<ProjectDocumentV4> {
   const rooms = normalizeRoomNames(doc.rooms);
   const memories = await Promise.all(faces.map(f => faceMemory(doc.plan.draft, f)));
   for (const r of rooms) {
@@ -143,6 +143,8 @@ export function ready(
     !!room &&
     !!face &&
     face.validation.valid &&
+    !!face.polygon &&
+    face.areaMm2 !== null &&
     room.binding === "attached"
   );
 }
@@ -176,15 +178,15 @@ export function rulesReady(r?: RoomRecord) {
   );
 }
 export function pendingAffectsRoom(
-  doc: ProjectDocumentV3,
+  doc: ProjectDocumentV4,
   face?: FaceCandidate,
 ) {
   const pending = doc.plan.pendingEdit;
   if (!pending) return false;
-  if (!face || pending.kind === "legacyV2") return true;
+  if (!face) return true;
   const command = pending.command;
   if (command.type === "addVertex") return false;
-  if (["connect", "addTemplate", "reconcile"].includes(command.type))
+  if (["connect", "drawWall", "addTemplate", "reconcile"].includes(command.type))
     return true;
   const graph = doc.plan.draft,
     ids = new Set<string>();

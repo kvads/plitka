@@ -4,6 +4,7 @@ from shapely.geometry import Polygon,Point
 from shapely.ops import polygonize_full
 from shapely.geometry.polygon import orient
 from .graph_validation import maps,xy,line,ring_coords,measure,validate,issue,constraint_ids,EPS
+from .wall_geometry import wall_area, polygons, polygon_data
 
 def key(value):
     def normalize(v):
@@ -73,6 +74,7 @@ def measurements(g):
 
 def inspect(g):
     vs,ss,cs=maps(g);issues=validate(g);ms=measurements(g)
+    occupied=wall_area(g)
     # Polygonization is diagnostic only. Any defect touching a candidate blocks it.
     lines=[line(s,vs) for s in ss.values() if line(s,vs).length>EPS]
     collection,_,_,_=polygonize_full(lines)
@@ -116,7 +118,14 @@ def inspect(g):
         subset={k:[x for x in g[k] if x['id'] in deps] for k in ['vertices','segments','chains','voids','constraints']}
         subset['fieldInputs']={k:v for k,v in g['fieldInputs'].items() if any(':'+eid+':' in k for eid in deps)}
         for k in ['vertices','segments','chains','voids','constraints']:subset[k].sort(key=lambda x:x['id'])
-        polygon={'outline':[list(x) for x in list(poly.exterior.coords)[:-1]],'holes':[[list(x) for x in list(h.coords)[:-1]] for h in poly.interiors]}
+        axis_polygon=polygon_data(poly)
+        usable=polygons(poly.difference(occupied))
+        usable=[shape for shape in usable if shape.area>EPS]
+        if len(usable)!=1:
+            err=issue('unusable_room','Полезный контур помещения пуст или разделён стенами',sorted(deps),'room')
+            err['affectedRoomKeys']=[tk];issues.append(err);relevant.append(err)
+        polygon=polygon_data(usable[0]) if len(usable)==1 else None
+        area=usable[0].area if len(usable)==1 else None
         dk=key(subset);selected_ms=[m for m in ms if set(v for v in m['target'].values() if isinstance(v,str)) & deps and (m['kind']!='angle' or m['target'] in boundary_angles or m['source']=='entered')]
-        faces.append(dict(topologyKey=tk,outer=outer,holes=holes,polygon=polygon,areaMm2=poly.area,dependencyIds=sorted(deps),dependencyKey=dk,geometryKey=key(polygon),measurementKey=key([dk,selected_ms]),validation=dict(valid=not relevant,issues=relevant)))
-    return dict(status='invalid' if issues else 'valid',graph=g,faces=sorted(faces,key=lambda f:f['topologyKey']),measurements=ms,issues=issues)
+        faces.append(dict(topologyKey=tk,outer=outer,holes=holes,axisPolygon=axis_polygon,polygon=polygon,areaMm2=area,dependencyIds=sorted(deps),dependencyKey=dk,geometryKey=key(polygon),measurementKey=key([dk,selected_ms]),validation=dict(valid=not relevant,issues=relevant)))
+    return dict(status='invalid' if issues else 'valid',graph=g,wallArea=[polygon_data(shape) for shape in polygons(occupied)],faces=sorted(faces,key=lambda f:f['topologyKey']),measurements=ms,issues=issues)

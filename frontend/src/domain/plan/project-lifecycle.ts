@@ -1,11 +1,11 @@
-import type { ProjectDocumentV3 } from "./types";
+import type { ProjectDocumentV4 } from "./types";
 import { emptyGraph } from "./types";
 export interface HistoryEntry {
   kind: "edit" | "clearProject";
-  before: ProjectDocumentV3;
+  before: ProjectDocumentV4;
 }
 export interface ImportPreview {
-  document: ProjectDocumentV3;
+  document: ProjectDocumentV4;
   projectId: string;
   lifecycleEpoch: number;
   requestId: number;
@@ -17,7 +17,7 @@ export const defaultViewport = {
   zoom: 1,
   gridStepMm: 100,
 };
-export function clearedProject(current: ProjectDocumentV3): ProjectDocumentV3 {
+export function clearedProject(current: ProjectDocumentV4): ProjectDocumentV4 {
   return {
     ...current,
     plan: {
@@ -33,9 +33,9 @@ export function clearedProject(current: ProjectDocumentV3): ProjectDocumentV3 {
   };
 }
 export function restoredProject(
-  current: ProjectDocumentV3,
-  before: ProjectDocumentV3,
-): ProjectDocumentV3 {
+  current: ProjectDocumentV4,
+  before: ProjectDocumentV4,
+): ProjectDocumentV4 {
   const restored = structuredClone(before),
     revision = current.plan.draftRevision + 1;
   restored.documentRevision = current.documentRevision;

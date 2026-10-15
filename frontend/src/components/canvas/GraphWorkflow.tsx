@@ -1,4 +1,5 @@
-import { formatPlanLength } from "../../domain/plan/format-length";
+import { ArrowLeft, ChevronsLeft, ChevronsRight, FilePenLine, FolderOpen, Grip, Minus, Plus, Redo2, RotateCcw, Save, Settings2 } from "lucide-react";
+import SidebarIconButton from "./SidebarIconButton";
 import DeleteProjectDialog from "./DeleteProjectDialog";
 import type { DeleteProjectIntent, DeleteProjectOutcome } from "../../domain/plan/types";
 import ObjectContextPanel from "./ObjectContextPanel";
@@ -6,7 +7,6 @@ import DeletionPreview from "./DeletionPreview";
 import ProjectMenu from "./ProjectMenu";
 import CanvasDialog from "./CanvasDialog";
 import { editorReducer, initialEditor } from "../../domain/plan/editor-state";
-import type { ImportPreview } from "../../domain/plan/project-lifecycle";
 import { useState, useRef, useEffect, useReducer } from "react";
 import {
   diagnosticIssues,
@@ -17,7 +17,7 @@ import ToolPalette from "./ToolPalette";
 import ProjectCanvas, { type Tool } from "./ProjectCanvas";
 import NumberField from "../workflow/NumberField";
 import type {
-  ProjectDocumentV3,
+  ProjectDocumentV4,
   GraphCommand,
   FaceCandidate,
   DiagnosticSelection,
@@ -32,8 +32,6 @@ import {
   relevantMeasurements,
   subsetGraph,
 } from "../../domain/plan/rooms";
-import { importV3 } from "../../domain/plan/storage";
-import { download } from "../../domain/project/import-export";
 import { exportResult } from "../../domain/project/result-export";
 import { api } from "../../api";
 import { format as f, type Layout, type LayoutRequest } from "../../types";
@@ -46,8 +44,8 @@ export default function GraphWorkflow({
   onBack,
   onRemoved,
 }: {
-  initial: ProjectDocumentV3;
-  onSaved: (d: ProjectDocumentV3) => void;
+  initial: ProjectDocumentV4;
+  onSaved: (d: ProjectDocumentV4) => void;
   onBack: () => void;
   onRemoved: (outcome: DeleteProjectOutcome) => void;
 }) {
@@ -65,14 +63,19 @@ export default function GraphWorkflow({
   const [deleteIntent, setDeleteIntent] = useState<DeleteProjectIntent | null>(null);
   const [projectMenu, setProjectMenu] = useState(false),
     [clearDialog, setClearDialog] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(
+    () => !window.matchMedia("(hover: none) and (pointer: coarse)").matches,
+  );
+  const sidebarToggle = useRef<HTMLButtonElement>(null);
   const [tool, setTool] = useState<Tool>("select"),
+    [wallThickness, setWallThickness] = useState(100),
+    [wallThicknessError, setWallThicknessError] = useState(""),
     [vertex, setVertex] = useState(""),
     [segment, setSegment] = useState(""),
     [diagnostic, setDiagnostic] = useState<DiagnosticSelection | null>(null),
     [blockedVertex, setBlockedVertex] = useState(""),
     [start, setStart] = useState<string | null>(null),
     [panel, setPanel] = useState(initial.workflow.requestedStage !== "object"),
-    [preview, setPreview] = useState<ImportPreview | null>(null),
     [restore, setRestore] = useState(false);
   const [results, setResults] = useState<{
       epoch: number;
@@ -91,20 +94,16 @@ export default function GraphWorkflow({
     [part, setPart] = useState("");
   const modalOrigin = useRef<HTMLElement | null>(null);
   const closeModal = () => {
-    setPreview(null);
     setRestore(false);
     requestAnimationFrame(() => modalOrigin.current?.focus());
   };
   const resultGeneration = useRef(0),
     alive = useRef(true),
     stageHeading = useRef<HTMLHeadingElement>(null),
-    menuButton = useRef<HTMLButtonElement>(null),
-    file = useRef<HTMLInputElement>(null),
-    previewRevision = useRef(0),
-    importRequest = useRef(0);
+    menuButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (h.transition.reason === "deleteAttempt") {
-      setLoading(false); setPreview(null); resultGeneration.current++; importRequest.current++;
+      setLoading(false); resultGeneration.current++;
     }
     const reset = ["clearProject", "undoClear", "import"].includes(
       h.transition.reason,
@@ -124,7 +123,6 @@ export default function GraphWorkflow({
       setSegment("");
       setStart(null);
       setTool("select");
-      setPreview(null);
       setRestore(false);
       setProjectMenu(false);
       setResults(null);
@@ -135,7 +133,6 @@ export default function GraphWorkflow({
       setBlockedVertex("");
       setPanel(false);
       resultGeneration.current++;
-      importRequest.current++;
     }
   }, [h.transition.sequence]);
   const previousEditor = useRef(editor);
@@ -344,7 +341,7 @@ export default function GraphWorkflow({
       />
     );
   const request = (): LayoutRequest => {
-    if (!room || !face || !canRules)
+    if (!room || !face || !face.polygon || !canRules)
       throw new Error("Выберите помещение с корректной геометрией и параметрами.");
     return {
       outline: face.polygon.outline as [number, number][],
@@ -445,15 +442,6 @@ export default function GraphWorkflow({
         setLoading(false);
     }
   };
-  const exportFile = () =>
-    download(
-      "plitka-project.json",
-      JSON.stringify(
-        { format: "plitka-project", version: 3, project: doc },
-        null,
-        2,
-      ),
-    );
   const selectedLayout =
     results &&
     !results.stale &&
@@ -580,6 +568,10 @@ export default function GraphWorkflow({
     });
     if (!v && !s) setPanel(false);
   };
+  const selectedSegmentId = editor.context.kind === "segment" ? editor.context.id : undefined;
+  const selectedChainId = selectedSegmentId
+    ? g.segments.find((s) => s.id === selectedSegmentId)?.chainId
+    : undefined;
   return (
     <ProjectCanvas
       graph={g}
@@ -593,6 +585,14 @@ export default function GraphWorkflow({
       selectedKey={room?.topologyKey}
       viewport={doc.viewport}
       tool={stage === "object" ? tool : "pan"}
+      wallThickness={wallThicknessError ? 0 : wallThickness}
+      onDrawWall={(start, end) => {
+        if (wallThicknessError || !Number.isFinite(wallThickness) || wallThickness < 0.001 || wallThickness > 100000) {
+          setWallThicknessError("Введите положительную толщину стены.");
+          return;
+        }
+        run({ type: "drawWall", start, end, thicknessMm: wallThickness });
+      }}
       selectedVertex={vertex}
       selectedSegment={segment}
       startVertex={start}
@@ -612,6 +612,7 @@ export default function GraphWorkflow({
       editor={editor}
       resetEpoch={h.epoch.current}
       panelOpen={panel || projectMenu}
+      sidebarOpen={sidebarOpen}
       onCanvasFocus={() => setPanel(false)}
       onSector={(sector) => {
         dispatchEditor({ type: "sector", sector });
@@ -627,6 +628,7 @@ export default function GraphWorkflow({
       highlightedSegments={
         h.deletion?.impact?.segmentIds || (panel ? dimensionTarget : [])
       }
+      wallArea={response?.wallArea ?? []}
       onVoid={(id) => {
         h.cancelDeletion();
         dispatchEditor({ type: "context", context: { kind: "void", id } });
@@ -651,6 +653,7 @@ export default function GraphWorkflow({
             run({
               type: "connect",
               fromVertexId: start,
+              thicknessMm: wallThickness,
               to: target.vertexId
                 ? { vertexId: target.vertexId }
                 : { segmentId: target.segmentId!, point: p },
@@ -660,70 +663,43 @@ export default function GraphWorkflow({
         }
       }}
     >
-      <header
-        className="canvas-top"
-        data-context={editor.context.kind}
-        data-overlay
-        onPointerDown={(e) => e.stopPropagation()}
-      >
-        <button onClick={onBack}>← Проекты</button>
-        <div className="canvas-title">
-          <strong>{doc.name}</strong>
-          <small>{doc.address || "Адрес не указан"}</small>
-        </div>
-        <nav aria-label="Этапы проекта">
-          {stages.map((x, i) => (
-            <button
-              key={x}
-              aria-current={stage === x ? "step" : undefined}
-              onClick={() => navigate(x)}
-            >
-              {i + 1}. {names[i]}
-            </button>
-          ))}
-        </nav>
-        <button
+      <div className="canvas-sidebar-shell" data-overlay onPointerDown={(e) => e.stopPropagation()}>
+        <SidebarIconButton
+          ref={sidebarToggle}
+          className="canvas-sidebar-toggle"
+          icon={sidebarOpen ? ChevronsLeft : ChevronsRight}
+          label={sidebarOpen ? "Свернуть меню" : "Раскрыть меню"}
+          aria-expanded={sidebarOpen}
           onClick={() => {
-            setProjectMenu((p) => !p);
-            setPanel(false);
+            setSidebarOpen((open) => !open);
+            if (sidebarOpen) {
+              setProjectMenu(false);
+              setPanel(false);
+              requestAnimationFrame(() => sidebarToggle.current?.focus());
+            }
           }}
-        >
-          Проект
-        </button>
-        <button
-          disabled={!h.canUndo}
-          onClick={() => {
-            resultGeneration.current++;
-            setLoading(false);
-            h.cancel();
-          }}
-        >
-          Отменить правку
-        </button>
-        <button
-          ref={menuButton}
-          aria-label="Параметры"
-          aria-expanded={panel}
-          onClick={() => {
-            if (!panel && stage === "object" && editor.context.kind === "none")
-              dispatchEditor({
-                type: "context",
-                context: { kind: "tool", tool },
-              });
-            setProjectMenu(false);
-            setPanel(!panel);
-          }}
-        >
-          Параметры
-          {response?.issues.length ? ` · ${response.issues.length}` : ""}
-        </button>
-      </header>
-      {stage === "object" && (
-        <ToolPalette
+        />
+        {sidebarOpen && <aside id="canvas-sidebar" className="canvas-sidebar" aria-label="Управление планом">
+          <div className="canvas-title" title={`${doc.name} — ${doc.address || "Адрес не указан"}`}>
+            <strong>{doc.name}</strong>
+            <small>{doc.address || "Адрес не указан"}</small>
+          </div>
+          <div className="sidebar-group">
+            <SidebarIconButton icon={ArrowLeft} label="← Проекты" onClick={onBack} />
+            <nav aria-label="Этапы проекта">
+              {stages.map((x, i) => (
+                <SidebarIconButton key={x} icon={i === 0 ? FilePenLine : Grip}
+                  label={`${i + 1}. ${names[i]}`} aria-current={stage === x ? "step" : undefined}
+                  onClick={() => navigate(x)} />
+              ))}
+            </nav>
+          </div>
+          {stage === "object" && <ToolPalette
           selected={tool}
           onSelect={(tool) => {
             h.cancelDeletion();
             setTool(tool);
+            setWallThicknessError("");
             setStart(null);
             setVertex("");
             setSegment("");
@@ -733,12 +709,43 @@ export default function GraphWorkflow({
                 ? { type: "interaction", interaction: { kind: "angleFirst" } }
                 : { type: "context", context: { kind: "tool", tool } },
             );
-            setPanel(tool === "pan");
+            setPanel(tool === "pan" || tool === "wall");
             requestAnimationFrame(() =>
               document.querySelector<SVGSVGElement>("[data-geometry]")?.focus(),
             );
           }}
-        />
+          />}
+          <div className="sidebar-group">
+            <SidebarIconButton icon={Settings2} label="Параметры" ref={menuButton}
+              aria-expanded={panel} data-issues={response?.issues.length ?? 0} onClick={() => {
+                if (!panel && stage === "object" && editor.context.kind === "none")
+                  dispatchEditor({ type: "context", context: { kind: "tool", tool } });
+                setProjectMenu(false);
+                setPanel(!panel);
+              }} />
+            <SidebarIconButton icon={FolderOpen} label="Проект" onClick={() => {
+              setProjectMenu((p) => !p); setPanel(false);
+            }} />
+            <SidebarIconButton icon={RotateCcw} label="Отменить правку" disabled={!h.canUndo}
+              onClick={() => { resultGeneration.current++; setLoading(false); h.cancel(); }} />
+          </div>
+          <div className="sidebar-group">
+            <SidebarIconButton icon={Minus} label="Уменьшить" onClick={() => h.update((d) => ({
+              ...d, viewport: { ...d.viewport, zoom: Math.max(0.2, d.viewport.zoom / 1.25) },
+            }))} />
+            <SidebarIconButton icon={Plus} label="Увеличить" onClick={() => h.update((d) => ({
+              ...d, viewport: { ...d.viewport, zoom: Math.min(8, d.viewport.zoom * 1.25) },
+            }))} />
+          </div>
+          <div className="sidebar-save" role="status">{busy ? "Проверяем геометрию…" : h.saved}</div>
+          {h.saved === "Не сохранено" && <SidebarIconButton icon={Save} label="Повторить сохранение" onClick={h.retrySave} />}
+          {doc.plan.pendingEdit && <SidebarIconButton icon={Redo2} label="Повторить действие" onClick={() => void h.retry()} />}
+        </aside>}
+      </div>
+      {!sidebarOpen && h.saved === "Не сохранено" && (
+        <button className="sidebar-save-alert" aria-live="assertive" onClick={() => {
+          setSidebarOpen(true); requestAnimationFrame(() => sidebarToggle.current?.focus());
+        }}>Не сохранено — открыть меню{h.error ? `: ${h.error}` : ""}</button>
       )}
       {projectMenu && (
         <ProjectMenu
@@ -842,6 +849,30 @@ export default function GraphWorkflow({
           </div>
           {stage === "object" && (
             <>
+              {(tool === "wall" || tool === "connect" || editor.context.kind === "segment") && (
+                <div className="wall-thickness-control">
+                  <NumberField
+                    label={editor.context.kind === "segment" ? "Толщина выбранной стены" : "Толщина новой стены"}
+                    value={selectedChainId
+                      ? g.chains.find((chain) => chain.id === selectedChainId)?.thicknessMm ?? wallThickness
+                      : wallThickness}
+                    min={0.001}
+                    max={100000}
+                    onCommit={(value) => {
+                      if (value === null || value < 0.001 || value > 100000 || !Number.isFinite(value)) {
+                        setWallThicknessError("Введите положительную толщину стены.");
+                        return;
+                      }
+                      setWallThicknessError("");
+                      if (selectedChainId) {
+                        run({ type: "setWallThickness", chainId: selectedChainId, thicknessMm: value });
+                      } else setWallThickness(value);
+                    }}
+                  />
+                  {wallThicknessError && <p role="alert">{wallThicknessError}</p>}
+                  {tool === "wall" && <p className="muted">Проведите линию на плане. Стена остановится у первого стыка.</p>}
+                </div>
+              )}
               <ObjectContextPanel
                 context={editor.context}
                 interaction={editor.interaction}
@@ -868,7 +899,7 @@ export default function GraphWorkflow({
                 {editor.context.kind === "room" && face && (
                   <>
                     <div className="room-area">
-                      {f(face.areaMm2 / 1e6, 6)} м²
+                      {face.areaMm2 === null ? "Площадь недоступна" : `${f(face.areaMm2 / 1e6, 6)} м²`}
                     </div>
                     <button className="danger" onClick={deleteObject}>
                       Удалить помещение
@@ -887,21 +918,6 @@ export default function GraphWorkflow({
                     </button>
                   </>
                 )}
-                {editor.context.kind === "tool" &&
-                  editor.context.tool === "pan" && (
-                    <NumberField
-                      label="Шаг сетки"
-                      value={doc.viewport.gridStepMm}
-                      min={1}
-                      onCommit={(n) => {
-                        if (n !== null && n >= 1)
-                          h.update((d) => ({
-                            ...d,
-                            viewport: { ...d.viewport, gridStepMm: n },
-                          }));
-                      }}
-                    />
-                  )}
               </ObjectContextPanel>
               {editor.error && <p role="alert">{editor.error}</p>}
               {!!response?.issues.length && (
@@ -971,8 +987,7 @@ export default function GraphWorkflow({
                         ))}
                         {vertices.map((v) => (
                           <small key={v.id}>
-                            Вершина {g.vertices.indexOf(v) + 1} · {v.id}: ({v.x}
-                            ; {v.y}) мм
+                            Вершина {g.vertices.indexOf(v) + 1} · {v.id}
                           </small>
                         ))}
                         <span className="issue-action">Показать на плане</span>
@@ -1012,7 +1027,7 @@ export default function GraphWorkflow({
               if (candidate) selectRoom(candidate);
             }}><option value="">Выберите помещение</option>{doc.rooms.filter(r => r.binding === 'attached').map(r => <option key={r.id} value={r.id}>{r.name}</option>)}</select></label>
             {!room && <p>Выберите замкнутое помещение для подбора. Создать или исправить его можно на странице «План».</p>}
-            {room && !canRoom && <p role="status">{busy ? 'Проверяем геометрию…' : 'Исправьте геометрию или незавершённую правку помещения на плане.'}</p>}
+            {room && !canRoom && <p role="status">{busy ? 'Проверяем геометрию…' : face?.validation.issues[0]?.message || 'Исправьте геометрию или незавершённую правку помещения на плане.'}</p>}
           </>}
           {room && (stage === 'variants' || editor.context.kind === 'room') && <label>Название помещения<input aria-label="Название помещения" key={room.id + room.name} defaultValue={room.name} maxLength={120} onBlur={e => {
             const name = e.target.value.trim();
@@ -1166,99 +1181,6 @@ export default function GraphWorkflow({
           </div>
         </aside>
       )}
-      <footer
-        className="canvas-status"
-        data-overlay
-        data-pending={!!doc.plan.pendingEdit}
-      >
-        <span role="status">{busy ? "Проверяем геометрию…" : h.saved}</span>
-        {h.saved === "Не сохранено" && (
-          <button onClick={h.retrySave}>Повторить сохранение</button>
-        )}
-        {doc.plan.pendingEdit && (
-          <button onClick={() => void h.retry()}>Повторить действие</button>
-        )}
-        <span>Сетка {formatPlanLength(doc.viewport.gridStepMm)}</span>
-        <button
-          aria-label="Уменьшить"
-          onClick={() =>
-            h.update((d) => ({
-              ...d,
-              viewport: {
-                ...d.viewport,
-                zoom: Math.max(0.2, d.viewport.zoom / 1.25),
-              },
-            }))
-          }
-        >
-          −
-        </button>
-        <button
-          aria-label="Увеличить"
-          onClick={() =>
-            h.update((d) => ({
-              ...d,
-              viewport: {
-                ...d.viewport,
-                zoom: Math.min(8, d.viewport.zoom * 1.25),
-              },
-            }))
-          }
-        >
-          +
-        </button>
-        <button onClick={exportFile}>Скачать проект</button>
-        <button
-          onClick={(e) => {
-            modalOrigin.current = e.currentTarget;
-            file.current?.click();
-          }}
-        >
-          Открыть файл
-        </button>
-        <input
-          hidden
-          ref={file}
-          type="file"
-          accept=".json"
-          onChange={async (e) => {
-            const input = e.currentTarget,
-              f = input.files?.[0];
-            input.value = "";
-            if (!f) return;
-            const epoch = h.epoch.current,
-              requestId = ++importRequest.current,
-              localRevision = h.localRevision.current;
-            previewRevision.current = doc.documentRevision;
-            setPreview(null);
-            try {
-              const document = await importV3(f, h.ref.current);
-              if (
-                !alive.current ||
-                !h.current(epoch) ||
-                requestId !== importRequest.current ||
-                localRevision !== h.localRevision.current
-              )
-                return;
-              setPreview({
-                document,
-                projectId: doc.id,
-                lifecycleEpoch: epoch,
-                requestId,
-                localRevision,
-              });
-            } catch (e) {
-              if (
-                alive.current &&
-                h.current(epoch) &&
-                requestId === importRequest.current &&
-                localRevision === h.localRevision.current
-              )
-                h.setError((e as Error).message);
-            }
-          }}
-        />
-      </footer>
       {h.deletion?.status === "ready" && (
         <DeletionPreview
           preview={h.deletion}
@@ -1270,11 +1192,10 @@ export default function GraphWorkflow({
           }}
         />
       )}
-      {h.error && (
+      {h.error && (sidebarOpen || h.saved !== "Не сохранено") && (
         <div className="canvas-error" role="alert" data-overlay>
           <span>{h.error}</span>
           <button onClick={() => void h.retry()}>Повторить</button>
-          <button onClick={exportFile}>Скачать мой черновик</button>
           <button onClick={() => location.reload()}>
             Загрузить сохранённую версию
           </button>
@@ -1283,13 +1204,13 @@ export default function GraphWorkflow({
           )}
         </div>
       )}
-      {(preview || restore) && (
+      {restore && (
         <div
           className="canvas-modal"
           data-overlay
           role="dialog"
           aria-modal="true"
-          aria-label={preview ? "Импорт проекта" : "Восстановление плана"}
+          aria-label="Восстановление плана"
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               closeModal();
@@ -1311,37 +1232,18 @@ export default function GraphWorkflow({
           }}
         >
           <section>
-            <h2>
-              {preview ? preview.document.name : "Восстановить весь план?"}
-            </h2>
+            <h2>Восстановить весь план?</h2>
             <p>
-              {preview
-                ? preview.document.address
-                : doc.plan.restorePoint
-                  ? `Изменятся все комнаты и общие стены: ${doc.rooms.map((r) => r.name).join(", ")}. Параметры плитки сохранятся.`
-                  : "Подтверждённого плана ещё нет. Очистить всё полотно? Параметры комнат сохранятся."}
+              {doc.plan.restorePoint
+                ? `Изменятся все комнаты и общие стены: ${doc.rooms.map((r) => r.name).join(", ")}. Параметры плитки сохранятся.`
+                : "Подтверждённого плана ещё нет. Очистить всё полотно? Параметры комнат сохранятся."}
             </p>
             <button
               autoFocus
               onClick={() => {
-                if (preview) {
-                  if (
-                    doc.documentRevision !== previewRevision.current ||
-                    !h.current(preview.lifecycleEpoch) ||
-                    h.localRevision.current !== preview.localRevision
-                  ) {
-                    h.setError(
-                      "Конфликт: проект изменился после предпросмотра.",
-                    );
-                    return;
-                  }
-                  invalidate();
-                  h.replaceDocument(preview.document);
-                  closeModal();
-                } else {
                   const saved = doc.plan.restorePoint;
                   invalidate();
-                  const next: ProjectDocumentV3 = {
+                  const next: ProjectDocumentV4 = {
                     ...doc,
                     plan: {
                       ...doc.plan,
@@ -1369,10 +1271,9 @@ export default function GraphWorkflow({
                   h.replaceDocument(next, "restore");
                   setProjectMenu(false);
                   closeModal();
-                }
               }}
             >
-              {preview ? "Заменить открытый проект" : "Восстановить план"}
+              Восстановить план
             </button>
             <button
               onClick={() => {

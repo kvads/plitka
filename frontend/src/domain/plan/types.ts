@@ -10,6 +10,7 @@ export type WallChain = {
   startVertexId: string;
   endVertexId: string;
   segmentIds: string[];
+  thicknessMm: number;
 };
 export type DirectedSegmentRef = { segmentId: string; forward: boolean };
 export type LengthRange = { startVertexId: string; endVertexId: string };
@@ -63,8 +64,9 @@ export type FaceCandidate = {
   topologyKey: string;
   outer: DirectedSegmentRef[];
   holes: DirectedSegmentRef[][];
-  polygon: { outline: number[][]; holes: number[][][] };
-  areaMm2: number;
+  axisPolygon: { outline: number[][]; holes: number[][][] };
+  polygon: { outline: number[][]; holes: number[][][] } | null;
+  areaMm2: number | null;
   dependencyIds: string[];
   dependencyKey: string;
   geometryKey: string;
@@ -78,7 +80,10 @@ export type GraphCommand =
       type: "connect";
       fromVertexId: string;
       to: { vertexId: string } | { segmentId: string; point: Point };
+      thicknessMm: number;
     }
+  | { type: "drawWall"; start: Point; end: Point; thicknessMm: number }
+  | { type: "setWallThickness"; chainId: string; thicknessMm: number }
   | { type: "moveVertex"; vertexId: string; point: Point }
   | {
       type: "setLength";
@@ -122,19 +127,21 @@ export type GraphCommand =
       height: number;
       notchWidth?: number;
       notchHeight?: number;
+      thicknessMm: number;
     }
   | { type: "deleteRoom"; topologyKey: string; impactKey: string }
   | { type: "deleteVoid"; voidId: string; impactKey: string }
   | { type: "deleteConstraint"; constraintId: string }
   | { type: "reconcile" };
 export type GraphResponse = {
-  schemaVersion: 3;
+  schemaVersion: 4;
   requestId?: string;
   commandId?: string;
   draftRevision: number;
   basisKey: string;
   status: "valid" | "invalid" | "unresolved" | "applied";
   graph: GraphSnapshot;
+  wallArea: { outline: number[][]; holes: number[][][] }[];
   faces: FaceCandidate[];
   measurements: Measurement[];
   issues: Issue[];
@@ -172,21 +179,14 @@ export type RoomRecord = {
   confirmed: ConfirmedRoom | null;
 };
 export type GraphPending = {
-  kind: "graphV3";
+  kind: "graphV4";
   commandId: string;
   command: GraphCommand;
   basisGraph: GraphSnapshot;
   targetDraftRevision: number;
 };
-export type LegacyPending = {
-  kind: "legacyV2";
-  legacyOperation: import("../room/types").Operation;
-  legacyBasisGeometry: import("../room/types").GeometrySnapshot;
-  legacyDraftGeometry: import("../room/types").GeometrySnapshot;
-  targetDraftRevision: number;
-};
-export type ProjectDocumentV3 = {
-  schemaVersion: 3;
+export type ProjectDocumentV4 = {
+  schemaVersion: 4;
   id: string;
   name: string;
   address: string;
@@ -194,7 +194,7 @@ export type ProjectDocumentV3 = {
   plan: {
     draft: GraphSnapshot;
     draftRevision: number;
-    pendingEdit: GraphPending | LegacyPending | null;
+    pendingEdit: GraphPending | null;
     restorePoint: {
       graph: GraphSnapshot;
       bindings: { roomId: string; topologyKey: string | null }[];
@@ -211,6 +211,7 @@ export type ProjectDocumentV3 = {
     gridStepMm: number;
   };
 };
+export type ProjectDocumentV3 = ProjectDocumentV4;
 export const emptyGraph = (): GraphSnapshot => ({
   vertices: [],
   segments: [],
@@ -260,7 +261,7 @@ export interface DeletionImpact {
   disappearedRoomKeys: string[];
 }
 export interface DeletionPreviewResponse {
-  schemaVersion: 3;
+  schemaVersion: 4;
   requestId: string;
   draftRevision: number;
   basisKey: string;

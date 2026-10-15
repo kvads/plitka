@@ -20,7 +20,7 @@ async def validate_route(request:Request):
     if isinstance(req,JSONResponse):return req
     try:
         result=inspect(req.graph.model_dump(exclude_none=True))
-        payload=dict(schemaVersion=3,requestId=req.requestId,draftRevision=req.draftRevision,basisKey=req.basisKey,**result)
+        payload=dict(schemaVersion=4,requestId=req.requestId,draftRevision=req.draftRevision,basisKey=req.basisKey,**result)
         GraphResponse.model_validate(payload)
         return payload
     except Exception:
@@ -37,7 +37,7 @@ async def command_route(request:Request):
     if isinstance(req,JSONResponse):return req
     try:
         result=execute(req.graph.model_dump(exclude_none=True),req.command.model_dump(exclude_none=True),req.commandId)
-        payload=dict(schemaVersion=3,commandId=req.commandId,draftRevision=req.draftRevision,basisKey=req.basisKey,**result)
+        payload=dict(schemaVersion=4,commandId=req.commandId,draftRevision=req.draftRevision,basisKey=req.basisKey,**result)
         GraphResponse.model_validate(payload)
         return payload
     except Exception:
@@ -62,7 +62,7 @@ async def deletion_preview_route(request: Request):
             status, issues = 'ready', []
         except GeometryRejection as exc:
             impact, status, issues = None, 'invalid', exc.issues
-        return DeletionPreviewResponse(schemaVersion=3, requestId=req.requestId, draftRevision=req.draftRevision,
+        return DeletionPreviewResponse(schemaVersion=4, requestId=req.requestId, draftRevision=req.draftRevision,
             basisKey=req.basisKey, target=target, status=status, impact=impact, issues=issues).model_dump(exclude_none=False)
     except Exception:
         import logging

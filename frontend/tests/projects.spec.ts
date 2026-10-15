@@ -1,7 +1,37 @@
-import { canvasPick } from "./fixtures/projects";
+import { canvasPick, graphRectangle, openGraph, screenPoint, setSidebarOpen, stored } from "./fixtures/projects";
 import { test, expect } from "@playwright/test";
 import { initial } from "../src/types";
 import { commit, settle } from "./fixtures/projects";
+
+test("editor has no file or grid controls and a collapsed save error opens the sidebar", async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: process.env.PW_BASE_URL || "http://127.0.0.1:5173", viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  await openGraph(page, graphRectangle(), {}, false);
+  await expect(page.locator(".canvas-status")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Скачать проект", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Открыть файл", exact: true })).toHaveCount(0);
+  await expect(page.locator("input[type=file]")).toHaveCount(0);
+  await setSidebarOpen(page, true);
+  await expect(page.getByText("Шаг сетки", { exact: true })).toHaveCount(0);
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    (window as any).restoreStorage = () => { Storage.prototype.setItem = original; };
+    Storage.prototype.setItem = function (key, value) {
+      if (key === "plitka-projects-v4") throw new Error("Нет места для сохранения");
+      return original.call(this, key, value);
+    };
+  });
+  await page.getByRole("button", { name: "Увеличить", exact: true }).click();
+  await expect(page.getByText("Не сохранено", { exact: true })).toBeVisible();
+  await setSidebarOpen(page, false);
+  await expect(page.getByRole("button", { name: /Не сохранено.*открыть меню/ })).toBeVisible();
+  await page.getByRole("button", { name: /Не сохранено.*открыть меню/ }).click();
+  await expect(page.getByRole("button", { name: "Повторить сохранение", exact: true })).toBeVisible();
+  await page.evaluate(() => (window as any).restoreStorage());
+  await page.getByRole("button", { name: "Повторить сохранение", exact: true }).click();
+  await expect(page.getByText("Сохранено", { exact: true })).toBeVisible();
+  await context.close();
+});
 test("create projects, edit address and retain independent rooms", async ({
   page,
 }) => {
@@ -15,6 +45,14 @@ test("create projects, edit address and retain independent rooms", async ({
     await page.getByRole("button", { name: "Создать проект" }).click();
     await settle(page);
     if (name === "Квартира") {
+      await page.getByRole("button", { name: "Стена", exact: true }).click();
+      const start = await screenPoint(page, 0, 0);
+      const end = await screenPoint(page, 3200, 0);
+      await page.mouse.move(start.x, start.y);
+      await page.mouse.down();
+      await page.mouse.move(end.x, end.y);
+      await page.mouse.up();
+      await expect.poll(async () => (await stored(page)).plan.draft.chains.length).toBe(1);
       await page.getByRole("button", { name: "Выбрать", exact: true }).click();
       await canvasPick(page, "segment", 1);
       await commit(page, "Общая длина стены", "3175");
@@ -36,18 +74,18 @@ test("create projects, edit address and retain independent rooms", async ({
     page.getByLabel("Общая длина стены", { exact: true }),
   ).toHaveValue("3175");
 });
-test("single legacy key migrates once and is retained", async ({ page }) => {
+test("single legacy key is removed when v4 opens", async ({ page }) => {
   await page.addInitScript(
     (p) => localStorage.setItem("plitka-project-v1", JSON.stringify(p)),
     initial,
   );
   await page.goto("/");
-  await expect(page.locator(".project-row")).toHaveCount(1);
+  await expect(page.locator(".project-row")).toHaveCount(0);
   await page.reload();
-  await expect(page.locator(".project-row")).toHaveCount(1);
+  await expect(page.locator(".project-row")).toHaveCount(0);
   expect(
     await page.evaluate(() => !!localStorage.getItem("plitka-project-v1")),
-  ).toBeTruthy();
+  ).toBeFalsy();
 });
 
 import { deletionProjects, projectCatalog, openDelete } from './fixtures/projects';
@@ -73,32 +111,31 @@ for (const width of [375, 1440]) test(`delete project list confirmation and focu
 });
 test('delete project last retains backups and old URL stays missing', async ({ page }) => {
   await deletionProjects(page, 1);
-  const backup = await page.evaluate(() => localStorage.getItem('plitka-projects-v1'));
   const dialog = await openDelete(page);
   await dialog.getByRole('button', { name: 'Удалить проект', exact: true }).click();
   await expect(page.locator('.project-row')).toHaveCount(0);
   expect((await projectCatalog(page)).projects).toEqual([]);
   await page.reload();
   await expect(page.getByText('Здесь будут ваши проекты')).toBeVisible();
-  expect(await page.evaluate(() => localStorage.getItem('plitka-projects-v1'))).toBe(backup);
+  expect(await page.evaluate(() => localStorage.getItem('plitka-projects-v1'))).toBeNull();
   await page.goto('/#project/delete-0');
   await expect(page.getByText('Проект не найден.')).toBeVisible();
   await expect(page.getByRole('link', { name: 'К списку проектов' })).toBeVisible();
 });
 
-test('delete project downloaded copy imports with a new ID', async ({ page }) => {
+test('delete project serialized copy imports with a new ID', async ({ page }) => {
   await deletionProjects(page, 1);
   await page.getByRole('link', { name: 'Открыть проект Одинаковое имя' }).click();
   await settle(page);
   const original = (await projectCatalog(page)).projects[0];
-  const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Скачать проект', exact: true }).click();
-  const path = await (await download).path();
   await page.getByRole('button', { name: '← Проекты', exact: true }).click();
   const dialog = await openDelete(page);
   await dialog.getByRole('button', { name: 'Удалить проект', exact: true }).click();
   await expect(page.locator('.project-row')).toHaveCount(0);
-  await page.locator('input[type=file]').setInputFiles(path!);
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'project.json', mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify({ format: 'plitka-project', version: 4, project: original })),
+  });
   await page.getByRole('button', { name: 'Создать из файла', exact: true }).click();
   await settle(page);
   const imported = (await projectCatalog(page)).projects[0];

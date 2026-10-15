@@ -1,4 +1,4 @@
-import type { ProjectDocumentV3 } from "../../domain/plan/types";
+import type { ProjectDocumentV4 } from "../../domain/plan/types";
 export default function ProjectMenu({
   doc,
   onUpdate,
@@ -7,8 +7,8 @@ export default function ProjectMenu({
   onRestore,
   onClose,
 }: {
-  doc: ProjectDocumentV3;
-  onUpdate: (fn: (d: ProjectDocumentV3) => ProjectDocumentV3) => unknown;
+  doc: ProjectDocumentV4;
+  onUpdate: (fn: (d: ProjectDocumentV4) => ProjectDocumentV4) => unknown;
   onClear: () => void;
   onDelete: () => void;
   onRestore: () => void;

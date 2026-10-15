@@ -5,8 +5,47 @@ from shapely.geometry import Polygon
 from shapely.ops import unary_union
 from backend.main import app, Project
 from backend.planner import prepare, calculate, optimize, dominates
+from backend.geometry.faces import inspect
 
 client = TestClient(app)
+
+
+def test_physical_wall_room_uses_1900mm_inner_polygon_for_planner():
+    vertices = [{"id": f"v{i}", "x": x, "y": y} for i, (x, y) in enumerate(
+        [(0, 0), (2000, 0), (2000, 2000), (0, 2000)])]
+    segments = [{"id": f"s{i}", "startVertexId": f"v{i}",
+                 "endVertexId": f"v{(i + 1) % 4}", "chainId": f"c{i}"}
+                for i in range(4)]
+    chains = [{"id": f"c{i}", "startVertexId": segment["startVertexId"],
+               "endVertexId": segment["endVertexId"], "segmentIds": [segment["id"]],
+               "thicknessMm": 100} for i, segment in enumerate(segments)]
+    graph = {"vertices": vertices, "segments": segments, "chains": chains,
+             "voids": [], "constraints": [], "fieldInputs": {}}
+    face = inspect(graph)["faces"][0]
+    assert face["areaMm2"] == 3_610_000
+    assert face["polygon"]["outline"] != face["axisPolygon"]["outline"]
+    region, _ = prepare(project(outline=face["polygon"]["outline"], holes=face["polygon"]["holes"]))
+    assert region.area == 3_610_000
+
+
+def test_oversized_wall_room_keeps_usable_polygon_but_blocks_planning():
+    import math
+    count = 101
+    vertices = [{"id": f"v{i}", "x": 1000 * math.cos(2 * math.pi * i / count),
+                 "y": 1000 * math.sin(2 * math.pi * i / count)} for i in range(count)]
+    segments = [{"id": f"s{i}", "startVertexId": f"v{i}",
+                 "endVertexId": f"v{(i + 1) % count}", "chainId": f"c{i}"}
+                for i in range(count)]
+    chains = [{"id": f"c{i}", "startVertexId": segment["startVertexId"],
+               "endVertexId": segment["endVertexId"], "segmentIds": [segment["id"]],
+               "thicknessMm": 100} for i, segment in enumerate(segments)]
+    graph = {"vertices": vertices, "segments": segments, "chains": chains,
+             "voids": [], "constraints": [], "fieldInputs": {}}
+    face = inspect(graph)["faces"][0]
+    assert face["polygon"] is not None
+    assert face["areaMm2"] > 0
+    assert face["validation"]["valid"] is False
+    assert any(item["code"] == "planner_limit" for item in face["validation"]["issues"])
 
 def project(**kw):
     return Project(**({'outline':[(0,0),(1200,0),(1200,1200),(0,1200)],'tile':600,'gap':0,'grout':0} | kw))

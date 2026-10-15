@@ -71,7 +71,8 @@ def cascade(basis, segment_ids, vertex_ids, command_id, remove_orphans=False):
                 if segment['id'] in group:
                     segment['chainId'] = cid
             g['chains'].append(dict(id=cid, startVertexId=by_segment[group[0]]['startVertexId'],
-                                    endVertexId=by_segment[group[-1]]['endVertexId'], segmentIds=group))
+                                    endVertexId=by_segment[group[-1]]['endVertexId'], segmentIds=group,
+                                    thicknessMm=chain['thicknessMm']))
     remove_raw(g, affected | conditions | voids)
     GraphSnapshot.model_validate(g)
     return g, dict(segmentIds=sorted(segments), vertexIds=sorted(vertices), retiredChainIds=sorted(retired),

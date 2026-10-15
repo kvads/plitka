@@ -9,18 +9,15 @@ import type { DeletionTarget, DeletionPreviewResponse } from "./types";
 import { useState, useRef, useEffect } from "react";
 import { api } from "../../api";
 import type {
-  ProjectDocumentV3,
+  ProjectDocumentV4,
   GraphResponse,
   GraphCommand,
   GraphSnapshot,
   RoomRecord,
 } from "./types";
-import { candidateCollisions } from "./vertex-safety";
 import { dimensionCommand } from "./types";
 import { bindRooms } from "./rooms";
-import { saveV3, deleteV3, KEY, readV3 } from "./storage";
-import { convertGraph } from "./migration";
-import type { GeometryResponse } from "../room/types";
+import { saveV4, deleteV4, KEY, readV4 } from "./storage";
 export function applyCondition(
   g: GraphSnapshot,
   c: GraphCommand,
@@ -76,8 +73,8 @@ export function applyCondition(
   return next;
 }
 export function useGraphProject(
-  initial: ProjectDocumentV3,
-  onSaved: (d: ProjectDocumentV3) => void,
+  initial: ProjectDocumentV4,
+  onSaved: (d: ProjectDocumentV4) => void,
   onRemoved: (outcome: DeleteProjectOutcome) => void,
 ) {
   const [doc, setDoc] = useState(initial),
@@ -108,7 +105,7 @@ export function useGraphProject(
     removed = useRef(false),
     removalCallback = useRef(onRemoved);
   removalCallback.current = onRemoved;
-  const install = (d: ProjectDocumentV3) => {
+  const install = (d: ProjectDocumentV4) => {
     ref.current = d;
     setDoc(d);
   };
@@ -127,7 +124,7 @@ export function useGraphProject(
     setDeletion(null);
     setBusy(false);
   };
-  const persist = (d: ProjectDocumentV3) => {
+  const persist = (d: ProjectDocumentV4) => {
     if (removing.current || removed.current) return;
     const ticket = ++writeEpoch.current;
     writes.current++;
@@ -139,12 +136,12 @@ export function useGraphProject(
           if (alive.current) {
             setSaved("Не сохранено");
             setError(
-              "Конфликт: проект изменён в другой вкладке. Скачайте мой черновик.",
+              "Конфликт: проект изменён в другой вкладке. Загрузите сохранённую версию.",
             );
           }
           return;
         }
-        const result = await saveV3(
+        const result = await saveV4(
           { ...d, documentRevision: revision.current },
           revision.current,
           () => ticket === writeEpoch.current && !conflict.current && !removing.current && !removed.current,
@@ -168,7 +165,7 @@ export function useGraphProject(
     });
   };
   const update = (
-    fn: (d: ProjectDocumentV3) => ProjectDocumentV3,
+    fn: (d: ProjectDocumentV4) => ProjectDocumentV4,
     undo: boolean | "clearProject" = false,
   ) => {
     if (removing.current || removed.current) return ref.current;
@@ -187,7 +184,7 @@ export function useGraphProject(
     persist(next);
     return next;
   };
-  const accept = async (r: GraphResponse, d: ProjectDocumentV3) => bindRooms(d, r.faces);
+  const accept = async (r: GraphResponse, d: ProjectDocumentV4) => bindRooms(d, r.faces);
   const validate = async (d = ref.current) => {
     if (removing.current || removed.current) return;
     const token = ++generation.current,
@@ -195,7 +192,7 @@ export function useGraphProject(
     setBusy(true);
     try {
       const r = await api<GraphResponse>("plan/validate", {
-        schemaVersion: 3,
+        schemaVersion: 4,
         requestId: crypto.randomUUID(),
         draftRevision: d.plan.draftRevision,
         basisKey: JSON.stringify(d.plan.draft),
@@ -230,20 +227,14 @@ export function useGraphProject(
     alive.current = true;
     void validate();
     const storage = (e: StorageEvent) => {
-      if (e.key === "plitka-projects-v2") {
-        conflict.current = true;
-        setError(
-          "Старый редактор изменил v2. Скачайте мой черновик и перезагрузите сохранённую версию.",
-        );
-        setSaved("Не сохранено");
-      } else if (e.key === KEY) {
+      if (e.key === KEY) {
         try {
-          const d = readV3().find((x) => x.id === ref.current.id);
-          if (!d) { finishRemoval({ status: "alreadyMissing", projectId: ref.current.id, projects: readV3() }); return; }
+          const d = readV4().find((x) => x.id === ref.current.id);
+          if (!d) { finishRemoval({ status: "alreadyMissing", projectId: ref.current.id, projects: readV4() }); return; }
           if (d && d.documentRevision !== revision.current) {
             conflict.current = true;
             setError(
-              "Конфликт: проект изменён в другой вкладке. Скачайте мой черновик.",
+              "Конфликт: проект изменён в другой вкладке. Загрузите сохранённую версию.",
             );
             setSaved("Не сохранено");
           }
@@ -272,17 +263,17 @@ export function useGraphProject(
     if (
       !retry &&
       previous &&
-      (previous.kind === "legacyV2" || !dimensionCommand(previous.command))
+      !dimensionCommand(previous.command)
     ) {
       setError("Сначала повторите или отмените незавершённое действие.");
       return;
     }
     const basis =
-        retry && previous?.kind === "graphV3"
+        retry && previous?.kind === "graphV4"
           ? previous.basisGraph
           : structuredClone(current.plan.draft),
       commandId =
-        retry && previous?.kind === "graphV3"
+        retry && previous?.kind === "graphV4"
           ? previous.commandId
           : crypto.randomUUID(),
       rev = current.plan.draftRevision + 1;
@@ -299,7 +290,7 @@ export function useGraphProject(
           draft,
           draftRevision: rev,
           pendingEdit: {
-            kind: "graphV3",
+            kind: "graphV4",
             commandId,
             command,
             basisGraph: basis,
@@ -316,14 +307,17 @@ export function useGraphProject(
     setError("");
     try {
       const r = await api<GraphResponse>("plan/command", {
-        schemaVersion: 3,
+        schemaVersion: 4,
         commandId,
         draftRevision: rev,
         basisKey: JSON.stringify(basis),
         graph: { ...basis, fieldInputs: draft.fieldInputs },
         command,
       });
-      if (token !== generation.current || !isCurrent(capturedEpoch)) return;
+      if (token !== generation.current || !isCurrent(capturedEpoch) ||
+          r.commandId !== commandId || r.draftRevision !== rev ||
+          r.basisKey !== JSON.stringify(basis) ||
+          ref.current.plan.draftRevision !== rev) return;
       let next = {
         ...ref.current,
         plan: {
@@ -403,12 +397,8 @@ export function useGraphProject(
     if (removing.current || removed.current) return;
     generation.current++;
     const p = ref.current.plan.pendingEdit;
-    const old = p
-      ? p.kind === "graphV3"
-        ? p.basisGraph
-        : convertGraph(p.legacyBasisGeometry, ref.current.id)
-      : null;
-    let next: ProjectDocumentV3 | undefined;
+    const old = p?.basisGraph ?? null;
+    let next: ProjectDocumentV4 | undefined;
     if (
       old &&
       history.current.at(-1)?.kind === "edit" &&
@@ -440,79 +430,9 @@ export function useGraphProject(
   };
   const retry = async () => {
     if (removing.current || removed.current) return;
-    const p = ref.current.plan.pendingEdit;
-    if (!p) {
-      void validate();
-      return;
-    }
-    if (p.kind === "graphV3") {
-      void execute(p.command, undefined, true);
-      return;
-    }
-    const d = ref.current,
-      token = ++generation.current,
-      capturedEpoch = epoch.current;
-    setBusy(true);
-    try {
-      const r = await api<GeometryResponse>("geometry/solve", {
-        requestId: crypto.randomUUID(),
-        draftRevision: d.plan.draftRevision,
-        geometry: {
-          ...p.legacyDraftGeometry,
-          fieldInputs: Object.fromEntries(
-            Object.entries(p.legacyDraftGeometry.fieldInputs).filter(
-              ([key, value]) => {
-                const op = p.legacyOperation;
-                return !(
-                  key.startsWith(
-                    (op.wallId || op.vertexId || "__none__") + ":",
-                  ) &&
-                  value.trim() &&
-                  Number.isFinite(Number(value.replace(",", ".")))
-                );
-              },
-            ),
-          ),
-        },
-        operation: p.legacyOperation,
-      });
-      if (
-        token !== generation.current ||
-        !isCurrent(capturedEpoch) ||
-        !r.geometry
-      )
-        return;
-      const candidate = convertGraph(r.geometry, d.id);
-      const collisions = candidateCollisions(
-        convertGraph(p.legacyBasisGeometry, d.id),
-        candidate,
-      );
-      if (collisions.length) {
-        const c = collisions[0];
-        setError(
-          `Правка создаёт совпадение вершин ${c.vertexIds.join(" и ")} в (${c.x}; ${c.y}) мм. Исправьте или отмените действие.`,
-        );
-        return;
-      }
-      const next = update((d) => ({
-        ...d,
-        plan: {
-          ...d.plan,
-          draft: {
-            ...candidate,
-            fieldInputs: convertGraph(p.legacyDraftGeometry, d.id).fieldInputs,
-          },
-          pendingEdit: r.validation.status === "valid" ? null : p,
-        },
-      }));
-      await validate(next);
-    } catch (e) {
-      if (token === generation.current && isCurrent(capturedEpoch))
-        setError((e as Error).message);
-    } finally {
-      if (token === generation.current && isCurrent(capturedEpoch))
-        setBusy(false);
-    }
+    const pending = ref.current.plan.pendingEdit;
+    if (pending) void execute(pending.command, undefined, true);
+    else void validate();
   };
   const clearProject = () => {
     if (removing.current || removed.current) return;
@@ -572,7 +492,7 @@ export function useGraphProject(
           },
     );
   };
-  const replaceDocument = (next: ProjectDocumentV3, reason = "import") => {
+  const replaceDocument = (next: ProjectDocumentV4, reason = "import") => {
     if (removing.current || removed.current) return ref.current;
     resetLifecycle();
     const result = update(
@@ -609,11 +529,11 @@ export function useGraphProject(
   const deleteProject = async (intent: DeleteProjectIntent): Promise<DeleteProjectOutcome> => {
     if (removed.current || removing.current) throw new Error('Удаление уже выполняется.');
     if (intent.localRevision !== undefined && intent.localRevision !== localRevision.current)
-      return { status: 'conflict', projectId: ref.current.id, projects: readV3(),
+      return { status: 'conflict', projectId: ref.current.id, projects: readV4(),
         current: { ...ref.current, documentRevision: revision.current } };
     removing.current = true; writeEpoch.current++; resetLifecycle(); notify("deleteAttempt");
     try {
-      const outcome = await deleteV3(intent.projectId, intent.expectedRevision);
+      const outcome = await deleteV4(intent.projectId, intent.expectedRevision);
       if (outcome.status === 'conflict') { conflict.current = true; return outcome; }
       finishRemoval(outcome); return outcome;
     } finally { removing.current = false; }

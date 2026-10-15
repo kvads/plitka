@@ -4,14 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import App from "./components/canvas/GraphWorkflow";
 import {
   KEY,
-  readV3 as readProjects,
-  saveV3 as saveDocument,
-  initializeV3,
-  importV3 as importDocument,
+  readV4 as readProjects,
+  saveV4 as saveDocument,
+  initializeV4,
+  importV4 as importDocument,
 } from "./domain/plan/storage";
-import { createV3 as createDocument } from "./domain/plan/migration";
-import { download } from "./domain/project/import-export";
-import type { ProjectDocumentV3 as ProjectDocument } from "./domain/plan/types";
+import { createV4 as createDocument } from "./domain/plan/migration";
+import type { ProjectDocumentV4 as ProjectDocument } from "./domain/plan/types";
 const routeId = () =>
   location.hash.startsWith("#project/") ? location.hash.slice(9) : "";
 export default function Projects() {
@@ -22,7 +21,7 @@ export default function Projects() {
   });
   useEffect(() => {
     let active = true;
-    initializeV3()
+    initializeV4()
       .then((rows) => {
         if (active) {
           setLoaded({ rows, error: "", ready: true });
@@ -171,22 +170,6 @@ export default function Projects() {
         {error && (
           <div className="error" role="alert">
             {error}
-            {loaded.error && (
-              <button
-                onClick={() =>
-                  download(
-                    "plitka-recovery.json",
-                    JSON.stringify({
-                      v2: localStorage.getItem("plitka-projects-v2"),
-                      v1: localStorage.getItem("plitka-projects-v1"),
-                      legacy: localStorage.getItem("plitka-project-v1"),
-                    }),
-                  )
-                }
-              >
-                Скачать исходные данные
-              </button>
-            )}
           </div>
         )}
         {preview && (

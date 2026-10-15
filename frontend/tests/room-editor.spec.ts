@@ -23,7 +23,7 @@ test("graph API derives rooms and preserves independent points", async ({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         requestId: "test-validate",
         draftRevision: 0,
         basisKey: "basis",
@@ -46,7 +46,7 @@ test("graph API explicit hole excludes inner room", async ({ page }) => {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            schemaVersion: 3,
+            schemaVersion: 4,
             requestId: "hole-test",
             draftRevision: 0,
             basisKey: "basis",
@@ -57,7 +57,7 @@ test("graph API explicit hole excludes inner room", async ({ page }) => {
     graphWithVoid(),
   );
   expect(result.faces).toHaveLength(1);
-  expect(result.faces[0].areaMm2).toBe(11750000);
+  expect(result.faces[0].areaMm2).toBe(10950000);
   expect(result.faces[0].validation.valid).toBeTruthy();
 });
 test("graph command adds independent vertex on closed plan", async ({
@@ -69,7 +69,7 @@ test("graph command adds independent vertex on closed plan", async ({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         commandId: "add-test",
         draftRevision: 1,
         basisKey: "basis",
@@ -93,7 +93,7 @@ test("graph splits measured wall and preserves total", async ({ page }) => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          schemaVersion: 3,
+          schemaVersion: 4,
           commandId: id,
           draftRevision: 1,
           basisKey: "test",
@@ -115,6 +115,7 @@ test("graph splits measured wall and preserves total", async ({ page }) => {
       graph,
       {
         type: "connect",
+        thicknessMm: 100,
         fromVertexId: "free-tip",
         to: { segmentId: "as0", point: { x: 1500, y: 0 } },
       },
@@ -158,7 +159,7 @@ test("graph UI numeric vertices persist and connect explicitly", async ({
     .poll(() =>
       page.evaluate(
         () =>
-          JSON.parse(localStorage.getItem("plitka-projects-v3")!).projects[0]
+          JSON.parse(localStorage.getItem("plitka-projects-v4")!).projects[0]
             .plan.draft.vertices.length,
       ),
     )
@@ -175,7 +176,7 @@ test("graph UI numeric vertices persist and connect explicitly", async ({
     .poll(() =>
       page.evaluate(
         () =>
-          JSON.parse(localStorage.getItem("plitka-projects-v3")!).projects[0]
+          JSON.parse(localStorage.getItem("plitka-projects-v4")!).projects[0]
             .plan.draft.segments.length,
       ),
     )
@@ -196,6 +197,7 @@ test("graph measured 4000 wall solves 1500 segment and resplit retains range", a
   });
   let r = await graphCommand(page, g, {
     type: "connect",
+        thicknessMm: 100,
     fromVertexId: "tip",
     to: { segmentId: "as0", point: { x: 2000, y: 0 } },
   });
@@ -219,6 +221,7 @@ test("graph measured 4000 wall solves 1500 segment and resplit retains range", a
   r.graph.vertices.push({ id: "tip2", x: 500, y: -1000 });
   r = await graphCommand(page, r.graph, {
     type: "connect",
+        thicknessMm: 100,
     fromVertexId: "tip2",
     to: { segmentId: sid, point: { x: 500, y: 0 } },
   });
@@ -241,6 +244,7 @@ test("graph multiple crossing nodes and deterministic replay", async ({
   );
   const c = {
     type: "connect",
+        thicknessMm: 100,
     fromVertexId: "left",
     to: { vertexId: "right" },
   };
@@ -259,13 +263,13 @@ test("graph rectangle and parallelogram preserve physical area", async ({
 }) => {
   await page.goto("/");
   const rectangle = await graphValidate(page, graphRectangle(4200, 3600));
-  expect(rectangle.faces[0].areaMm2 / 1e6).toBeCloseTo(15.12, 6);
+  expect(rectangle.faces[0].areaMm2 / 1e6).toBeCloseTo(14.35, 6);
   const g = graphRectangle();
   g.vertices[2] = { ...g.vertices[2], x: 5500, y: 1500 * Math.sqrt(3) };
   g.vertices[3] = { ...g.vertices[3], x: 1500, y: 1500 * Math.sqrt(3) };
   const r = await graphValidate(page, g);
   expect(r.faces[0].validation.valid).toBeTruthy();
-  expect(r.faces[0].areaMm2 / 1e6).toBeCloseTo(10.392305, 3);
+  expect(r.faces[0].areaMm2 / 1e6).toBeCloseTo(9.703852, 3);
 });
 test("graph conflicts retain desired values and can repair another constraint", async ({
   page,
@@ -413,7 +417,7 @@ test("graph solves measured parallelogram and directed 270 degree sector", async
   });
   const r = await graphCommand(page, g, { type: "reconcile" });
   expect(r.status).toBe("applied");
-  expect(r.faces[0].areaMm2 / 1e6).toBeCloseTo(10.392305, 3);
+  expect(r.faces[0].areaMm2 / 1e6).toBeCloseTo(9.703852, 3);
   const angle = await graphCommand(page, graphRectangle(), {
     type: "setAngle",
     constraintId: "reflex",
@@ -608,7 +612,7 @@ for (const short of [false, true])
     await expect(card).toBeVisible();
     await card.click();
     await expect(page.getByLabel("Вершина", { exact: true })).toHaveCount(0);
-    await expect(page.getByLabel("Стена", { exact: true })).toHaveCount(0);
+    await expect(page.locator(".canvas-panel").getByLabel("Стена", { exact: true })).toHaveCount(0);
     await expect(page.locator("[data-diagnostic-vertex]")).toHaveCount(2);
     await expect(page.locator('[data-diagnostic-wall="zero"]')).toHaveCount(1);
     expect((await stored(page)).plan.draft).toEqual(g);
@@ -672,15 +676,17 @@ for (const pointerType of ["mouse", "touch", "pen"])
         pointerType,
         button: 0,
         clientX: center.x + d,
-        clientY: center.y,
+        clientY: center.y + (pointerType === "touch" ? 48 : 0),
       });
       await svg.dispatchEvent("pointerup", {
         pointerId: 1,
         pointerType,
         button: 0,
         clientX: center.x + d,
-        clientY: center.y,
+        clientY: center.y + (pointerType === "touch" ? 48 : 0),
       });
+      if (pointerType === "touch")
+        await page.getByRole("button", { name: "Поставить вершину", exact: true }).click();
       await expect(page.getByRole("alert")).toContainText(/вершине|вершина/);
       expect((await stored(page)).plan).toEqual(before.plan);
       expect(commands).toBe(0);
@@ -690,15 +696,17 @@ for (const pointerType of ["mouse", "touch", "pen"])
       pointerType,
       button: 0,
       clientX: center.x + 13,
-      clientY: center.y,
+      clientY: center.y + (pointerType === "touch" ? 48 : 0),
     });
     await svg.dispatchEvent("pointerup", {
       pointerId: 1,
       pointerType,
       button: 0,
       clientX: center.x + 13,
-      clientY: center.y,
+      clientY: center.y + (pointerType === "touch" ? 48 : 0),
     });
+    if (pointerType === "touch")
+      await page.getByRole("button", { name: "Поставить вершину", exact: true }).click();
     await expect
       .poll(async () => (await stored(page)).plan.draft.vertices.length)
       .toBe(2);
@@ -711,6 +719,7 @@ for (const shape of ["rectangle", "lShape"])
     const g = graphSafetyPoints();
     const r = await graphCommand(page, g, {
       type: "addTemplate",
+      thicknessMm: 100,
       shape,
       origin: { x: 2500, y: 1800 },
       width: 1000,
@@ -895,6 +904,7 @@ test("safety ambiguous junction rejects all splits without merging old vertices"
   );
   const r = await graphCommand(page, g, {
     type: "connect",
+        thicknessMm: 100,
     fromVertexId: "from",
     to: { segmentId: "s", point: { x: 500, y: 0 } },
   });
@@ -909,6 +919,7 @@ test("safety ambiguous junction rejects all splits without merging old vertices"
   unique.vertices = unique.vertices.filter((v) => v.id !== "j2");
   const good = await graphCommand(page, unique, {
     type: "connect",
+        thicknessMm: 100,
     fromVertexId: "from",
     to: { segmentId: "s", point: { x: 500, y: 0 } },
   });
@@ -959,6 +970,8 @@ for (const mode of ["drag", "numeric command"])
       .not.toBeNull();
     await settle(page);
     expect((await stored(page)).plan.draft.vertices).toEqual(g.vertices);
+    const parameters = page.getByRole("button", { name: "Параметры", exact: true });
+    if (await parameters.getAttribute("aria-expanded") === "false") await parameters.click();
     await expect(page.locator(".geometry-issues")).toContainText(
       "b и obstacle",
     );
@@ -1003,6 +1016,7 @@ for (const mode of [
         startVertexId: "b",
         endVertexId: "tip",
         segmentIds: ["s2"],
+        thicknessMm: 100,
       });
       command = {
         type: mode,
@@ -1064,7 +1078,7 @@ test("safety mobile diagnostic stays visible above menus and touch radius uses C
   browser,
 }) => {
   const context = await browser.newContext({
-    baseURL: "http://127.0.0.1:5173",
+    baseURL: process.env.PW_BASE_URL || "http://127.0.0.1:5173",
     viewport: { width: 375, height: 900 },
     deviceScaleFactor: 2,
     hasTouch: true,
@@ -1087,7 +1101,8 @@ test("safety mobile diagnostic stays visible above menus and touch radius uses C
     .getByRole("button", { name: "Добавить вершину", exact: true })
     .tap();
   const c = await screenPoint(page, 0, 0);
-  await page.touchscreen.tap(c.x, c.y);
+  await page.touchscreen.tap(c.x, c.y + 48);
+  await page.getByRole("button", { name: "Поставить вершину", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("уже есть");
   expect((await stored(page)).plan.draft).toEqual(g);
   const radius = await page
@@ -1105,7 +1120,7 @@ test("context direct canvas selection replaces lists and presets; deleting close
   page,
 }) => {
   await openGraph(page, graphRectangle());
-  await expect(page.getByLabel("Стена", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".canvas-panel").getByLabel("Стена", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Вершина", { exact: true })).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Прямоугольник", exact: true }),
@@ -1400,7 +1415,7 @@ test("context range survives an accepted internal split and closes on imported r
   const { importFile } = await import("./fixtures/projects");
   await importFile(page, {
     format: "plitka-project",
-    version: 3,
+    version: 4,
     project: document,
   });
   await expect(page.getByLabel("Длина диапазона", { exact: true })).toHaveCount(
@@ -1546,7 +1561,7 @@ test("context range closes when explicit restoration removes its chain", async (
   await page.getByRole("button", { name: "Проект", exact: true }).click();
   await page
     .getByRole("button", {
-      name: "Вернуть план к последнему подтверждению",
+      name: "Вернуть план к сохранённому снимку",
       exact: true,
     })
     .click();

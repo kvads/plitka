@@ -28,7 +28,6 @@ test("optimize inspect shift lock and export", async ({ page }) => {
   for (const name of [
     "План с размерами · SVG",
     "Таблица деталей · CSV",
-    "Скачать проект",
   ]) {
     const wait = page.waitForEvent("download");
     await page.getByRole("button", { name, exact: true }).click();
@@ -37,7 +36,7 @@ test("optimize inspect shift lock and export", async ({ page }) => {
   await settle(page);
   await page.reload();
   await expect(
-    page.getByRole("heading", { name: "Правила", exact: true }),
+    page.getByRole("heading", { name: "Варианты", exact: true }),
   ).toBeVisible();
   await expect(page.locator(".variant-list button")).toHaveCount(0);
 });
@@ -88,8 +87,8 @@ test("late optimize cannot reopen results after navigating back", async ({
   await page.getByRole("button", { name: "Назад", exact: true }).click();
   release();
   await expect(
-    page.getByRole("heading", { name: "Плитка", exact: true }),
-  ).toBeVisible();
+    page.getByRole("button", { name: "1. План", exact: true }),
+  ).toHaveAttribute("aria-current", "step");
   await expect(page.locator(".variant-list button")).toHaveCount(0);
 });
 test("failed shift blocks export until cancelled", async ({ page }) => {
@@ -144,8 +143,9 @@ test("editing inputs invalidates variants while navigation retains them", async 
   await page.getByRole("button", { name: /Варианты/ }).click();
   await expect(page.locator(".variant-list button").first()).toBeVisible();
   await page.getByRole("button", { name: "Назад", exact: true }).click();
+  await page.getByRole("button", { name: "2. Варианты", exact: true }).click();
   await commit(page, "Угол укладки", "45");
-  await expect(page.getByRole("button", { name: /Варианты/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "План с размерами · SVG", exact: true })).toBeDisabled();
   await settle(page);
   expect((await stored(page)).rooms[0].rules.angle).toBe(45);
 });
@@ -181,24 +181,19 @@ test("release fixed and undo cannot revive old results", async ({ page }) => {
   await openGraph(page, graphMeasured());
   await toRules(page);
   await calculate(page);
-  await page.getByRole("button", { name: "1. Объект", exact: true }).click();
+  await page.getByRole("button", { name: "1. План", exact: true }).click();
   await canvasPick(page, "constraint", "length4000");
   await page
     .getByRole("button", { name: "Снять фиксацию", exact: true })
     .click();
   await settle(page);
   await confirmRoom(page);
-  await expect(
-    page.getByRole("button", { name: "4. Варианты", exact: true }),
-  ).toBeDisabled();
   await page
     .getByRole("button", { name: "Отменить правку", exact: true })
     .click();
   await settle(page);
-  await expect(
-    page.getByRole("button", { name: "4. Варианты", exact: true }),
-  ).toBeDisabled();
   await toRules(page);
+  await expect(page.getByRole("button", { name: "Таблица деталей · CSV", exact: true })).toBeDisabled();
   await calculate(page);
   await expect(
     page.getByRole("button", { name: "Таблица деталей · CSV", exact: true }),
@@ -210,13 +205,13 @@ test("independent point temporarily suspends export but preserves result", async
   await openProject(page);
   await toRules(page);
   await calculate(page);
-  await page.getByRole("button", { name: "1. Объект", exact: true }).click();
+  await page.getByRole("button", { name: "1. План", exact: true }).click();
   await page
     .getByRole("button", { name: "Добавить вершину", exact: true })
     .click();
   await addPoint(page, 7000, 2000);
   await settle(page);
-  await page.getByRole("button", { name: "4. Варианты", exact: true }).click();
+  await page.getByRole("button", { name: "2. Варианты", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Таблица деталей · CSV", exact: true }),
   ).toBeEnabled();
@@ -230,25 +225,20 @@ test("deletion condition without coordinate change invalidates results through U
   await toRules(page);
   await calculate(page);
   const before = (await stored(page)).plan.draft.vertices;
-  await page.getByRole("button", { name: "1. Объект", exact: true }).click();
+  await page.getByRole("button", { name: "1. План", exact: true }).click();
   await canvasPick(page, "constraint", "length4000");
   await page
     .getByRole("button", { name: "Удалить условие", exact: true })
     .click();
   await settle(page);
   expect((await stored(page)).plan.draft.vertices).toEqual(before);
-  await expect(
-    page.getByRole("button", { name: "4. Варианты", exact: true }),
-  ).toBeDisabled();
   await page
     .getByRole("button", { name: "Отменить правку", exact: true })
     .click();
   await settle(page);
   await confirmRoom(page);
-  await expect(
-    page.getByRole("button", { name: "4. Варианты", exact: true }),
-  ).toBeDisabled();
-  await page.getByRole("button", { name: "3. Правила", exact: true }).click();
+  await toRules(page);
+  await expect(page.getByRole("button", { name: "Таблица деталей · CSV", exact: true })).toBeDisabled();
   await calculate(page);
   const download = page.waitForEvent("download");
   await page
@@ -287,7 +277,7 @@ test("deletion shared room makes neighbour unready and Undo requires a new calcu
   await canvasPick(page, "room", 1);
   await toRules(page);
   await calculate(page);
-  await page.getByRole("button", { name: "1. Объект", exact: true }).click();
+  await page.getByRole("button", { name: "1. План", exact: true }).click();
   await page
     .getByRole("button", { name: "Выбрать помещение", exact: true })
     .click();
@@ -302,21 +292,16 @@ test("deletion shared room makes neighbour unready and Undo requires a new calcu
   const after = await stored(page);
   expect(after.rooms).toHaveLength(1);
   expect(after.rooms[0].binding).toBe("detached");
-  await expect(
-    page.getByRole("button", { name: "2. Плитка", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("button", { name: "4. Варианты", exact: true }),
-  ).toBeDisabled();
+  await page.getByRole("button", { name: "2. Варианты", exact: true }).click();
+  await expect(page.getByText("Выберите замкнутое помещение для подбора.", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "1. План", exact: true }).click();
   await page
     .getByRole("button", { name: "Отменить правку", exact: true })
     .click();
   await settle(page);
   await confirmRoom(page);
-  await expect(
-    page.getByRole("button", { name: "4. Варианты", exact: true }),
-  ).toBeDisabled();
-  await page.getByRole("button", { name: "3. Правила", exact: true }).click();
+  await toRules(page);
+  await expect(page.getByRole("button", { name: "План с размерами · SVG", exact: true })).toBeDisabled();
   await calculate(page);
   await expect(
     page.getByRole("button", { name: "План с размерами · SVG", exact: true }),

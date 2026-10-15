@@ -17,7 +17,7 @@ def junction_vertex(g,p,command_id,role):
             'В месте сочленения несколько вершин. Сначала явно исправьте их положение.', sorted(v['id'] for v in matches))])
     return matches[0]['id'] if matches else add_vertex(g,p,command_id,role)
 
-def connect(g,from_id,to,command_id):
+def connect(g,from_id,to,command_id,thickness_mm):
     vs,ss,cs=maps(g)
     if from_id not in vs:raise ValueError('Начальная вершина не найдена')
     if 'vertexId' in to:
@@ -36,7 +36,7 @@ def connect(g,from_id,to,command_id):
         if inter.geom_type!='Point':raise ValueError('Стены накладываются друг на друга')
         vid=junction_vertex(g,dict(x=inter.x,y=inter.y),command_id,'intersection:'+str(round(inter.x,7))+':'+str(round(inter.y,7)))
         cuts.setdefault(old['id'],[(0,old['startVertexId']),(l.length,old['endVertexId'])]).append((l.project(inter),vid));cuts[sid].append((new_line.project(inter),vid))
-    g['segments'].append(new);g['chains'].append(dict(id=cid,startVertexId=from_id,endVertexId=end,segmentIds=[sid]))
+    g['segments'].append(new);g['chains'].append(dict(id=cid,startVertexId=from_id,endVertexId=end,segmentIds=[sid],thicknessMm=thickness_mm))
     originals={s['id']:copy.deepcopy(s) for s in g['segments']};split={};replacement={}
     for oldid,points in cuts.items():
         old=originals[oldid];ordered=[]
@@ -60,3 +60,34 @@ def connect(g,from_id,to,command_id):
             for k in ['firstSegmentId','secondSegmentId']:
                 if t[k] in replacement:t[k]=next(s['id'] for s in replacement[t[k]] if t['vertexId'] in (s['startVertexId'],s['endVertexId']))
     return split
+
+
+def draw_wall(g, start, end, thickness_mm, command_id):
+    axis=LineString([(start['x'],start['y']),(end['x'],end['y'])])
+    if axis.length<EPS:raise ValueError('Нельзя создать нулевую стену')
+    vertices,segments,_=maps(g)
+    contacts=[]
+    for segment in segments.values():
+        overlap=axis.intersection(line(segment,vertices))
+        if overlap.is_empty:continue
+        if overlap.geom_type!='Point':
+            raise GeometryRejection([issue('overlap','Стены накладываются друг на друга',[segment['id']])])
+        distance=axis.project(overlap)
+        if distance>EPS:
+            contacts.append((distance,segment['id'],overlap))
+    contacts.sort(key=lambda item:(item[0],item[1]))
+    # A near-parallel physical collision without an axis crossing is not a joint.
+    from .wall_geometry import wall_area
+    occupied=wall_area(g)
+    starts_on_axis = any(line(segment, vertices).distance(Point(start['x'], start['y'])) < EPS
+                         for segment in segments.values())
+    if not contacts and not starts_on_axis and not occupied.is_empty:
+        new_band=axis.buffer(thickness_mm/2,cap_style=2,join_style=2)
+        if new_band.intersection(occupied).area>EPS:
+            raise GeometryRejection([issue('physical_overlap','Новая стена накладывается на существующую',[])])
+    start_id=junction_vertex(g,start,command_id,'start')
+    if contacts:
+        _,sid,point=contacts[0]
+        return connect(g,start_id,{'segmentId':sid,'point':{'x':point.x,'y':point.y}},command_id,thickness_mm)
+    end_id=junction_vertex(g,end,command_id,'end')
+    return connect(g,start_id,{'vertexId':end_id},command_id,thickness_mm)

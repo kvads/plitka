@@ -16,5 +16,11 @@ frontend/playwright-report/
 !.env.example
 !.env.production.example
 .DS_Store
+Thumbs.db
 *.tmp
 *.swp
+build/
+venv/
+.vscode/
+.idea/
+.serena/

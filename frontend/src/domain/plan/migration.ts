@@ -11,6 +11,7 @@ import type {
 } from "./types";
 import { newRoom } from "./rooms";
 import { parseV3 } from "./schema";
+import { emptyGraph, type ProjectDocumentV4 } from "./types";
 export function convertGraph(
   g: GeometrySnapshot,
   projectId: string,
@@ -57,6 +58,7 @@ export function convertGraph(
         startVertexId: wall.startVertexId,
         endVertexId: wall.endVertexId,
         segmentIds: [wall.id],
+        thicknessMm: 100,
       });
     }
     if (contour.kind === "hole")
@@ -261,9 +263,8 @@ export async function migrateV2(value: unknown): Promise<ProjectDocumentV3> {
     if (valid && geometryKey(old.room.draft) === geometryKey(c.geometry))
       room.acknowledgment = room.confirmed.acknowledgment;
   }
-  const pending = old.room.pendingEdit;
   return parseV3({
-    schemaVersion: 3,
+    schemaVersion: 4,
     id: old.id,
     name: old.name,
     address: old.address,
@@ -271,15 +272,7 @@ export async function migrateV2(value: unknown): Promise<ProjectDocumentV3> {
     plan: {
       draft: g,
       draftRevision: old.room.draftRevision,
-      pendingEdit: pending
-        ? {
-            kind: "legacyV2",
-            legacyOperation: pending.operation,
-            legacyBasisGeometry: pending.basisGeometry,
-            legacyDraftGeometry: old.room.draft,
-            targetDraftRevision: pending.targetDraftRevision,
-          }
-        : null,
+      pendingEdit: null,
       restorePoint: room.confirmed
         ? {
             graph: room.confirmed.graph,
@@ -310,4 +303,19 @@ export async function createV3(
       id as ReturnType<typeof crypto.randomUUID> | undefined,
     ),
   );
+}
+
+export function createV4(name: string, address = "", id = crypto.randomUUID()): ProjectDocumentV4 {
+  return {
+    schemaVersion: 4,
+    id,
+    name,
+    address,
+    documentRevision: 0,
+    plan: { draft: emptyGraph(), draftRevision: 0, pendingEdit: null, restorePoint: null },
+    rooms: [],
+    selectedRoomId: null,
+    workflow: { requestedStage: "object" },
+    viewport: { centerX: 0, centerY: 0, zoom: 1, gridStepMm: 100 },
+  };
 }

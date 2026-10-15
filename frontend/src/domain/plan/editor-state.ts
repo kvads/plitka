@@ -3,6 +3,7 @@ export type EditorTool =
   | "select"
   | "addVertex"
   | "connect"
+  | "wall"
   | "move"
   | "pan"
   | "selectRoom"

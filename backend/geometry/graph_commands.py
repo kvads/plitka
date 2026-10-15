@@ -1,10 +1,11 @@
 import copy
 from .graph_models import GraphSnapshot
-from .topology import new_id,add_vertex,connect
+from .topology import new_id,add_vertex,connect,draw_wall
 from .graph_validation import maps,validate,issue,constraint_ids,collision_issues,GeometryRejection
 from .faces import inspect
 from .graph_solver import solve
 from .deletion import cascade, apply_deletion, remove_condition_raw
+from .wall_geometry import disconnected_wall_overlaps
 DIMENSION={'setLength','setAngle','setOrientation','releaseConstraint','reconcile'}
 
 def apply_condition(g,c):
@@ -37,7 +38,14 @@ def execute(basis,c,command_id):
             if ok and not rejected:g=candidate
             else:g=desired;status='unresolved';failure=None if rejected else 'Не удалось согласовать все введённые размеры. Исправьте условия или снимите фиксацию.'
         elif t=='addVertex':add_vertex(g,c['point'],command_id)
-        elif t=='connect':split=connect(g,c['fromVertexId'],c['to'],command_id)
+        elif t=='connect':split=connect(g,c['fromVertexId'],c['to'],command_id,c['thicknessMm'])
+        elif t=='drawWall':split=draw_wall(g,c['start'],c['end'],c['thicknessMm'],command_id)
+        elif t=='setWallThickness':
+            chain=next((chain for chain in g['chains'] if chain['id']==c['chainId']),None)
+            if chain is None:raise ValueError('Стена не найдена')
+            chain['thicknessMm']=c['thicknessMm']
+            overlaps=disconnected_wall_overlaps(g,chain['id'])
+            if overlaps:raise GeometryRejection([issue('physical_overlap','Толщина стены накладывается на несоединённую стену',[chain['id'],*overlaps])])
         elif t=='moveVertex':
             candidate,ok=solve(g,c,basis)
             collisions=collision_issues(basis,candidate)
@@ -60,7 +68,7 @@ def execute(basis,c,command_id):
                 if not nw or not nh or nw>=w or nh>=h:raise ValueError('Размер выреза должен быть меньше сторон заготовки')
                 points=[(x,y),(x+w,y),(x+w,y+h-nh),(x+w-nw,y+h-nh),(x+w-nw,y+h),(x,y+h)]
             ids=[add_vertex(g,dict(x=p[0],y=p[1]),command_id,'template:'+str(i)) for i,p in enumerate(points)]
-            for i,a in enumerate(ids):split.update(connect(g,a,{'vertexId':ids[(i+1)%len(ids)]},command_id+':'+str(i)))
+            for i,a in enumerate(ids):split.update(connect(g,a,{'vertexId':ids[(i+1)%len(ids)]},command_id+':'+str(i),c['thicknessMm']))
         GraphSnapshot.model_validate(g)
         collisions=collision_issues(basis,g)
         if collisions:raise GeometryRejection(collisions)

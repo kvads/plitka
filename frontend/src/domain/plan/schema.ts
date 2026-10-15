@@ -1,6 +1,5 @@
 import { normalizeRoomNames } from "./rooms";
-import type { GraphSnapshot, ProjectDocumentV3 } from "./types";
-import { geometry as legacyGeometry } from "../project/schema";
+import type { GraphSnapshot, ProjectDocumentV4 } from "./types";
 const fail = (): never => {
   throw new Error(
     "Некорректный файл проекта: проверьте версию, поля и связи элементов.",
@@ -77,7 +76,8 @@ export function graphSchema(value: unknown): GraphSnapshot {
     used = new Set<string>();
   for (const raw of arr(g.chains, 6300)) {
     const v = obj(raw);
-    exact(v, ["id", "startVertexId", "endVertexId", "segmentIds"]);
+    exact(v, ["id", "startVertexId", "endVertexId", "segmentIds", "thicknessMm"]);
+    if (num(v.thicknessMm) <= 0) fail();
     const id = add(v.id);
     if (!vs.has(str(v.startVertexId)) || !vs.has(str(v.endVertexId))) fail();
     let prev = v.startVertexId as string;
@@ -187,7 +187,9 @@ export function commandSchema(value: unknown, graph: GraphSnapshot) {
   };
   const commandKeys: Record<string, string[]> = {
     addVertex: ["point"],
-    connect: ["fromVertexId", "to"],
+    connect: ["fromVertexId", "to", "thicknessMm"],
+    drawWall: ["start", "end", "thicknessMm"],
+    setWallThickness: ["chainId", "thicknessMm"],
     moveVertex: ["vertexId", "point"],
     setLength: ["constraintId", "target", "value"],
     setAngle: [
@@ -210,6 +212,7 @@ export function commandSchema(value: unknown, graph: GraphSnapshot) {
       "height",
       "notchWidth",
       "notchHeight",
+      "thicknessMm",
     ],
     deleteRoom: ["topologyKey", "impactKey"],
     deleteVoid: ["voidId", "impactKey"],
@@ -224,6 +227,7 @@ export function commandSchema(value: unknown, graph: GraphSnapshot) {
   if (type === "addVertex" || type === "moveVertex") point(c.point);
   if (type === "moveVertex") ref(c.vertexId, vs);
   if (type === "connect") {
+    if (num(c.thicknessMm) <= 0) fail();
     ref(c.fromVertexId, vs);
     const to = obj(c.to);
     if (to.vertexId !== undefined) {
@@ -234,6 +238,15 @@ export function commandSchema(value: unknown, graph: GraphSnapshot) {
       ref(to.segmentId, ss);
       point(to.point);
     }
+  }
+  if (type === "drawWall") {
+    point(c.start);
+    point(c.end);
+    if (num(c.thicknessMm) <= 0) fail();
+  }
+  if (type === "setWallThickness") {
+    ref(c.chainId, cs);
+    if (num(c.thicknessMm) <= 0) fail();
   }
   if (type === "setLength") {
     const t = obj(c.target);
@@ -299,6 +312,7 @@ export function commandSchema(value: unknown, graph: GraphSnapshot) {
   if (type === "unmarkVoid")
     ref(c.voidId, new Set(graph.voids.map((v) => v.id)));
   if (type === "addTemplate") {
+    if (num(c.thicknessMm) <= 0) fail();
     choice(c.shape, ["rectangle", "lShape"]);
     point(c.origin);
     if (num(c.width) <= 0 || num(c.height) <= 0) fail();
@@ -307,7 +321,7 @@ export function commandSchema(value: unknown, graph: GraphSnapshot) {
   }
   return value;
 }
-export function parseV3(value: unknown): ProjectDocumentV3 {
+export function parseV4(value: unknown): ProjectDocumentV4 {
   const d = obj(value);
   exact(d, [
     "schemaVersion",
@@ -321,7 +335,7 @@ export function parseV3(value: unknown): ProjectDocumentV3 {
     "workflow",
     "viewport",
   ]);
-  if (d.schemaVersion !== 3) fail();
+  if (d.schemaVersion !== 4) fail();
   str(d.id, 1);
   if (str(d.name, 1, 120).trim() !== d.name) fail();
   str(d.address, 0, 300);
@@ -410,7 +424,7 @@ export function parseV3(value: unknown): ProjectDocumentV3 {
     const p = obj(plan.pendingEdit);
     integer(p.targetDraftRevision);
     if (p.targetDraftRevision !== plan.draftRevision) fail();
-    if (p.kind === "graphV3") {
+    if (p.kind === "graphV4") {
       exact(p, [
         "kind",
         "commandId",
@@ -420,57 +434,6 @@ export function parseV3(value: unknown): ProjectDocumentV3 {
       ]);
       str(p.commandId, 1);
       commandSchema(p.command, graphSchema(p.basisGraph));
-    } else if (p.kind === "legacyV2") {
-      exact(p, [
-        "kind",
-        "legacyOperation",
-        "legacyBasisGeometry",
-        "legacyDraftGeometry",
-        "targetDraftRevision",
-      ]);
-      const basis = legacyGeometry(p.legacyBasisGeometry);
-      legacyGeometry(p.legacyDraftGeometry);
-      const op = obj(p.legacyOperation);
-      exact(op, [
-        "type",
-        "wallId",
-        "contourId",
-        "vertexId",
-        "constraintId",
-        "value",
-        "x",
-        "y",
-      ]);
-      choice(op.type, [
-        "setLength",
-        "setInteriorAngle",
-        "setOrientation",
-        "moveVertex",
-        "releaseConstraint",
-        "reconcile",
-      ]);
-      const contours = [basis.outer, ...basis.holes];
-      if (["setLength", "setInteriorAngle"].includes(op.type as string)) {
-        num(op.value);
-        if (!contours.some((c) => c.walls.some((w) => w.id === op.wallId)))
-          fail();
-      }
-      if (op.type === "setOrientation") {
-        num(op.value);
-        if (!contours.some((c) => c.id === op.contourId && c.walls.length))
-          fail();
-      }
-      if (op.type === "moveVertex") {
-        num(op.x);
-        num(op.y);
-        if (!contours.some((c) => c.vertices.some((v) => v.id === op.vertexId)))
-          fail();
-      }
-      if (
-        op.type === "releaseConstraint" &&
-        !basis.constraints.some((c) => c.id === op.constraintId)
-      )
-        fail();
     } else fail();
   }
   if (plan.restorePoint !== null) {
@@ -499,8 +462,9 @@ export function parseV3(value: unknown): ProjectDocumentV3 {
   if (num(v.zoom) <= 0 || num(v.gridStepMm) <= 0) fail();
   if (new TextEncoder().encode(JSON.stringify(d)).length > 2 * 1024 * 1024)
     throw new Error("Файл больше 2 МиБ.");
-  const document = structuredClone(value) as ProjectDocumentV3;
+  const document = structuredClone(value) as ProjectDocumentV4;
   document.rooms = normalizeRoomNames(document.rooms);
   document.workflow.requestedStage = document.workflow.requestedStage === "object" ? "object" : "variants";
   return document;
 }
+export const parseV3 = parseV4;

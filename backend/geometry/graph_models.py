@@ -16,6 +16,7 @@ class WallChain(Model):
     startVertexId: Id
     endVertexId: Id
     segmentIds: list[Id] = Field(min_length=1, max_length=6300)
+    thicknessMm: float = Field(gt=0, allow_inf_nan=False)
 
 class DirectedRef(Model):
     segmentId: Id
@@ -114,6 +115,16 @@ class Connect(Model):
     type: Literal['connect']
     fromVertexId: Id
     to: VertexDestination | WallDestination
+    thicknessMm: float = Field(gt=0, allow_inf_nan=False)
+class DrawWall(Model):
+    type: Literal['drawWall']
+    start: Point
+    end: Point
+    thicknessMm: float = Field(gt=0, allow_inf_nan=False)
+class SetWallThickness(Model):
+    type: Literal['setWallThickness']
+    chainId: Id
+    thicknessMm: float = Field(gt=0, allow_inf_nan=False)
 class MoveVertex(Model):
     type: Literal['moveVertex']
     vertexId: Id
@@ -173,18 +184,19 @@ class AddTemplate(Model):
     height: float = Field(gt=0,le=200000)
     notchWidth: float | None = Field(default=None,gt=0)
     notchHeight: float | None = Field(default=None,gt=0)
+    thicknessMm: float = Field(gt=0, allow_inf_nan=False)
 class Reconcile(Model):
     type: Literal['reconcile']
-Command = Annotated[AddVertex|Connect|MoveVertex|SetLength|SetAngle|SetOrientation|ReleaseConstraint|DeleteElements|DeleteRoom|DeleteVoid|DeleteConstraint|MarkVoid|UnmarkVoid|AddTemplate|Reconcile, Field(discriminator='type')]
+Command = Annotated[AddVertex|Connect|DrawWall|SetWallThickness|MoveVertex|SetLength|SetAngle|SetOrientation|ReleaseConstraint|DeleteElements|DeleteRoom|DeleteVoid|DeleteConstraint|MarkVoid|UnmarkVoid|AddTemplate|Reconcile, Field(discriminator='type')]
 class ValidateRequest(Model):
-    schemaVersion: Literal[3]
+    schemaVersion: Literal[4]
     requestId: Id
     draftRevision: int = Field(ge=0)
     basisKey: str = Field(max_length=2000000)
     graph: GraphSnapshot
     selectedRoomKey: str | None = Field(default=None,max_length=100000)
 class CommandRequest(Model):
-    schemaVersion: Literal[3]
+    schemaVersion: Literal[4]
     commandId: Id
     draftRevision: int = Field(ge=0)
     basisKey: str = Field(max_length=2000000)
@@ -219,8 +231,9 @@ class FaceCandidate(Model):
     topologyKey: str
     outer: list[DirectedRef]
     holes: list[list[DirectedRef]]
-    polygon: PolygonData
-    areaMm2: float
+    axisPolygon: PolygonData
+    polygon: PolygonData | None
+    areaMm2: float | None
     dependencyIds: list[Id]
     dependencyKey: str
     geometryKey: str
@@ -228,13 +241,14 @@ class FaceCandidate(Model):
     validation: FaceValidation
 
 class GraphResponse(Model):
-    schemaVersion: Literal[3]
+    schemaVersion: Literal[4]
     requestId: Id | None = None
     commandId: Id | None = None
     draftRevision: int
     basisKey: str
     status: Literal['valid','invalid','unresolved','applied']
     graph: GraphSnapshot
+    wallArea: list[PolygonData]
     faces: list[FaceCandidate]
     measurements: list[Measurement]
     issues: list[Issue]
@@ -251,7 +265,7 @@ class VoidDeletionTarget(Model):
     voidId: Id
 DeletionTarget = Annotated[RoomDeletionTarget|VoidDeletionTarget, Field(discriminator='kind')]
 class DeletionPreviewRequest(Model):
-    schemaVersion: Literal[3]
+    schemaVersion: Literal[4]
     requestId: Id
     draftRevision: int = Field(ge=0)
     basisKey: str = Field(max_length=2000000)
@@ -267,7 +281,7 @@ class DeletionImpact(Model):
     affectedRoomKeys: list[str]
     disappearedRoomKeys: list[str]
 class DeletionPreviewResponse(Model):
-    schemaVersion: Literal[3]
+    schemaVersion: Literal[4]
     requestId: Id
     draftRevision: int
     basisKey: str

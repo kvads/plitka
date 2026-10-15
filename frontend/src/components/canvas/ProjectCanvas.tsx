@@ -1,5 +1,4 @@
 import { roomLabelPoint } from "../../domain/plan/room-label";
-import { formatPlanLength } from "../../domain/plan/format-length";
 import {
   rangeSegments,
   chainNodes,
@@ -15,7 +14,7 @@ import { useRef, useState, useEffect, useLayoutEffect } from "react";
 import type {
   GraphSnapshot,
   FaceCandidate,
-  ProjectDocumentV3,
+  ProjectDocumentV4,
   Point,
   DiagnosticSelection,
 } from "../../domain/plan/types";
@@ -28,16 +27,20 @@ export default function ProjectCanvas({
   editor,
   resetEpoch,
   panelOpen,
+  sidebarOpen,
   highlightedSegments,
   onVoid,
   onConstraint,
   onSector,
   onCanvasFocus,
   faces,
+  wallArea = [],
   roomNames = {},
   selectedKey,
   viewport,
   tool,
+  wallThickness = 100,
+  onDrawWall,
   selectedVertex,
   selectedSegment,
   startVertex,
@@ -61,15 +64,19 @@ export default function ProjectCanvas({
   onSector: (sector: "cw" | "ccw") => void;
   resetEpoch: number;
   panelOpen: boolean;
+  sidebarOpen: boolean;
   editor: EditorState;
   highlightedSegments?: string[];
   onVoid: (id: string) => void;
   onConstraint: (id: string) => void;
   faces: FaceCandidate[];
+  wallArea?: { outline: number[][]; holes: number[][][] }[];
   roomNames?: Record<string, string>;
   selectedKey?: string | null;
-  viewport: ProjectDocumentV3["viewport"];
+  viewport: ProjectDocumentV4["viewport"];
   tool: Tool;
+  wallThickness?: number;
+  onDrawWall?: (start: Point, end: Point) => void;
   selectedVertex: string;
   selectedSegment: string;
   startVertex: string | null;
@@ -83,7 +90,7 @@ export default function ProjectCanvas({
   onSelection: (v: string, s: string) => void;
   onRoom: (f: FaceCandidate) => void;
   onMove: (v: string, p: Point) => void;
-  onViewport: (v: ProjectDocumentV3["viewport"]) => void;
+  onViewport: (v: ProjectDocumentV4["viewport"]) => void;
   layout?: Layout;
   angle?: {
     vertexId: string;
@@ -114,12 +121,15 @@ export default function ProjectCanvas({
     ),
     [dragPoint, setDragPoint] = useState<Point | null>(null),
     [pendingPoint, setPendingPoint] = useState<Point | null>(null),
-    [pendingMove, setPendingMove] = useState<{ vertexId: string; point: Point } | null>(null);
+    [pendingMove, setPendingMove] = useState<{ vertexId: string; point: Point } | null>(null),
+    [wallPreview, setWallPreview] = useState<{ start: Point; end: Point } | null>(null),
+    [liveViewport, setLiveViewport] = useState<typeof viewport | null>(null);
   const [size, setSize] = useState({
     width: window.innerWidth,
     height: window.innerHeight,
   });
   const [panelLift, setPanelLift] = useState(0);
+  const [sidebarShift, setSidebarShift] = useState(0);
   useEffect(() => {
     const observer = new ResizeObserver(([entry]) =>
       setSize({
@@ -132,35 +142,35 @@ export default function ProjectCanvas({
   }, []);
   useLayoutEffect(() => {
     const canvas = svg.current?.parentElement;
-    if (!canvas || !svg.current || !panelOpen || size.width > 700) {
-      setPanelLift(0);
-      return;
-    }
+    if (!canvas || !svg.current) return;
     const panel = canvas.querySelector<HTMLElement>(".canvas-panel");
-    const tools = canvas.querySelector<HTMLElement>(".canvas-tools");
-    const header = canvas.querySelector<HTMLElement>(".canvas-top");
-    if (!panel) {
-      setPanelLift(0);
-      return;
-    }
+    const sidebar = canvas.querySelector<HTMLElement>(".canvas-sidebar-shell");
     const measure = () => {
       const rect = svg.current!.getBoundingClientRect();
-      const top = Math.max(header?.getBoundingClientRect().bottom ?? rect.top, tools?.getBoundingClientRect().bottom ?? rect.top) - rect.top;
-      const bottom = panel.getBoundingClientRect().top - rect.top;
-      const visibleCenter = (top + Math.max(top, bottom)) / 2;
-      const next = Math.max(0, rect.height / 2 - visibleCenter);
-      setPanelLift((current) => Math.abs(current - next) < 0.5 ? current : next);
+      const sideRight = sidebarOpen ? (sidebar?.getBoundingClientRect().right ?? rect.left) : rect.left - 8;
+      const panelRect = panelOpen ? panel?.getBoundingClientRect() : undefined;
+      const leftEdge = Math.max(rect.left, Math.min(rect.right, sideRight + 8));
+      const rightEdge = panelRect && panelRect.top < rect.bottom && panelRect.height > rect.height * .5
+        ? Math.min(rect.right, panelRect.left - 8) : rect.right;
+      const nextShift = (Math.max(leftEdge, rightEdge) + leftEdge) / 2 - (rect.left + rect.width / 2);
+      setSidebarShift((current) => Math.abs(current - nextShift) < .5 ? current : nextShift);
+      const topEdge = rect.top;
+      const bottomEdge = panelRect && panelRect.top > rect.top + rect.height * .5
+        ? Math.min(rect.bottom, panelRect.top - 8) : rect.bottom;
+      const nextLift = (rect.top + rect.height / 2) - (topEdge + bottomEdge) / 2;
+      setPanelLift((current) => Math.abs(current - nextLift) < .5 ? current : nextLift);
     };
     measure();
     const observer = new ResizeObserver(measure);
-    for (const element of [svg.current, panel, tools, header]) if (element) observer.observe(element);
+    for (const element of [svg.current, panel, sidebar]) if (element) observer.observe(element);
     return () => observer.disconnect();
-  }, [panelOpen, size.width, size.height]);
-  const width = 9000 / viewport.zoom,
+  }, [panelOpen, sidebarOpen, size.width, size.height]);
+  const renderedViewport = liveViewport ?? viewport;
+  const width = 9000 / renderedViewport.zoom,
     height = (width * size.height) / Math.max(1, size.width),
-    left = viewport.centerX - width / 2,
+    left = renderedViewport.centerX - width / 2 - sidebarShift * width / Math.max(1, size.width),
     bottom =
-      viewport.centerY - height / 2 - (panelLift * width) / Math.max(1, size.width);
+      renderedViewport.centerY - height / 2 - (panelLift * width) / Math.max(1, size.width);
   const vs = new Map(graph.vertices.map((v) => [v.id, v]));
   // The viewBox shares the observed viewport aspect ratio, so scale is uniform.
   // Derive render sizes from current props, never the previous render's CTM.
@@ -234,13 +244,60 @@ export default function ProjectCanvas({
     if (!p) return null;
     const r = (e.pointerType === "mouse" ? 8 : 12) / screenScale(),
       hit = target(p, r);
-    if (tool === "connect" && hit) return { ...hit.p, type: hit.type };
+    if ((tool === "connect" || tool === "wall") && hit) return { ...hit.p, type: hit.type };
     return snap(p.x, p.y, viewport.gridStepMm, r);
   };
   const clear = () => {
     gesture.current = null;
     setDragPoint(null);
     setPreview(null);
+    setLiveViewport(null);
+    setWallPreview(null);
+  };
+  const firstWallContact = (start: Point, end: Point) => {
+    const dx = end.x - start.x, dy = end.y - start.y;
+    const length = Math.hypot(dx, dy);
+    if (length < 1e-6) return { axis: end, visible: end };
+    let best = length;
+    let visible = length;
+    for (const segment of graph.segments) {
+      const a = vs.get(segment.startVertexId)!, b = vs.get(segment.endVertexId)!;
+      const ex = b.x - a.x, ey = b.y - a.y;
+      const cross = dx * ey - dy * ex;
+      if (Math.abs(cross) < 1e-7) continue;
+      const qx = a.x - start.x, qy = a.y - start.y;
+      const t = (qx * ey - qy * ex) / cross;
+      const u = (qx * dy - qy * dx) / cross;
+      if (t <= 1e-6 || t > 1 || u < -1e-6 || u > 1 + 1e-6) continue;
+      const distance = t * length;
+      if (distance < best) {
+        best = distance;
+        const thickness = graph.chains.find((chain) => chain.id === segment.chainId)?.thicknessMm ?? 0;
+        const sine = Math.abs(cross) / (length * Math.hypot(ex, ey));
+        visible = Math.max(0, distance - thickness / (2 * Math.max(sine, 1e-6)));
+      }
+    }
+    const point = (distance: number) => ({ x: start.x + dx * distance / length, y: start.y + dy * distance / length });
+    return { axis: point(best), visible: point(visible) };
+  };
+  const wallPreviewShape = wallPreview && wallThickness > 0 && Number.isFinite(wallThickness)
+    ? (() => {
+        const end = firstWallContact(wallPreview.start, wallPreview.end).visible;
+        const dx = end.x - wallPreview.start.x, dy = end.y - wallPreview.start.y;
+        const length = Math.hypot(dx, dy);
+        if (length < 1e-6) return null;
+        const nx = -dy / length * wallThickness / 2, ny = dx / length * wallThickness / 2;
+        const a = wallPreview.start;
+        return [[a.x + nx, a.y + ny], [end.x + nx, end.y + ny], [end.x - nx, end.y - ny], [a.x - nx, a.y - ny]] as [number, number][];
+      })() : null;
+  const panViewport = (start: NonNullable<typeof gesture.current>, clientX: number, clientY: number) => {
+    const pixels = Math.max(1, svg.current?.getBoundingClientRect().width ?? size.width);
+    const unitsPerPixel = 9000 / start.viewport.zoom / pixels;
+    return {
+      ...start.viewport,
+      centerX: start.viewport.centerX - (clientX - start.client.x) * unitsPerPixel,
+      centerY: start.viewport.centerY + (clientY - start.client.y) * unitsPerPixel,
+    };
   };
   useEffect(() => { clear(); setPendingPoint(null); setPendingMove(null); touches.current.clear(); pinch.current = null; }, [tool]);
   const [active, setActive] = useState(""),
@@ -283,7 +340,7 @@ export default function ProjectCanvas({
     const rect = svg.current.getBoundingClientRect();
     const span = 9000 / zoom;
     onViewport({ ...viewport, zoom,
-      centerX: pinch.current.anchor.x - (middle.x - rect.left - rect.width / 2) * span / rect.width,
+      centerX: pinch.current.anchor.x - (middle.x - rect.left - rect.width / 2 - sidebarShift) * span / rect.width,
       centerY: pinch.current.anchor.y + (middle.y - rect.top - rect.height / 2 + panelLift) * span / rect.width,
     });
   };
@@ -316,8 +373,8 @@ export default function ProjectCanvas({
     }
     const candidates = faces.filter(
       (f) =>
-        contains(p, f.polygon.outline) &&
-        !f.polygon.holes.some((r) => contains(p, r)),
+        contains(p, (f.polygon ?? f.axisPolygon).outline) &&
+        !(f.polygon ?? f.axisPolygon).holes.some((r) => contains(p, r)),
     );
     if (candidates.length === 1) onRoom(candidates[0]);
     else onSelection("", "");
@@ -624,6 +681,10 @@ export default function ProjectCanvas({
             viewport: { ...viewport },
             dragged: false,
           };
+          if (tool === "wall") {
+            const point = touchPoint(e) ?? p;
+            setWallPreview({ start: { x: point.x, y: point.y }, end: { x: point.x, y: point.y } });
+          }
           if (e.nativeEvent.isTrusted)
             e.currentTarget.setPointerCapture(e.pointerId);
         }}
@@ -636,10 +697,12 @@ export default function ProjectCanvas({
           setPreview(touchPoint(e));
           const g = gesture.current;
           if (!g) return;
+          if (tool === "wall") setWallPreview((current) => current ? { ...current, end: touchPoint(e) ?? current.end } : current);
           if (Math.hypot(e.clientX - g.client.x, e.clientY - g.client.y) > 4)
             g.dragged = true;
           if (tool === "move" && g.vertexId) setDragPoint(touchPoint(e));
-          if (tool === "pan" && g.dragged) setDragPoint(world(e));
+          if (tool === "pan" && g.dragged)
+            setLiveViewport(panViewport(g, e.clientX, e.clientY));
         }}
         onPointerCancel={(e) => {
           const wasPinching = !!pinch.current;
@@ -666,6 +729,19 @@ export default function ProjectCanvas({
           }
           const g = gesture.current;
           if (!g) return;
+          if (tool === "pan") {
+            if (g.dragged) onViewport(panViewport(g, e.clientX, e.clientY));
+            clear();
+            return;
+          }
+          if (tool === "wall") {
+            const end = touchPoint(e);
+            const start = wallPreview?.start ?? g.world;
+            if (end && Math.hypot(end.x - start.x, end.y - start.y) > 1)
+              onDrawWall?.({ x: start.x, y: start.y }, firstWallContact(start, end).axis);
+            clear();
+            return;
+          }
           const p = world(e),
             s = touchPoint(e);
           if (!p || !s) {
@@ -691,12 +767,6 @@ export default function ProjectCanvas({
                 layout.offset_x + p.x - g.world.x,
                 layout.offset_y + p.y - g.world.y,
               );
-            else if (tool === "pan")
-              onViewport({
-                ...g.viewport,
-                centerX: g.viewport.centerX - (p.x - g.world.x),
-                centerY: g.viewport.centerY - (p.y - g.world.y),
-              });
           } else {
             const hit = target(
               p,
@@ -757,7 +827,7 @@ export default function ProjectCanvas({
           {faces.map((f) => (
             <path
               key={f.topologyKey}
-              d={path([f.polygon.outline, ...f.polygon.holes] as [
+              d={path([(f.polygon ?? f.axisPolygon).outline, ...(f.polygon ?? f.axisPolygon).holes] as [
                 number,
                 number,
               ][][])}
@@ -775,7 +845,8 @@ export default function ProjectCanvas({
           {faces.map(f => {
             const name = roomNames[f.topologyKey];
             if (!name) return null;
-            const [x,y,labelWidth] = roomLabelPoint(f.polygon.outline, f.polygon.holes);
+            const shape = f.polygon ?? f.axisPolygon;
+            const [x,y,labelWidth] = roomLabelPoint(shape.outline, shape.holes);
             const maxChars = Math.max(1, Math.floor(labelWidth * screenScale() / 8) - 2);
             return <text key={'label:'+f.topologyKey} data-room-label={f.topologyKey} x={x} y={y} transform={`translate(0,${2*y}) scale(1,-1)`} textAnchor="middle" dominantBaseline="middle" fontSize={14 / screenScale()} pointerEvents="none" fill="#263b35" aria-label={name}><title>{name}</title>{name.length > maxChars ? name.slice(0, Math.max(0,maxChars-1))+'…' : name}</text>;
           })}
@@ -799,6 +870,13 @@ export default function ProjectCanvas({
                 if (!gesture.current?.dragged) onPart?.(p.id);
               }}
             />
+          ))}
+          {wallPreviewShape && <path className="physical-wall-preview"
+            d={path([wallPreviewShape])} pointerEvents="none" />}
+          {wallArea.map((polygon, index) => (
+            <path key={`wall-area:${index}`} className="physical-wall"
+              d={path([polygon.outline, ...polygon.holes] as [number, number][][])}
+              fillRule="evenodd" pointerEvents="none" />
           ))}
           {graph.segments.map((s) => {
             const a = vs.get(s.startVertexId)!,
@@ -1081,17 +1159,13 @@ export default function ProjectCanvas({
           </g>
         )}
       </svg>
-      {placementPoint && (
+      {placementPoint && previewBlocked.length > 0 && (
         <span className="snap-status" aria-live="off">
-          {previewBlocked.length
-            ? "Зона безопасности: точку создать нельзя"
-            : placementPoint.type}{" "}
-          · {formatPlanLength(placementPoint.x)} × {formatPlanLength(placementPoint.y)}
+          Зона безопасности: точку создать нельзя
         </span>
       )}
       {pendingPoint && tool === "addVertex" && (
         <div className="mobile-placement" data-overlay role="group" aria-label="Размещение вершины">
-          <span>{formatPlanLength(pendingPoint.x)} × {formatPlanLength(pendingPoint.y)}</span>
           <button onClick={() => {
             const ids = blockers(pendingPoint);
             if (ids?.length) onBlocked(ids, pendingPoint);
@@ -1104,7 +1178,6 @@ export default function ProjectCanvas({
       )}
       {pendingMove && tool === "move" && (
         <div className="mobile-placement" data-overlay role="group" aria-label="Перемещение вершины">
-          <span>{formatPlanLength(pendingMove.point.x)} × {formatPlanLength(pendingMove.point.y)}</span>
           <button onClick={() => {
             onMove(pendingMove.vertexId, pendingMove.point);
             setPendingMove(null);
