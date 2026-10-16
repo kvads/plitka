@@ -85,6 +85,7 @@ export type GraphCommand =
   | { type: "drawWall"; start: Point; end: Point; thicknessMm: number }
   | { type: "setWallThickness"; chainId: string; thicknessMm: number }
   | { type: "moveVertex"; vertexId: string; point: Point }
+  | { type: "nudgeWallHandle"; chainId: string; handle: "start" | "center" | "end"; axis: "x" | "y"; direction: -1 | 1 }
   | {
       type: "setLength";
       constraintId: string;

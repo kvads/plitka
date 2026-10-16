@@ -118,15 +118,11 @@ for (const width of [375, 1440])
       const canvas = page.getByLabel("Редактор плана помещений");
       const before = await canvas.getAttribute("data-layout");
       await page.setViewportSize({ width, height: 900 });
-      for (let i = 0; i < 2; i++)
-        await page
-          .getByRole("button", { name: "Уменьшить", exact: true })
-          .click();
+      const box = await canvas.boundingBox();
+      await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+      for (let i = 0; i < 2; i++) await page.mouse.wheel(0, 250);
       expect(await canvas.getAttribute("data-layout")).toBe(before);
-      for (let i = 0; i < 6; i++)
-        await page
-          .getByRole("button", { name: "Увеличить", exact: true })
-          .click();
+      for (let i = 0; i < 6; i++) await page.mouse.wheel(0, -250);
       expect(await canvas.getAttribute("data-layout")).toBe(before);
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth),
@@ -199,23 +195,7 @@ test("release fixed and undo cannot revive old results", async ({ page }) => {
     page.getByRole("button", { name: "Таблица деталей · CSV", exact: true }),
   ).toBeEnabled();
 });
-test("independent point temporarily suspends export but preserves result", async ({
-  page,
-}) => {
-  await openProject(page);
-  await toRules(page);
-  await calculate(page);
-  await page.getByRole("button", { name: "1. План", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Добавить вершину", exact: true })
-    .click();
-  await addPoint(page, 7000, 2000);
-  await settle(page);
-  await page.getByRole("button", { name: "2. Варианты", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "Таблица деталей · CSV", exact: true }),
-  ).toBeEnabled();
-});
+
 
 test("deletion condition without coordinate change invalidates results through Undo and new confirmation", async ({
   page,

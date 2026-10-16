@@ -76,6 +76,85 @@ def command(graph, value, command_id=None):
         "graph": graph, "command": value})
 
 
+def test_nudge_wall_handle_moves_one_millimeter_and_reports_shared_walls():
+    graph = square()
+    before = client.post("/api/plan/validate", json=request(graph)).json()
+    result = command(graph, {"type": "nudgeWallHandle", "chainId": "c0",
+        "handle": "end", "axis": "x", "direction": 1}).json()
+    assert result["status"] == "applied"
+    vertices = {v["id"]: v for v in result["graph"]["vertices"]}
+    assert vertices["v1"]["x"] == 2001
+    assert vertices["v0"]["x"] == 0
+    assert set(result["affectedChainIds"]) == {"c0", "c1"}
+    assert result["faces"][0]["areaMm2"] != before["faces"][0]["areaMm2"]
+    assert result["wallArea"] != before["wallArea"]
+    assert graph["vertices"][1]["x"] == 2000
+
+
+def test_nudge_wall_handle_rejects_unknown_chain_and_invalid_direction():
+    graph = square()
+    missing = command(graph, {"type": "nudgeWallHandle", "chainId": "missing",
+        "handle": "end", "axis": "x", "direction": 1}).json()
+    assert missing["status"] == "invalid" and missing["graph"] == graph
+    invalid = command(graph, {"type": "nudgeWallHandle", "chainId": "c0",
+        "handle": "end", "axis": "x", "direction": 2})
+    assert invalid.status_code == 422
+
+
+def test_nudge_wall_handle_replay_is_deterministic_and_keeps_request_basis():
+    graph = square()
+    payload = {"schemaVersion": 4, "commandId": "nudge-repeat", "draftRevision": 7,
+        "basisKey": "basis-7", "graph": graph,
+        "command": {"type": "nudgeWallHandle", "chainId": "c0", "handle": "end", "axis": "x", "direction": 1}}
+    first = client.post("/api/plan/command", json=payload).json()
+    again = client.post("/api/plan/command", json=payload).json()
+    assert first == again
+    assert first["commandId"] == "nudge-repeat"
+    assert first["draftRevision"] == 7 and first["basisKey"] == "basis-7"
+    assert graph["vertices"][1]["x"] == 2000
+
+
+def test_nudge_multisegment_wall_center_moves_junctions_but_end_keeps_interior_fixed():
+    graph = {"vertices": [
+        {"id": "a", "x": 0, "y": 0}, {"id": "m", "x": 1000, "y": 0},
+        {"id": "b", "x": 2000, "y": 0}, {"id": "far", "x": 1000, "y": 1000}],
+        "segments": [
+            {"id": "s0", "startVertexId": "a", "endVertexId": "m", "chainId": "main"},
+            {"id": "s1", "startVertexId": "m", "endVertexId": "b", "chainId": "main"},
+            {"id": "branch", "startVertexId": "m", "endVertexId": "far", "chainId": "side"}],
+        "chains": [
+            {"id": "main", "startVertexId": "a", "endVertexId": "b", "segmentIds": ["s0", "s1"], "thicknessMm": 100},
+            {"id": "side", "startVertexId": "m", "endVertexId": "far", "segmentIds": ["branch"], "thicknessMm": 100}],
+        "voids": [], "constraints": [], "fieldInputs": {}}
+    center = command(graph, {"type": "nudgeWallHandle", "chainId": "main",
+        "handle": "center", "axis": "x", "direction": 1}).json()
+    assert center["status"] == "applied"
+    positions = {v["id"]: v for v in center["graph"]["vertices"]}
+    assert [positions[id]["x"] for id in ("a", "m", "b", "far")] == [1, 1001, 2001, 1000]
+    assert set(center["affectedChainIds"]) == {"main", "side"}
+    invalid = command(graph, {"type": "nudgeWallHandle", "chainId": "main",
+        "handle": "end", "axis": "y", "direction": 1}).json()
+    assert invalid["status"] == "invalid" and invalid["graph"] == graph
+
+
+def test_nudge_rejects_new_disconnected_physical_overlap_atomically():
+    graph = {"vertices": [
+        {"id": "a", "x": 0, "y": 0}, {"id": "b", "x": 1000, "y": 0},
+        {"id": "c", "x": 0, "y": 100.5}, {"id": "d", "x": 1000, "y": 100.5}],
+        "segments": [
+            {"id": "s0", "startVertexId": "a", "endVertexId": "b", "chainId": "w0"},
+            {"id": "s1", "startVertexId": "c", "endVertexId": "d", "chainId": "w1"}],
+        "chains": [
+            {"id": "w0", "startVertexId": "a", "endVertexId": "b", "segmentIds": ["s0"], "thicknessMm": 100},
+            {"id": "w1", "startVertexId": "c", "endVertexId": "d", "segmentIds": ["s1"], "thicknessMm": 100}],
+        "voids": [], "constraints": [], "fieldInputs": {}}
+    result = command(graph, {"type": "nudgeWallHandle", "chainId": "w0",
+        "handle": "center", "axis": "y", "direction": 1}).json()
+    assert result["status"] == "invalid"
+    assert result["graph"] == graph
+    assert any(issue["code"] == "physical_overlap" for issue in result["issues"])
+
+
 def test_draw_wall_first_contact_and_joined_area():
     empty = {"vertices": [], "segments": [], "chains": [], "voids": [],
              "constraints": [], "fieldInputs": {}}

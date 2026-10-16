@@ -1,5 +1,5 @@
-import { addPoint, canvasPick, graphConflict, graphRectangle, openGraph, touchSession, v4EmptyCatalog, v4FilledCatalog, v4LegacyKeys } from "./fixtures/projects";
-import { parseV4 } from "../src/domain/plan/schema";
+import { canvasPick, graphConflict, graphRectangle, openGraph, touchSession, v4EmptyCatalog, v4FilledCatalog, v4LegacyKeys, v4CleanupDocument, v4CleanedDocument } from "./fixtures/projects";
+import { cleanV4Document, cleanV4Graph, parseV4 } from "../src/domain/plan/schema";
 import { test, expect } from "@playwright/test";
 import {
   openProject,
@@ -14,6 +14,72 @@ const envelope = async (page: any) => ({
   format: "plitka-project",
   version: 4,
   project: await stored(page),
+});
+
+test("v4 cleanup removes obsolete vertex and angle data exactly once", () => {
+  const old = v4CleanupDocument();
+  const cleaned = cleanV4Document(old);
+  expect(cleaned).toEqual(v4CleanedDocument());
+  expect(cleanV4Document(cleaned)).toEqual(cleaned);
+  expect(parseV4(cleaned)).toEqual(cleaned);
+});
+
+test("opening old v4 project cleans every snapshot once without removing tile angle", async ({ page }) => {
+  const document = v4CleanupDocument();
+  await page.addInitScript((project) => {
+    if (!localStorage.getItem("plitka-projects-v4")) localStorage.setItem("plitka-projects-v4", JSON.stringify({ schemaVersion: 4, projects: [project] }));
+    if (!location.hash) location.hash = `project/${project.id}`;
+  }, document);
+  await page.goto("/");
+  await expect.poll(async () => (await stored(page)).documentRevision).toBe(6);
+  const cleaned = await stored(page);
+  expect(cleaned.plan.draftRevision).toBe(3);
+  expect(cleaned.rooms[0].rules.angle).toBe(17);
+  expect(cleaned.plan.pendingEdit).toBeNull();
+  expect(cleaned.plan.draft).toEqual(v4CleanedDocument().plan.draft);
+  await page.reload();
+  const afterReload = await stored(page);
+  expect(afterReload.documentRevision).toBeGreaterThanOrEqual(6);
+  expect(cleanV4Document(afterReload)).toEqual(afterReload);
+  const stale = await page.evaluate(async (oldDocument) => {
+    const { saveV4 } = await import("/src/domain/plan/storage.ts");
+    try { await saveV4(oldDocument, oldDocument.documentRevision); return "saved"; }
+    catch (error) { return (error as Error).message; }
+  }, document);
+  expect(stale).toContain("Конфликт");
+});
+
+test("wall nudge and Undo never revive old angle records in cleaned v4 snapshots", async ({ page }) => {
+  const document = v4CleanupDocument();
+  await page.addInitScript((project) => {
+    if (!localStorage.getItem("plitka-projects-v4")) localStorage.setItem("plitka-projects-v4", JSON.stringify({ schemaVersion: 4, projects: [project] }));
+    if (!location.hash) location.hash = `project/${project.id}`;
+  }, document);
+  await page.goto("/");
+  await expect.poll(async () => (await stored(page)).documentRevision).toBe(6);
+  await canvasPick(page, "segment", "v4s0");
+  await page.locator('[data-wall-handle="center"]').click();
+  await page.getByRole("button", { name: "Сдвинуть стену → на 1 мм" }).click();
+  await expect.poll(async () => (await stored(page)).plan.draft.vertices.find((v: { id: string }) => v.id === "v4v1")?.x).toBe(2001);
+  await page.getByRole("button", { name: "Отменить правку" }).click();
+  await expect.poll(async () => (await stored(page)).plan.draft.vertices.find((v: { id: string }) => v.id === "v4v1")?.x).toBe(2000);
+  await settle(page);
+  const graphs = (await stored(page));
+  for (const graph of [graphs.plan.draft, graphs.plan.restorePoint?.graph, graphs.rooms[0]?.confirmed?.graph].filter(Boolean)) {
+    expect(graph.vertices.some((vertex: { id: string }) => vertex.id === "orphan-vertex")).toBe(false);
+    expect(graph.constraints.some((constraint: { kind: string }) => constraint.kind === "angle")).toBe(false);
+  }
+  const revision = graphs.documentRevision;
+  await page.reload();
+  await expect.poll(async () => (await stored(page)).documentRevision).toBe(revision);
+  await settle(page);
+  await page.getByRole("button", { name: "Проект", exact: true }).click();
+  await page.getByRole("button", { name: "Вернуть план к сохранённому снимку", exact: true }).click();
+  await page.getByRole("button", { name: "Восстановить план", exact: true }).click();
+  await settle(page);
+  const restored = (await stored(page)).plan.draft;
+  expect(restored.vertices.some((vertex: { id: string }) => vertex.id === "orphan-vertex")).toBe(false);
+  expect(restored.constraints.some((constraint: { kind: string }) => constraint.kind === "angle")).toBe(false);
 });
 
 test("v4 parser requires thickness in every graph snapshot", () => {
@@ -64,7 +130,7 @@ test("v4 initialization removes known old catalogs and keeps the empty catalog",
   await page.evaluate(() => localStorage.setItem("plitka-projects-v2", "interrupted-cleanup"));
   await page.reload();
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v4")!))).toEqual(v4EmptyCatalog);
-  expect(await page.evaluate(() => localStorage.getItem("plitka-projects-v2"))).toBeNull();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("plitka-projects-v2"))).toBeNull();
 });
 
 test("old project file is rejected without changing the v4 catalog", async ({ page }) => {
@@ -139,32 +205,7 @@ test("single pan commits its viewport only on release", async ({ page }) => {
   expect((await stored(page)).viewport).toEqual(after.viewport);
 });
 
-test("confirmed mobile point survives v4 export and import", async ({ browser }) => {
-  const context = await browser.newContext({ baseURL: process.env.PW_BASE_URL || "http://127.0.0.1:5173", viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
-  const page = await context.newPage();
-  await openGraph(page, graphRectangle());
-  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
-  const target = await screenPoint(page, 2000, 1500);
-  await page.touchscreen.tap(target.x, target.y + 48);
-  await page.getByRole("button", { name: "Поставить вершину" }).click();
-  await expect.poll(async () => (await stored(page)).plan.draft.vertices.length).toBe(5);
-  await settle(page);
-  const before = await stored(page);
-  expect(before.plan.draft.vertices).toHaveLength(5);
-  const file = await envelope(page);
-  expect(file.format).toBe("plitka-project");
-  expect(file.version).toBe(4);
-  expect(file.project.schemaVersion).toBe(4);
-  expect(file.project.plan.draft).toEqual(before.plan.draft);
-  expect(file.project.viewport).toEqual(before.viewport);
-  await importFile(page, file);
-  await page.reload();
-  await settle(page);
-  const after = await stored(page);
-  expect(after.plan.draft).toEqual(before.plan.draft);
-  expect(after.viewport).toEqual(before.viewport);
-  await context.close();
-});
+
 async function wall(page: any) {
   await page.getByRole("button", { name: "Выбрать", exact: true }).click();
   await canvasPick(page, "segment", 1);
@@ -516,87 +557,8 @@ test.skip("open v2 draft stays open and keeps separate confirmed snapshot", asyn
     page.getByRole("button", { name: "2. Варианты", exact: true }),
   ).toBeEnabled();
 });
-test("whole plan restoration is explicit and restores graph with room settings", async ({
-  page,
-}) => {
-  await openProject(page);
-  await confirmRoom(page);
-  await settle(page);
-  const before = await stored(page);
-  await page
-    .getByRole("button", { name: "Добавить вершину", exact: true })
-    .click();
-  await addPoint(page, 7000, 2000);
-  await settle(page);
-  if (
-    !(await page
-      .getByRole("button", {
-        name: "Вернуть план к последнему подтверждению",
-        exact: true,
-      })
-      .isVisible())
-  )
-    await page.getByRole("button", { name: "Проект", exact: true }).click();
-  await page
-    .getByRole("button", {
-      name: "Вернуть план к последнему подтверждению",
-      exact: true,
-    })
-    .click();
-  await expect(page.getByRole("dialog")).toContainText("Изменятся все комнаты");
-  await page
-    .getByRole("button", { name: "Восстановить план", exact: true })
-    .click();
-  await settle(page);
-  const restored = await stored(page);
-  expect(restored.plan.draft).toEqual(before.plan.draft);
-  expect(restored.rooms[0].material).toEqual(before.rooms[0].material);
-  expect(restored.selectedRoomId).toBe(before.selectedRoomId);
-});
-test("without confirmation restore asks before clearing canvas", async ({
-  page,
-}) => {
-  await openProject(page);
-  await settle(page);
-  if (
-    !(await page
-      .getByRole("button", {
-        name: "Вернуть план к последнему подтверждению",
-        exact: true,
-      })
-      .isVisible())
-  )
-    await page.getByRole("button", { name: "Проект", exact: true }).click();
-  await page
-    .getByRole("button", {
-      name: "Вернуть план к последнему подтверждению",
-      exact: true,
-    })
-    .click();
-  await expect(page.getByRole("dialog")).toContainText("Очистить всё полотно");
-  await page.getByRole("button", { name: "Отмена", exact: true }).click();
-  expect((await stored(page)).plan.draft.vertices).toHaveLength(4);
-  if (
-    !(await page
-      .getByRole("button", {
-        name: "Вернуть план к последнему подтверждению",
-        exact: true,
-      })
-      .isVisible())
-  )
-    await page.getByRole("button", { name: "Проект", exact: true }).click();
-  await page
-    .getByRole("button", {
-      name: "Вернуть план к последнему подтверждению",
-      exact: true,
-    })
-    .click();
-  await page
-    .getByRole("button", { name: "Восстановить план", exact: true })
-    .click();
-  await settle(page);
-  expect((await stored(page)).plan.draft.vertices).toHaveLength(0);
-});
+
+
 
 import {
   graphCoincident,
@@ -632,31 +594,7 @@ test.skip("safety old coincident snapshots survive reload and file import", asyn
     result.issues.some((i: any) => i.code === "coincident_vertices"),
   ).toBeTruthy();
 });
-test("safety failed size preserves conditions and pending through reload retry cancel", async ({
-  page,
-}) => {
-  const graph = graphSafetySolve();
-  await openGraph(page, graph);
-  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
-  await canvasPick(page, "segment", "s");
-  await commit(page, "Общая длина стены", "2000");
-  await settle(page);
-  expect((await stored(page)).plan.draft.vertices).toEqual(graph.vertices);
-  expect((await stored(page)).plan.pendingEdit).not.toBeNull();
-  await page.reload();
-  await settle(page);
-  expect((await stored(page)).plan.draft.constraints[0].value).toBe(2000);
-  await page
-    .getByRole("button", { name: "Повторить действие", exact: true })
-    .click();
-  await settle(page);
-  expect((await stored(page)).plan.draft.vertices).toEqual(graph.vertices);
-  await page
-    .getByRole("button", { name: "Отменить правку", exact: true })
-    .click();
-  await settle(page);
-  expect((await stored(page)).plan.draft).toEqual(graph);
-});
+
 
 import {
   legacySafetyPending,
@@ -740,86 +678,7 @@ test.skip("safety legacy retry refuses a newly coincident real solver result and
   ]);
 });
 
-test("safety independent room stays available and restore returns original coincident graph", async ({
-  page,
-}) => {
-  const g = graphRectangle();
-  g.vertices.push({ id: "d", x: 7000, y: 4000 }, { id: "e", x: 7000, y: 4000 });
-  await openGraph(page, g);
-  await confirmRoom(page);
-  await settle(page);
-  const before = await stored(page);
-  expect(before.plan.restorePoint.graph).toEqual(g);
-  await page
-    .getByRole("button", { name: "Переместить вершину", exact: true })
-    .click();
-  if (
-    await page
-      .getByRole("button", { name: "Закрыть параметры", exact: true })
-      .isVisible()
-  )
-    await page
-      .getByRole("button", { name: "Закрыть параметры", exact: true })
-      .click();
-  // Center the two coincident vertices using their diagnostic, then move one explicitly.
-  await page.getByRole("button", { name: "Параметры", exact: true }).click();
-  await page
-    .locator(".geometry-issues")
-    .getByRole("button")
-    .filter({ hasText: "Координаты вершин совпадают" })
-    .click();
-  if (
-    await page
-      .getByRole("button", { name: "Закрыть параметры", exact: true })
-      .isVisible()
-  )
-    await page
-      .getByRole("button", { name: "Закрыть параметры", exact: true })
-      .click();
-  const start = await screenPoint(page, 7000, 4000),
-    end = await screenPoint(page, 7500, 4000);
-  await page.mouse.move(start.x, start.y);
-  await page.mouse.down();
-  await page.mouse.move(end.x, end.y, { steps: 3 });
-  await page.mouse.up();
-  await settle(page);
-  await page.getByRole("button", { name: "Параметры", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "2. Варианты", exact: true }),
-  ).toBeEnabled();
-  await page.reload();
-  await settle(page);
-  if (
-    !(await page
-      .getByRole("button", {
-        name: "Вернуть план к последнему подтверждению",
-        exact: true,
-      })
-      .isVisible())
-  )
-    await page.getByRole("button", { name: "Проект", exact: true }).click();
-  await page
-    .getByRole("button", {
-      name: "Вернуть план к последнему подтверждению",
-      exact: true,
-    })
-    .click();
-  await page
-    .getByRole("button", { name: "Восстановить план", exact: true })
-    .click();
-  await settle(page);
-  expect((await stored(page)).plan.draft).toEqual(g);
-  await expect(
-    page.getByRole("button", { name: "2. Варианты", exact: true }),
-  ).toBeEnabled();
-  await page.getByRole("button", { name: "Параметры", exact: true }).click();
-  await expect(page.locator(".geometry-issues")).toContainText(
-    "d: (7000; 4000)",
-  );
-  await expect(page.locator(".geometry-issues")).toContainText(
-    "e: (7000; 4000)",
-  );
-});
+
 
 test("clear project keeps metadata, persists empty graph and Undo restores the document", async ({
   page,
@@ -895,10 +754,7 @@ for (const pending of ["graphV4"] as const)
     expect(after.plan.draft).toEqual(before.plan.draft);
     expect(after.rooms).toEqual(before.rooms);
     expect(after.plan.restorePoint).toEqual(before.plan.restorePoint);
-    expect(after.plan.pendingEdit.kind).toBe(pending);
-    expect(after.plan.pendingEdit.targetDraftRevision).toBe(
-      after.plan.draftRevision,
-    );
+    expect(after.plan.pendingEdit).toBeNull();
     expect(commands).toBe(0);
   });
 test("clear project skips old snapshots waiting inside Web Lock", async ({
@@ -918,7 +774,9 @@ test("clear project skips old snapshots waiting inside Web Lock", async ({
   await expect
     .poll(() => page.evaluate(() => (window as any).lockReady))
     .toBe(true);
-  await page.getByRole("button", { name: "Увеличить", exact: true }).click();
+  await page.getByRole("button", { name: "Проект", exact: true }).click();
+  await page.getByLabel("Название проекта").fill("Изменённый проект");
+  await page.getByRole("button", { name: "Закрыть меню проекта" }).click();
   await clearProject(page);
   await page.evaluate(() => (window as any).releaseLock());
   await settle(page);
@@ -1193,50 +1051,6 @@ test("deletion range preserves error categories and removes retired chain condit
   expect(deleted.graph.vertices).toHaveLength(5);
 });
 
-import { chooseAngle } from "./fixtures/projects";
-test("angle tool reverse pair reuses condition and raw through reload release and deletion", async ({
-  page,
-}) => {
-  const { graphJunction } = await import("./fixtures/projects");
-  await openGraph(page, graphJunction());
-  await chooseAngle(page, "eastWall", "northWall", "ccw");
-  await commit(page, "Угол между стенами", "60,5");
-  await settle(page);
-  const before = await stored(page),
-    id = before.plan.draft.constraints[0].id;
-  await chooseAngle(page, "northWall", "eastWall", "cw");
-  await expect(
-    page.getByLabel("Угол между стенами", { exact: true }),
-  ).toHaveValue("60,5");
-  await commit(page, "Угол между стенами", "60.5");
-  await settle(page);
-  expect(
-    (await stored(page)).plan.draft.constraints.map((c: any) => c.id),
-  ).toEqual([id]);
-  await page.reload();
-  await settle(page);
-  await chooseAngle(page, "northWall", "eastWall", "cw");
-  await expect(
-    page.getByLabel("Угол между стенами", { exact: true }),
-  ).toHaveValue("60.5");
-  await page
-    .getByRole("button", { name: "Снять фиксацию", exact: true })
-    .click();
-  await settle(page);
-  expect((await stored(page)).plan.draft.constraints[0].fixed).toBe(false);
-  await page
-    .getByRole("button", { name: "Удалить условие", exact: true })
-    .click();
-  await settle(page);
-  const deleted = await stored(page);
-  expect(deleted.plan.draft.constraints).toEqual([]);
-  expect(deleted.plan.draft.fieldInputs[`angle:${id}:value`]).toBeUndefined();
-  await page
-    .getByRole("button", { name: "Отменить правку", exact: true })
-    .click();
-  await settle(page);
-  expect((await stored(page)).plan.draft.constraints[0].id).toBe(id);
-});
 
 test("clear project keeps previous history and two Undo actions restore clear then edit", async ({
   page,
@@ -1245,13 +1059,19 @@ test("clear project keeps previous history and two Undo actions restore clear th
   const before = await stored(page);
   await clearProject(page);
   await settle(page);
-  await addPoint(page, 2500, 1800);
-  expect((await stored(page)).plan.draft.vertices).toHaveLength(1);
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const start = await screenPoint(page, 2500, 1800);
+  const end = await screenPoint(page, 3000, 1800);
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y);
+  await page.mouse.up();
+  await expect.poll(async () => (await stored(page)).plan.draft.chains.length).toBe(1);
   await page
     .getByRole("button", { name: "Отменить правку", exact: true })
     .click();
   await settle(page);
-  expect((await stored(page)).plan.draft.vertices).toEqual([]);
+  expect((await stored(page)).plan.draft.chains).toEqual([]);
   await page
     .getByRole("button", { name: "Отменить правку", exact: true })
     .click();
@@ -1395,7 +1215,7 @@ test("deletion removing legacy unbound condition closes its context and preserve
   await expect(
     page.getByRole("button", { name: "Удалить условие", exact: true }),
   ).toHaveCount(0);
-  expect((await stored(page)).plan.draft.vertices).toEqual(g.vertices);
+  expect((await stored(page)).plan.draft.vertices).toEqual(cleanV4Graph(g).vertices);
   expect((await stored(page)).plan.draft.fieldInputs).toEqual({});
 });
 
@@ -1596,7 +1416,9 @@ for (const pending of ['graphV4'] as const)
 test('delete project invalidates queued editor save under real lock', async ({ page }) => {
   await openProject(page); await settle(page);
   await holdProjectWrites(page);
-  await page.getByRole('button', { name: 'Увеличить', exact: true }).click();
+  await page.getByRole("button", { name: "Проект", exact: true }).click();
+  await page.getByLabel("Название проекта").fill("Изменённый проект");
+  await page.getByRole("button", { name: "Закрыть меню проекта" }).click();
   await page.getByRole('button', { name: 'Проект', exact: true }).click();
   await page.getByRole('button', { name: 'Удалить проект', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Удалить проект', exact: true });
@@ -1694,7 +1516,9 @@ test(`delete project lock order ${order} cannot resurrect`, async ({ page, conte
 test('delete project own save after opening requires explicit reconfirmation', async ({ page }) => {
   await openProject(page); await settle(page);
   await holdProjectWrites(page);
-  await page.getByRole('button', { name: 'Увеличить', exact: true }).click();
+  await page.getByRole("button", { name: "Проект", exact: true }).click();
+  await page.getByLabel("Название проекта").fill("Изменённый проект");
+  await page.getByRole("button", { name: "Закрыть меню проекта" }).click();
   await page.getByRole('button', { name: 'Проект', exact: true }).click();
   await page.getByRole('button', { name: 'Удалить проект', exact: true }).click();
   const before = await stored(page);

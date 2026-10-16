@@ -35,6 +35,8 @@
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
+.canvas-grid-minor line { stroke: #dce0db; stroke-width: .75; }
+.canvas-grid-major line { stroke: #aab8ad; stroke-width: 1.2; }
 .room-face {
   fill: #e4e9df;
   stroke: none;
@@ -44,6 +46,17 @@
 }
 .physical-wall { fill: #b9c3b7; stroke: #526358; stroke-width: 2px; vector-effect: non-scaling-stroke; }
 .physical-wall-preview { fill: #9eaf9d; fill-opacity: .72; stroke: #3e7051; stroke-width: 2px; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }
+.wall-handle { fill: #fff; stroke: #a73448; stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.wall-handle.selected { fill: #d9435b; stroke: #fff; stroke-width: 3px; }
+.wall-nudge { display: grid; grid-template-columns: repeat(4, minmax(44px, 1fr)); gap: 8px; }
+.wall-nudge p { grid-column: 1 / -1; margin: 0; }
+.wall-nudge button { min-width: 44px; min-height: 44px; }
+.wall-cursor { stroke: #8d3545; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+.wall-candidates circle { fill: #fff6ef; stroke: #ae4856; stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.wall-ruler line { stroke: #a8344b; stroke-width: 1.5px; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+.wall-ruler .ruler-axis { stroke: #537a63; }
+.wall-ruler text { fill: #8f2d45; paint-order: stroke; stroke: white; stroke-width: 4px; }
+.cancel-wall-start { position: absolute; z-index: 4; left: 50%; bottom: 16px; transform: translateX(-50%); min-height: 44px; }
 .wall-thickness-control { display: grid; gap: .4rem; min-width: 0; }
 .graph-wall {
   stroke: #435b50;

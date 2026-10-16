@@ -1,9 +1,3 @@
-import { useState } from "react";
-import {
-  angleGeometry,
-  matchingAngle,
-  type AngleTarget,
-} from "../../domain/plan/angles";
 import NumberField from "../workflow/NumberField";
 import {
   chainNodes,
@@ -20,6 +14,7 @@ export default function ObjectContextPanel({
   context,
   interaction,
   graph,
+  selectedWallHandle,
   onCommand,
   onRaw,
   onRange,
@@ -30,6 +25,7 @@ export default function ObjectContextPanel({
   context: EditorContext;
   interaction: ToolInteraction;
   graph: GraphSnapshot;
+  selectedWallHandle?: "start" | "center" | "end" | null;
   onCommand: (c: GraphCommand, raw?: { key: string; text: string }) => void;
   onRaw: (key: string, text: string) => void;
   onRange: (chainId: string) => void;
@@ -37,8 +33,6 @@ export default function ObjectContextPanel({
   onConstraint: (id: string) => void;
   children?: React.ReactNode;
 }) {
-  const [point, setPoint] = useState({ x: 0, y: 0 }),
-    [rawPoint, setRawPoint] = useState({ x: "0", y: "0" });
   const g = graph,
     vs = new Map(g.vertices.map((v) => [v.id, v]));
   const length = (id: string) => {
@@ -152,119 +146,6 @@ export default function ObjectContextPanel({
         Esc — отмена.
       </p>
     );
-  if (
-    interaction.kind === "angleFirst" ||
-    interaction.kind === "angleSecond" ||
-    interaction.kind === "angleSector"
-  )
-    return (
-      <p role="status">
-        {interaction.kind === "angleFirst"
-          ? "Выберите первую стену."
-          : interaction.kind === "angleSecond"
-            ? "Выберите вторую стену с общей вершиной."
-            : "Выберите одну из двух дуг на плане."}{" "}
-        Esc — отмена.
-      </p>
-    );
-  if (context.kind === "angle") {
-    const c = matchingAngle(g, context),
-      value = angleGeometry(g, context, 1)?.value || 0,
-      id = c?.id;
-    const oldKey = c
-      ? `vertex:${c.target.vertexId}:angle-${g.segments.findIndex((s) => s.id === c.target.firstSegmentId)}-${g.segments.findIndex((s) => s.id === c.target.secondSegmentId)}-${c.target.sector}`
-      : "";
-    const key = id
-      ? `angle:${id}:value`
-      : `vertex:${context.vertexId}:angle-${g.segments.findIndex((s) => s.id === context.firstSegmentId)}-${g.segments.findIndex((s) => s.id === context.secondSegmentId)}-${context.sector}`;
-    return (
-      <>
-        <p>
-          {c?.fixed ? "Введённый угол" : "Вычисленный угол"} ·{" "}
-          {value.toFixed(1)}°
-        </p>
-        <NumberField
-          commitUnchanged
-          label="Угол между стенами"
-          value={c?.fixed ? c.value : value}
-          raw={g.fieldInputs[key] ?? g.fieldInputs[oldKey]}
-          min={0.000001}
-          max={359.999999}
-          unit="°"
-          onCommit={(n, text) => {
-            if (n === null) onRaw(key, text);
-            else {
-              const constraintId = id || crypto.randomUUID();
-              onCommand(
-                {
-                  type: "setAngle",
-                  constraintId,
-                  ...(c
-                    ? (c.target as AngleTarget)
-                    : {
-                        vertexId: context.vertexId,
-                        firstSegmentId: context.firstSegmentId,
-                        secondSegmentId: context.secondSegmentId,
-                        sector: context.sector,
-                      }),
-                  value: n,
-                },
-                { key: `angle:${constraintId}:value`, text },
-              );
-            }
-          }}
-        />
-        <p className="muted">
-          Ручной угол: больше 0° и меньше 360°, кроме 180°.
-        </p>
-        {c && actions(c)}
-      </>
-    );
-  }
-  if (context.kind === "tool" && context.tool === "addVertex")
-    return (
-      <>
-        <p>
-          Нажмите на свободное место полотна. Стрелки перемещают курсор, Shift —
-          шаг 1 мм, Enter ставит вершину.
-        </p>
-        <details>
-          <summary>Точное положение</summary>
-          {(["x", "y"] as const).map((axis) => (
-            <NumberField
-              key={axis}
-              label={`Новая вершина ${axis.toUpperCase()}`}
-              value={point[axis]}
-              raw={rawPoint[axis]}
-              onCommit={(n, text) => {
-                setRawPoint((p) => ({ ...p, [axis]: text }));
-                if (n !== null) setPoint((p) => ({ ...p, [axis]: n }));
-              }}
-            />
-          ))}
-          <button
-            disabled={Object.values(rawPoint).some(
-              (v) => !v.trim() || !Number.isFinite(Number(v.replace(",", "."))),
-            )}
-            onClick={() => onCommand({ type: "addVertex", point })}
-          >
-            Поставить точку
-          </button>
-        </details>
-      </>
-    );
-  if (context.kind === "vertex")
-    return (
-      <>
-        <p>
-          Переместите вершину инструментом перемещения или удалите её вместе с
-          примыкающими стенами.
-        </p>
-        <button className="danger" onClick={onDelete}>
-          Удалить вершину
-        </button>
-      </>
-    );
   if (context.kind === "segment") {
     const s = g.segments.find((s) => s.id === context.id);
     if (!s) return null;
@@ -275,6 +156,12 @@ export default function ObjectContextPanel({
       key = `chain:${chain.id}:orientation`;
     return (
       <>
+        {selectedWallHandle && <div className="wall-nudge" role="group" aria-label="Перемещение точки стены">
+          <p>{selectedWallHandle === "center" ? "Середина стены" : selectedWallHandle === "start" ? "Начало стены" : "Конец стены"} · шаг 1 мм</p>
+          {([ ["↑", "y", 1], ["↓", "y", -1], ["←", "x", -1], ["→", "x", 1] ] as const).map(([symbol, axis, direction]) =>
+            <button key={symbol} type="button" aria-label={`Сдвинуть ${selectedWallHandle === "center" ? "стену" : "точку стены"} ${symbol} на 1 мм`}
+              onClick={() => onCommand({ type: "nudgeWallHandle", chainId: chain.id, handle: selectedWallHandle, axis, direction })}>{symbol}</button>)}
+        </div>}
         {lengthField("segment", s.id, "Длина участка")}
         {lengthField("chain", chain.id, "Общая длина стены")}
         <button

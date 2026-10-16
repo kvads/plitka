@@ -12,6 +12,133 @@ import {
   stored,
 } from "./fixtures/projects";
 
+test("wheel zoom stays anchored at the cursor and never scrolls the page over canvas", async ({ page }) => {
+  await openGraph(page, graphRectangle(2000, 2000), { centerX: 1000, centerY: 1000, zoom: 2 });
+  const canvas = page.locator("svg[data-geometry]");
+  const start = await screenPoint(page, 1100, 1100);
+  const point = { x: Math.round(start.x), y: Math.round(start.y) };
+  await page.mouse.move(point.x, point.y);
+  const anchor = await canvas.evaluate((svg, client) => {
+    const p = new DOMPoint(client.x, client.y).matrixTransform((svg as SVGSVGElement).getScreenCTM()!.inverse());
+    return { x: p.x, y: -p.y };
+  }, point);
+  const before = await canvas.getAttribute("data-geometry");
+  const initialZoom = (await stored(page)).viewport.zoom;
+  let firstZoom = initialZoom;
+  for (const delta of [...Array(10).fill(-25), ...Array(10).fill(25)]) {
+    await page.mouse.wheel(0, delta);
+    await expect.poll(async () => (await stored(page)).viewport.zoom).toBeGreaterThan(0);
+    const previousZoom = (await stored(page)).viewport.zoom;
+    if (delta < 0) firstZoom = previousZoom;
+    const now = await screenPoint(page, anchor.x, anchor.y);
+    expect(Math.hypot(now.x - point.x, now.y - point.y)).toBeLessThanOrEqual(2);
+  }
+  expect(firstZoom).toBeGreaterThan(initialZoom);
+  expect((await stored(page)).viewport.zoom).toBeLessThan(firstZoom);
+  expect(await canvas.getAttribute("data-geometry")).toBe(before);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  const width = await canvas.evaluate((svg) => svg.getBoundingClientRect().width);
+  expect((await stored(page)).viewport.zoom).toBeLessThanOrEqual(Math.max(8, 5400 / width));
+  await page.mouse.wheel(0, -5000);
+  await expect.poll(async () => (await stored(page)).viewport.zoom).toBeCloseTo(Math.max(8, 5400 / width), 3);
+  const upper = (await stored(page)).viewport;
+  await page.mouse.wheel(0, -5000);
+  expect((await stored(page)).viewport).toEqual(upper);
+  await page.mouse.wheel(0, 5000);
+  await expect.poll(async () => (await stored(page)).viewport.zoom).toBe(0.2);
+  const lower = (await stored(page)).viewport;
+  await page.mouse.wheel(0, 5000);
+  expect((await stored(page)).viewport).toEqual(lower);
+  for (const tool of ["Стена", "Переместить полотно"]) {
+    await page.getByRole("button", { name: tool, exact: true }).click();
+    const cursor = await screenPoint(page, anchor.x, anchor.y);
+    await page.mouse.move(Math.round(cursor.x), Math.round(cursor.y));
+    for (const delta of [...Array(10).fill(-25), ...Array(10).fill(25)]) {
+      await page.mouse.wheel(0, delta);
+      const current = await screenPoint(page, anchor.x, anchor.y);
+      expect(Math.hypot(current.x - Math.round(cursor.x), current.y - Math.round(cursor.y))).toBeLessThanOrEqual(2);
+    }
+  }
+  const sidebar = page.locator(".canvas-sidebar");
+  await sidebar.evaluate((node) => {
+    const spacer = document.createElement("div");
+    spacer.style.cssText = "min-height:1000px; flex:none";
+    node.appendChild(spacer);
+  });
+  const box = await sidebar.boundingBox();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.wheel(0, 300);
+  await expect.poll(() => sidebar.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
+});
+
+test("selected wall exposes three temporary handles and arrows nudge by one millimeter", async ({ page }) => {
+  await openGraph(page, graphRectangle());
+  await canvasPick(page, "segment", "as0");
+  await expect(page.locator("[data-wall-handle]")).toHaveCount(3);
+  await page.locator('[data-wall-handle="end"]').click();
+  await page.getByRole("button", { name: "Сдвинуть точку стены → на 1 мм" }).click();
+  await expect.poll(async () => (await stored(page)).plan.draft.vertices.find((v: { id: string }) => v.id === "av1")?.x).toBe(4001);
+  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
+  await expect(page.locator("[data-wall-handle]")).toHaveCount(0);
+});
+
+test("ten wall-end arrow presses are one millimeter each and Undo reverses the last", async ({ page }) => {
+  await openGraph(page, graphRectangle());
+  await canvasPick(page, "segment", "as0");
+  await page.locator('[data-wall-handle="end"]').click();
+  const arrow = page.getByRole("button", { name: "Сдвинуть точку стены → на 1 мм" });
+  for (let n = 1; n <= 10; n++) {
+    await arrow.click();
+    await expect.poll(async () => (await stored(page)).plan.draft.vertices.find((v: { id: string }) => v.id === "av1")?.x).toBe(4000 + n);
+  }
+  await page.getByRole("button", { name: "Отменить правку" }).click();
+  await expect.poll(async () => (await stored(page)).plan.draft.vertices.find((v: { id: string }) => v.id === "av1")?.x).toBe(4009);
+});
+
+test("center handle moves both ends of the selected wall and keeps distant corners", async ({ page }) => {
+  await openGraph(page, graphRectangle());
+  await canvasPick(page, "segment", "as0");
+  await page.locator('[data-wall-handle="center"]').click();
+  await page.getByRole("button", { name: "Сдвинуть стену → на 1 мм" }).click();
+  await expect.poll(async () => (await stored(page)).plan.draft.vertices[0].x).toBe(1);
+  const vertices = (await stored(page)).plan.draft.vertices;
+  expect(vertices.map((vertex: { x: number }) => vertex.x)).toEqual([1, 4001, 4000, 0]);
+});
+
+test("invalid wall nudge leaves draft revision unchanged and permits another arrow", async ({ page }) => {
+  const graph = {
+    vertices: [{ id: "a", x: 0, y: 0 }, { id: "m", x: 1000, y: 0 }, { id: "b", x: 2000, y: 0 }, { id: "far", x: 1000, y: 1000 }],
+    segments: [{ id: "s0", startVertexId: "a", endVertexId: "m", chainId: "main" },
+      { id: "s1", startVertexId: "m", endVertexId: "b", chainId: "main" },
+      { id: "branch", startVertexId: "m", endVertexId: "far", chainId: "side" }],
+    chains: [{ id: "main", startVertexId: "a", endVertexId: "b", segmentIds: ["s0", "s1"], thicknessMm: 100 },
+      { id: "side", startVertexId: "m", endVertexId: "far", segmentIds: ["branch"], thicknessMm: 100 }],
+    voids: [], constraints: [], fieldInputs: {},
+  };
+  await openGraph(page, graph);
+  await canvasPick(page, "segment", "s0");
+  await page.locator('[data-wall-handle="end"]').click();
+  const before = await stored(page);
+  await page.getByRole("button", { name: "Сдвинуть точку стены ↑ на 1 мм" }).click();
+  await expect(page.getByRole("alert")).toContainText("прямолинейность");
+  expect((await stored(page)).plan.draftRevision).toBe(before.plan.draftRevision);
+  expect((await stored(page)).plan.draft).toEqual(before.plan.draft);
+  await page.getByRole("button", { name: "Сдвинуть точку стены → на 1 мм" }).click();
+  await expect.poll(async () => (await stored(page)).plan.draft.vertices.find((v: { id: string }) => v.id === "b")?.x).toBe(2001);
+});
+
+test("wall mouse cursor is a ten millimeter textured square", async ({ page }) => {
+  await openGraph(page, graphRectangle());
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const point = await screenPoint(page, 1500, 1500);
+  await page.mouse.move(point.x, point.y);
+  const cursor = page.locator(".wall-cursor");
+  await expect(cursor).toHaveAttribute("width", "10");
+  await expect(cursor).toHaveAttribute("height", "10");
+  await expect(cursor).toHaveAttribute("fill", "url(#wall-cursor-hatch)");
+  expect((await stored(page)).plan.draft.chains).toHaveLength(4);
+});
+
 test("wall thickness keeps room identity and blocks an unusable room", async ({ page }) => {
   await openGraph(page, graphRectangle(2000, 2000), { centerX: 1000, centerY: 1000, zoom: 2 });
   await expect.poll(async () => (await stored(page)).rooms.length).toBe(1);
@@ -46,17 +173,12 @@ test("diagnostic vertices have names without numeric coordinates", async ({ page
   await expect(issues).not.toContainText(/\(\s*-?\d+\s*;\s*-?\d+\s*\)\s*мм/);
 });
 
-test("precise X and Y fields still add a new vertex", async ({ page }) => {
+test("separate vertex creation and X/Y fields are absent", async ({ page }) => {
   await openGraph(page, graphRectangle());
-  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
-  const parameters = page.getByRole("button", { name: "Параметры", exact: true });
-  if (await parameters.getAttribute("aria-expanded") === "false") await parameters.click();
-  await page.getByText("Точное положение", { exact: true }).click();
-  await commit(page, "Новая вершина X", "2000");
-  await commit(page, "Новая вершина Y", "1500");
-  await page.getByRole("button", { name: "Поставить точку", exact: true }).click();
-  await expect.poll(async () => (await stored(page)).plan.draft.vertices.length).toBe(5);
-  expect((await stored(page)).plan.draft.vertices.at(-1)).toMatchObject({ x: 2000, y: 1500 });
+  await expect(page.getByRole("button", { name: "Добавить вершину", exact: true })).toHaveCount(0);
+  await expect(page.getByText("Точное положение", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Новая вершина X")).toHaveCount(0);
+  await expect(page.getByLabel("Новая вершина Y")).toHaveCount(0);
 });
 
 test("mouse sidebar stays open in a narrow window and closed controls leave tab order", async ({ page }) => {
@@ -73,7 +195,7 @@ test("mouse sidebar stays open in a narrow window and closed controls leave tab 
   await page.keyboard.press("Tab");
   await expect(tool).toBeFocused();
   await expect(page.locator(".sidebar-tooltip")).toHaveText("Выбрать");
-  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
   await page.getByRole("button", { name: "Свернуть меню", exact: true }).click();
   await expect(toggle).toBeFocused();
   await expect(tool).toHaveCount(0);
@@ -81,7 +203,7 @@ test("mouse sidebar stays open in a narrow window and closed controls leave tab 
   await page.keyboard.press("Tab");
   await expect(toggle).not.toBeFocused();
   await page.getByRole("button", { name: "Раскрыть меню", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Добавить вершину", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Стена", exact: true })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "2. Варианты", exact: true }).click();
   await expect(page.getByRole("button", { name: "2. Варианты", exact: true })).toHaveAttribute("aria-current", "step");
   await page.getByRole("button", { name: "Свернуть меню", exact: true }).click();
@@ -155,64 +277,8 @@ test("two rooms retain separate parameters", async ({ page }) => {
     (await stored(page)).rooms.some((r: any) => r.material.tile === 700),
   ).toBeTruthy();
 });
-test("mobile overlays do not add points and keyboard focus remains usable", async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 375, height: 812 });
-  await openProject(page);
-  await settle(page);
-  await page
-    .getByRole("button", { name: "Добавить вершину", exact: true })
-    .click();
-  const count = (await stored(page)).plan.draft.vertices.length;
-  await page.getByRole("button", { name: "Параметры", exact: true }).click();
-  await page.getByRole("button", { name: "Параметры", exact: true }).click();
-  expect((await stored(page)).plan.draft.vertices.length).toBe(count);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(
-    375,
-  );
-  if (
-    await page
-      .getByRole("button", { name: "Закрыть параметры", exact: true })
-      .isVisible()
-  )
-    await page
-      .getByRole("button", { name: "Закрыть параметры", exact: true })
-      .click();
-  await page.getByRole("button", { name: "Параметры", exact: true }).focus();
-  await page.keyboard.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: "Инструмент", exact: true }),
-  ).toBeVisible();
-  await page.screenshot({ path: "/tmp/plitka-graph-mobile.png" });
-});
-test("mouse and keyboard edits keep immediate commands and Undo", async ({ page }) => {
-  await openGraph(page, graphRectangle());
-  const canvas = page.locator("svg[data-geometry]");
-  const before = (await stored(page)).plan.draft;
-  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
-  const point = await screenPoint(page, 2000, 1500);
-  await page.mouse.click(point.x, point.y);
-  await expect.poll(async () => (await stored(page)).plan.draft.vertices.length).toBe(5);
-  await expect(page.getByRole("group", { name: "Размещение вершины" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Переместить вершину", exact: true }).click();
-  const origin = await screenPoint(page, 4000, 0);
-  await page.mouse.move(origin.x, origin.y);
-  await page.mouse.down();
-  await page.mouse.move(origin.x - 35, origin.y - 35);
-  await page.mouse.up();
-  await expect.poll(async () => (await stored(page)).plan.draft.vertices.find((v: any) => v.id === "av1").x).not.toBe(4000);
-  await expect(page.getByRole("group", { name: "Перемещение вершины" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
-  await canvas.focus();
-  await page.keyboard.press("Enter");
-  await expect.poll(async () => (await stored(page)).plan.draft.vertices.length).toBe(6);
-  await expect(page.getByRole("group", { name: "Размещение вершины" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Отменить правку", exact: true }).click();
-  await settle(page);
-  expect((await stored(page)).plan.draft.vertices).toHaveLength(5);
-  expect((await stored(page)).plan.draft).not.toEqual(before);
-});
+
+
 test("numeric inset may launch and fail without losing input", async ({
   page,
 }) => {
@@ -256,146 +322,15 @@ async function screenPoint(
     { x, y },
   );
 }
-for (const width of [375, 1440])
-  test(`canvas node line snapping and drag cancellation ${width}`, async ({
-    page,
-  }) => {
-    await page.setViewportSize({ width, height: 900 });
-    await openProject(page);
-    await settle(page);
-    await page.evaluate(() => {
-      const key = "plitka-projects-v4",
-        c = JSON.parse(localStorage.getItem(key)!);
-      c.projects[0].viewport = {
-        centerX: 2100,
-        centerY: 1800,
-        zoom: 8,
-        gridStepMm: 100,
-      };
-      localStorage.setItem(key, JSON.stringify(c));
-    });
-    await page.reload();
-    await settle(page);
-    await page
-      .getByRole("button", { name: "Добавить вершину", exact: true })
-      .click();
-    if (
-      await page
-        .getByRole("button", { name: "Закрыть параметры", exact: true })
-        .isVisible()
-    )
-      await page
-        .getByRole("button", { name: "Закрыть параметры", exact: true })
-        .click();
-    const before = (await stored(page)).plan.draft.vertices.length;
-    const node = await screenPoint(page, 2102, 1802);
-    await page.mouse.click(node.x, node.y);
-    await expect
-      .poll(async () => (await stored(page)).plan.draft.vertices.length)
-      .toBe(before + 1);
-    const line = await screenPoint(page, 2102, 1750);
-    await page.mouse.click(line.x, line.y);
-    await expect
-      .poll(async () => (await stored(page)).plan.draft.vertices.length)
-      .toBe(before + 2);
-    const vertices = (await stored(page)).plan.draft.vertices;
-    expect(
-      vertices.some((v: any) => v.x === 2100 && v.y === 1800),
-    ).toBeTruthy();
-    expect(
-      vertices.some((v: any) => v.x === 2100 && Math.abs(v.y - 1750) < 0.01),
-    ).toBeTruthy();
-    await page.mouse.move(node.x, node.y);
-    await page.mouse.down();
-    await page.mouse.move(node.x + 40, node.y + 40);
-    await page.mouse.up();
-    await settle(page);
-    expect((await stored(page)).plan.draft.vertices.length).toBe(before + 2);
-    await page.screenshot({ path: `/tmp/plitka-graph-${width}.png` });
-  });
-test("touch adds one independent point and undo restores whole graph", async ({
-  browser,
-}) => {
-  const context = await browser.newContext({
-    baseURL: process.env.PW_BASE_URL || "http://127.0.0.1:5173",
-    viewport: { width: 375, height: 900 },
-    hasTouch: true,
-  });
-  const page = await context.newPage();
-  await openProject(page);
-  await settle(page);
-  const before = (await stored(page)).plan.draft;
-  await page
-    .getByRole("button", { name: "Добавить вершину", exact: true })
-    .tap();
-  if (
-    await page
-      .getByRole("button", { name: "Закрыть параметры", exact: true })
-      .isVisible()
-  )
-    await page
-      .getByRole("button", { name: "Закрыть параметры", exact: true })
-      .tap();
-  const p = await screenPoint(page, 2500, 1800);
-  await page.touchscreen.tap(p.x, p.y);
-  await expect(page.getByRole("group", { name: "Размещение вершины" })).toBeVisible();
-  await page.getByRole("button", { name: "Поставить вершину" }).tap();
-  await expect
-    .poll(async () => (await stored(page)).plan.draft.vertices.length)
-    .toBe(before.vertices.length + 1);
-  await page.getByRole("button", { name: "Параметры", exact: true }).tap();
-  await page
-    .getByRole("button", { name: "Отменить правку", exact: true })
-    .tap();
-  await settle(page);
-  expect((await stored(page)).plan.draft).toEqual(before);
-  await context.close();
-});
-test("pointer cancellation and Escape clear unfinished connections", async ({
-  page,
-}) => {
-  await openProject(page);
-  await settle(page);
-  await page
-    .getByRole("button", { name: "Соединить стены", exact: true })
-    .click();
-  await canvasPick(page, "vertex", 1);
-  await page.keyboard.press("Escape");
-  if (
-    (await page
-      .getByRole("button", { name: "Параметры", exact: true })
-      .getAttribute("aria-expanded")) === "false"
-  )
-    await page.getByRole("button", { name: "Параметры", exact: true }).click();
-  await expect(
-    page.locator('[data-target^="vertex:"]').first(),
-  ).not.toHaveClass(/selected/);
-  await page
-    .getByRole("button", { name: "Добавить вершину", exact: true })
-    .click();
-  if (
-    await page
-      .getByRole("button", { name: "Закрыть параметры", exact: true })
-      .isVisible()
-  )
-    await page
-      .getByRole("button", { name: "Закрыть параметры", exact: true })
-      .click();
-  const before = (await stored(page)).plan.draft;
-  const p = await screenPoint(page, 2200, 1700);
-  await page.mouse.move(p.x, p.y);
+async function drawWallStroke(page: import("@playwright/test").Page, x1: number, y1: number, x2: number, y2: number) {
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const start = await screenPoint(page, x1, y1);
+  const end = await screenPoint(page, x2, y2);
+  await page.mouse.move(start.x, start.y);
   await page.mouse.down();
-  await page
-    .getByRole("group", { name: "Редактор плана помещений" })
-    .dispatchEvent("pointercancel", {
-      pointerId: 1,
-      pointerType: "mouse",
-      clientX: p.x,
-      clientY: p.y,
-    });
+  await page.mouse.move(end.x, end.y, { steps: 4 });
   await page.mouse.up();
-  expect((await stored(page)).plan.draft).toEqual(before);
-});
+}
 test("failed dimension in independent room does not block selected room", async ({
   page,
 }) => {
@@ -628,58 +563,7 @@ for (const target of ["object", "tile", "rules", "variants"] as const)
     ).toBeEnabled();
   });
 
-test("context room settings survive object selection and clear Undo; new room gets defaults", async ({
-  page,
-}) => {
-  const { addPoint } = await import("./fixtures/projects");
-  await openProject(page);
-  await toRules(page);
-  await commit(page, "Отступ от стен", "17");
-  await page.getByRole("button", { name: "2. Варианты", exact: true }).click();
-  await commit(page, "Сторона плитки", "700");
-  await settle(page);
-  const before = await stored(page);
-  await page.getByRole("button", { name: "1. План", exact: true }).click();
-  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
-  await canvasPick(page, "segment", 1);
-  await expect(page.getByLabel("Сторона плитки", { exact: true })).toHaveCount(
-    0,
-  );
-  await canvasPick(page, "vertex", 1);
-  await page.getByRole("button", { name: "2. Варианты", exact: true }).click();
-  await expect(page.getByLabel("Сторона плитки", { exact: true })).toHaveValue(
-    "700",
-  );
-  await clearProject(page);
-  await settle(page);
-  await page
-    .getByRole("button", { name: "Отменить правку", exact: true })
-    .click();
-  await settle(page);
-  expect((await stored(page)).rooms).toEqual(before.rooms);
-  await clearProject(page);
-  await settle(page);
-  for (const [x, y] of [
-    [0, 0],
-    [1000, 0],
-    [1000, 1000],
-    [0, 1000],
-  ])
-    await addPoint(page, x, y);
-  const ids = (await stored(page)).plan.draft.vertices.map((v: any) => v.id);
-  await page
-    .getByRole("button", { name: "Соединить стены", exact: true })
-    .click();
-  for (let i = 0; i < 4; i++) {
-    await canvasPick(page, "vertex", ids[i]);
-    await canvasPick(page, "vertex", ids[(i + 1) % 4]);
-    await settle(page);
-  }
-  const rooms = (await stored(page)).rooms;
-  expect(rooms).toHaveLength(1);
-  expect(rooms[0].material.tile).toBe(600);
-  expect(rooms[0].rules.gap).toBe(10);
-});
+
 
 import { deletionProjects, projectCatalog, openDelete } from './fixtures/projects';
 test('delete project from editor closes it permanently', async ({ page }) => {
@@ -919,20 +803,7 @@ for (const mode of ['success','error']) test(`room flow background manual layout
   if(mode==='success') { await expect(page.getByRole('button',{name:'Отменить сдвиг'})).toHaveCount(0); await expect(page.getByLabel('Сдвиг X',{exact:true})).toHaveValue('25'); }
   else {await expect(page.getByRole('alert').filter({hasText:'Ошибка сдвига'})).toBeVisible();await expect(page.getByRole('button',{name:'План с размерами · SVG'})).toBeDisabled();await page.getByRole('button',{name:'Отменить сдвиг'}).click();await expect(page.getByRole('button',{name:'План с размерами · SVG'})).toBeEnabled();}
 });
-test('room flow restores renamed room after wall recreation with new IDs',async({page})=>{
-  await flowRoom(page); await page.getByLabel('Название помещения').fill('Кухня');await page.getByLabel('Название помещения').press('Enter');await commit(page,'Сторона плитки','700');await settle(page);
-  const before=await stored(page), room=before.rooms.find((r:any)=>r.id===before.selectedRoomId);
-  await page.getByRole('button',{name:'1. План',exact:true}).click();
-  await page.getByRole('button',{name:'Выбрать',exact:true}).click();await canvasPick(page,'segment','as0');
-  page.on('dialog',d=>d.accept());await page.getByRole('button',{name:'Удалить стену',exact:true}).click();await settle(page);
-  expect((await stored(page)).rooms.find((r:any)=>r.id===room.id).binding).toBe('detached');
-  await expect(page.locator('[data-room-label]').filter({hasText:'Кухня'})).toHaveCount(0);
-  await page.reload();await settle(page);
-  await page.getByRole('button',{name:'Соединить стены',exact:true}).click();
-  await canvasPick(page,'vertex','av0');await canvasPick(page,'vertex','av1');await settle(page);
-  const after=(await stored(page)).rooms.find((r:any)=>r.id===room.id);
-  expect(after.binding).toBe('attached');expect(after.name).toBe('Кухня');expect(after.material.tile).toBe(700);
-});
+
 for (const width of [375,1440]) test(`room flow labels and keyboard at width ${width}`,async({page})=>{
   await page.setViewportSize({width,height:900});await flowRoom(page);
   await expect(page.locator('[data-room-label]')).toHaveCount(2);
@@ -947,7 +818,7 @@ for(const [mm,label] of [[999.9,'999,9 мм'],[1000,'1 м'],[3175,'3,175 м'],[3
   await openGraph(page,flowRectangle(mm,2000));
   await expect(page.locator('svg text').filter({hasText:label}).first()).toBeVisible();
   const before=(await stored(page)).plan.draft;
-  await page.getByRole('button',{name:'Увеличить',exact:true}).click();
+  const canvas = page.locator('svg[data-geometry]');const box=await canvas.boundingBox();await page.mouse.move(box!.x+box!.width/2,box!.y+box!.height/2);await page.mouse.wheel(0,-250);
   await page.setViewportSize({width:1440,height:900});
   await expect(page.locator('svg text').filter({hasText:label}).first()).toBeVisible();
   expect((await stored(page)).plan.draft).toEqual(before);
@@ -955,11 +826,13 @@ for(const [mm,label] of [[999.9,'999,9 мм'],[1000,'1 м'],[3175,'3,175 м'],[3
 test('room flow split does not transfer parameters and merge restores boundary',async({page})=>{
   await flowRoom(page);await commit(page,'Сторона плитки','777');await settle(page);
   const original=(await stored(page)).selectedRoomId;
-  await page.getByRole('button',{name:'1. План',exact:true}).click();await page.getByRole('button',{name:'Соединить стены',exact:true}).click();
-  await canvasPick(page,'vertex','av0');await canvasPick(page,'vertex','av2');await settle(page);
+  await page.getByRole('button',{name:'1. План',exact:true}).click();
+  const originalChains=new Set((await stored(page)).plan.draft.chains.map((chain:{id:string})=>chain.id));
+  await drawWallStroke(page,0,0,4000,3000);await settle(page);
   const split=await stored(page);expect(split.rooms.find((r:any)=>r.id===original).binding).toBe('detached');
   expect(split.rooms.filter((r:any)=>r.binding==='attached').every((r:any)=>r.material.tile===600)).toBe(true);
-  const diagonal=split.plan.draft.segments.find((s:any)=>s.startVertexId==='av0'&&s.endVertexId==='av2');
+  const diagonalChain=split.plan.draft.chains.find((chain:{id:string})=>!originalChains.has(chain.id));
+  const diagonal=split.plan.draft.segments.find((segment:{id:string})=>segment.id===diagonalChain.segmentIds[0]);
   await page.getByRole('button',{name:'Выбрать',exact:true}).click();await canvasPick(page,'segment',diagonal.id);
   page.on('dialog',d=>d.accept());await page.getByRole('button',{name:'Удалить стену',exact:true}).click();await settle(page);
   expect((await stored(page)).rooms.find((r:any)=>r.id===original).binding).toBe('attached');
@@ -987,7 +860,7 @@ test('room flow physical area and request invariant under zoom resize',async({pa
   await openGraph(page,g);await toRules(page);
   const run=async()=>{const response=page.waitForResponse('**/api/optimize');await page.getByRole('button',{name:'Подобрать раскладку',exact:true}).click();const r=await response;return {input:r.request().postDataJSON(),output:await r.json()};};
   const first=await run();await expect(page.getByRole('button',{name:'План с размерами · SVG'})).toBeEnabled();
-  await page.getByRole('button',{name:'Увеличить',exact:true}).click();await page.setViewportSize({width:1440,height:900});
+  const canvas=page.locator('svg[data-geometry]');const box=await canvas.boundingBox();await page.mouse.move(box!.x+box!.width/2,box!.y+box!.height/2);await page.mouse.wheel(0,-250);await page.setViewportSize({width:1440,height:900});
   const second=await run();expect(second.input).toEqual(first.input);expect(second.output).toEqual(first.output);
   expect(first.output.variants[0].metrics.room_area).toBeCloseTo(9.7039,4);
 });

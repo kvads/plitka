@@ -129,6 +129,12 @@ class MoveVertex(Model):
     type: Literal['moveVertex']
     vertexId: Id
     point: Point
+class NudgeWallHandle(Model):
+    type: Literal['nudgeWallHandle']
+    chainId: Id
+    handle: Literal['start','center','end']
+    axis: Literal['x','y']
+    direction: Literal[-1,1]
 class LengthTarget(Model):
     kind: Literal['segment','chain']
     id: Id
@@ -187,7 +193,7 @@ class AddTemplate(Model):
     thicknessMm: float = Field(gt=0, allow_inf_nan=False)
 class Reconcile(Model):
     type: Literal['reconcile']
-Command = Annotated[AddVertex|Connect|DrawWall|SetWallThickness|MoveVertex|SetLength|SetAngle|SetOrientation|ReleaseConstraint|DeleteElements|DeleteRoom|DeleteVoid|DeleteConstraint|MarkVoid|UnmarkVoid|AddTemplate|Reconcile, Field(discriminator='type')]
+Command = Annotated[AddVertex|Connect|DrawWall|SetWallThickness|MoveVertex|NudgeWallHandle|SetLength|SetAngle|SetOrientation|ReleaseConstraint|DeleteElements|DeleteRoom|DeleteVoid|DeleteConstraint|MarkVoid|UnmarkVoid|AddTemplate|Reconcile, Field(discriminator='type')]
 class ValidateRequest(Model):
     schemaVersion: Literal[4]
     requestId: Id

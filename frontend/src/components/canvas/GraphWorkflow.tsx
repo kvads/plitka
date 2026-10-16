@@ -1,4 +1,4 @@
-import { ArrowLeft, ChevronsLeft, ChevronsRight, FilePenLine, FolderOpen, Grip, Minus, Plus, Redo2, RotateCcw, Save, Settings2 } from "lucide-react";
+import { ArrowLeft, ChevronsLeft, ChevronsRight, FilePenLine, FolderOpen, Grip, Redo2, RotateCcw, Save, Settings2 } from "lucide-react";
 import SidebarIconButton from "./SidebarIconButton";
 import DeleteProjectDialog from "./DeleteProjectDialog";
 import type { DeleteProjectIntent, DeleteProjectOutcome } from "../../domain/plan/types";
@@ -72,9 +72,8 @@ export default function GraphWorkflow({
     [wallThicknessError, setWallThicknessError] = useState(""),
     [vertex, setVertex] = useState(""),
     [segment, setSegment] = useState(""),
+    [wallHandle, setWallHandle] = useState<"start" | "center" | "end" | null>(null),
     [diagnostic, setDiagnostic] = useState<DiagnosticSelection | null>(null),
-    [blockedVertex, setBlockedVertex] = useState(""),
-    [start, setStart] = useState<string | null>(null),
     [panel, setPanel] = useState(initial.workflow.requestedStage !== "object"),
     [restore, setRestore] = useState(false);
   const [results, setResults] = useState<{
@@ -116,12 +115,9 @@ export default function GraphWorkflow({
     });
     if (!doc.plan.draft.vertices.some((v) => v.id === vertex)) setVertex("");
     if (!doc.plan.draft.segments.some((s) => s.id === segment)) setSegment("");
-    if (start && !doc.plan.draft.vertices.some((v) => v.id === start))
-      setStart(null);
     if (reset) {
       setVertex("");
       setSegment("");
-      setStart(null);
       setTool("select");
       setRestore(false);
       setProjectMenu(false);
@@ -130,7 +126,6 @@ export default function GraphWorkflow({
       setResultError("");
       setPart("");
       setDiagnostic(null);
-      setBlockedVertex("");
       setPanel(false);
       resultGeneration.current++;
     }
@@ -200,7 +195,6 @@ export default function GraphWorkflow({
     dispatchEditor({ type: "cancel" });
     setVertex("");
     setSegment("");
-    setStart(null);
     setPanel(true);
     requestAnimationFrame(() => stageHeading.current?.focus());
   };
@@ -233,7 +227,6 @@ export default function GraphWorkflow({
   };
   const run = (c: GraphCommand, raw?: { key: string; text: string }) => {
     setDiagnostic(null);
-    setBlockedVertex("");
     const values = (x: unknown): unknown[] =>
       x && typeof x === "object" ? Object.values(x).flatMap(values) : [x];
     if (
@@ -265,7 +258,6 @@ export default function GraphWorkflow({
   const g = doc.plan.draft;
   useEffect(() => {
     setDiagnostic(null);
-    setBlockedVertex("");
   }, [doc.id, h.change, tool]);
   useEffect(() => {
     setDiagnostic((current) =>
@@ -282,19 +274,6 @@ export default function GraphWorkflow({
     );
   }, [response]);
   const visibleIssues = diagnosticIssues(response?.issues || [], g);
-  const placementBlocked = (ids: string[], point: { x: number; y: number }) => {
-    setDiagnostic(null);
-    setVertex("");
-    setSegment("");
-    setBlockedVertex(ids[0]);
-    const existing = g.vertices.find((v) => v.id === ids[0])!;
-    const label = `вершина ${g.vertices.indexOf(existing) + 1}`;
-    h.setError(
-      sameCoordinate(existing, point)
-        ? `В этой точке уже есть ${label}. Выберите другое место.`
-        : `Слишком близко к вершине ${g.vertices.indexOf(existing) + 1}. Увеличьте масштаб или выберите другое место.`,
-    );
-  };
   const field = (key: string, text: string) => {
     if (face?.dependencyIds.some((id) => key.includes(":" + id + ":")))
       invalidate();
@@ -486,19 +465,7 @@ export default function GraphWorkflow({
     if (!c) return;
     setPanel(true);
     setProjectMenu(false);
-    if (c.kind === "angle")
-      dispatchEditor({
-        type: "context",
-        context: {
-          kind: "angle",
-          vertexId: c.target.vertexId!,
-          firstSegmentId: c.target.firstSegmentId!,
-          secondSegmentId: c.target.secondSegmentId!,
-          sector: c.target.sector!,
-          constraintId: id,
-        },
-      });
-    else if (c.target.range && c.target.chainId)
+    if (c.target.range && c.target.chainId)
       dispatchEditor({
         type: "context",
         context: {
@@ -543,19 +510,15 @@ export default function GraphWorkflow({
     h.cancelDeletion();
     setProjectMenu(false);
     setDiagnostic(null);
-    setBlockedVertex("");
     setVertex(v);
     setSegment(s);
+    setWallHandle(null);
     setPanel(true);
     if (
       editor.interaction.kind === "rangeFirst" ||
       editor.interaction.kind === "rangeSecond"
     ) {
       if (v) dispatchEditor({ type: "rangeVertex", id: v, graph: g });
-      return;
-    }
-    if (tool === "angle") {
-      if (s) dispatchEditor({ type: "angleSegment", id: s, graph: g });
       return;
     }
     dispatchEditor({
@@ -576,7 +539,6 @@ export default function GraphWorkflow({
     <ProjectCanvas
       graph={g}
       onCancel={() => {
-        setStart(null);
         dispatchEditor({ type: "cancel" });
         setPanel(false);
       }}
@@ -595,10 +557,9 @@ export default function GraphWorkflow({
       }}
       selectedVertex={vertex}
       selectedSegment={segment}
-      startVertex={start}
+      selectedWallHandle={wallHandle}
+      onWallHandleSelect={(handle) => { setWallHandle(handle); setPanel(true); }}
       diagnostic={diagnostic}
-      blockedVertex={blockedVertex}
-      onBlocked={placementBlocked}
       layout={selectedLayout}
       onPart={(id) => {
         setPart(id);
@@ -614,17 +575,6 @@ export default function GraphWorkflow({
       panelOpen={panel || projectMenu}
       sidebarOpen={sidebarOpen}
       onCanvasFocus={() => setPanel(false)}
-      onSector={(sector) => {
-        dispatchEditor({ type: "sector", sector });
-        setPanel(true);
-        requestAnimationFrame(() =>
-          document
-            .querySelector<HTMLInputElement>(
-              '[aria-label="Угол между стенами"]',
-            )
-            ?.focus(),
-        );
-      }}
       highlightedSegments={
         h.deletion?.impact?.segmentIds || (panel ? dimensionTarget : [])
       }
@@ -641,27 +591,6 @@ export default function GraphWorkflow({
       onViewport={(viewport) => h.update((d) => ({ ...d, viewport }))}
       onSelection={selectObject}
       onRoom={selectRoom}
-      onMove={(vertexId, point) => run({ type: "moveVertex", vertexId, point })}
-      onPoint={(p, target) => {
-        if (stage !== "object") return;
-        if (tool === "addVertex") run({ type: "addVertex", point: p });
-        if (tool === "connect") {
-          if (!start) {
-            if (target.vertexId) setStart(target.vertexId);
-            else h.setError("Выберите начальную вершину.");
-          } else if (target.vertexId || target.segmentId) {
-            run({
-              type: "connect",
-              fromVertexId: start,
-              thicknessMm: wallThickness,
-              to: target.vertexId
-                ? { vertexId: target.vertexId }
-                : { segmentId: target.segmentId!, point: p },
-            });
-            setStart(null);
-          } else h.setError("Выберите конечную вершину или стену.");
-        }
-      }}
     >
       <div className="canvas-sidebar-shell" data-overlay onPointerDown={(e) => e.stopPropagation()}>
         <SidebarIconButton
@@ -700,15 +629,11 @@ export default function GraphWorkflow({
             h.cancelDeletion();
             setTool(tool);
             setWallThicknessError("");
-            setStart(null);
             setVertex("");
             setSegment("");
+            setWallHandle(null);
             setProjectMenu(false);
-            dispatchEditor(
-              tool === "angle"
-                ? { type: "interaction", interaction: { kind: "angleFirst" } }
-                : { type: "context", context: { kind: "tool", tool } },
-            );
+            dispatchEditor({ type: "context", context: { kind: "tool", tool } });
             setPanel(tool === "pan" || tool === "wall");
             requestAnimationFrame(() =>
               document.querySelector<SVGSVGElement>("[data-geometry]")?.focus(),
@@ -728,14 +653,6 @@ export default function GraphWorkflow({
             }} />
             <SidebarIconButton icon={RotateCcw} label="Отменить правку" disabled={!h.canUndo}
               onClick={() => { resultGeneration.current++; setLoading(false); h.cancel(); }} />
-          </div>
-          <div className="sidebar-group">
-            <SidebarIconButton icon={Minus} label="Уменьшить" onClick={() => h.update((d) => ({
-              ...d, viewport: { ...d.viewport, zoom: Math.max(0.2, d.viewport.zoom / 1.25) },
-            }))} />
-            <SidebarIconButton icon={Plus} label="Увеличить" onClick={() => h.update((d) => ({
-              ...d, viewport: { ...d.viewport, zoom: Math.min(8, d.viewport.zoom * 1.25) },
-            }))} />
           </div>
           <div className="sidebar-save" role="status">{busy ? "Проверяем геометрию…" : h.saved}</div>
           {h.saved === "Не сохранено" && <SidebarIconButton icon={Save} label="Повторить сохранение" onClick={h.retrySave} />}
@@ -812,7 +729,6 @@ export default function GraphWorkflow({
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               setPanel(false);
-              setStart(null);
               menuButton.current?.focus();
             }
           }}
@@ -827,9 +743,7 @@ export default function GraphWorkflow({
                     ? "Стена"
                     : editor.context.kind === "room"
                       ? "Помещение"
-                      : editor.context.kind === "angle"
-                        ? "Угол"
-                        : editor.context.kind === "range"
+                      : editor.context.kind === "range"
                           ? "Диапазон стены"
                           : editor.context.kind === "void"
                             ? "Отверстие"
@@ -849,7 +763,7 @@ export default function GraphWorkflow({
           </div>
           {stage === "object" && (
             <>
-              {(tool === "wall" || tool === "connect" || editor.context.kind === "segment") && (
+              {(tool === "wall" || editor.context.kind === "segment") && (
                 <div className="wall-thickness-control">
                   <NumberField
                     label={editor.context.kind === "segment" ? "Толщина выбранной стены" : "Толщина новой стены"}
@@ -877,6 +791,7 @@ export default function GraphWorkflow({
                 context={editor.context}
                 interaction={editor.interaction}
                 graph={g}
+                selectedWallHandle={wallHandle}
                 onCommand={run}
                 onRaw={field}
                 onRange={(chainId) => {
@@ -937,7 +852,6 @@ export default function GraphWorkflow({
                         onClick={() => {
                           setVertex("");
                           setSegment("");
-                          setBlockedVertex("");
                           dispatchEditor({
                             type: "context",
                             context: { kind: "tool", tool: "select" },

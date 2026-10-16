@@ -171,6 +171,43 @@ export function graphSchema(value: unknown): GraphSnapshot {
   }
   return structuredClone(value) as GraphSnapshot;
 }
+
+/** Remove obsolete editor data while preserving every wall and its coordinates. */
+export function cleanV4Graph(graph: GraphSnapshot): GraphSnapshot {
+  const used = new Set(graph.segments.flatMap((segment) => [segment.startVertexId, segment.endVertexId]));
+  for (const chain of graph.chains) {
+    used.add(chain.startVertexId);
+    used.add(chain.endVertexId);
+  }
+  const obsoleteField = (key: string) =>
+    /^angle:[^:]+:value$/.test(key) ||
+    /^vertex:[^:]+:angle-/.test(key) ||
+    /^[^:]+:interiorAngle$/.test(key);
+  return {
+    ...graph,
+    vertices: graph.vertices.filter((vertex) => used.has(vertex.id)),
+    constraints: graph.constraints.filter((constraint) => constraint.kind !== "angle"),
+    fieldInputs: Object.fromEntries(Object.entries(graph.fieldInputs).filter(([key]) => !obsoleteField(key))),
+  };
+}
+
+export function cleanV4Document(value: ProjectDocumentV4): ProjectDocumentV4 {
+  const document = structuredClone(value);
+  document.plan.draft = cleanV4Graph(document.plan.draft);
+  if (document.plan.pendingEdit) {
+    const pending = document.plan.pendingEdit;
+    if (["addVertex", "moveVertex", "connect", "setAngle"].includes(pending.command.type))
+      document.plan.pendingEdit = null;
+    else pending.basisGraph = cleanV4Graph(pending.basisGraph);
+  }
+  if (document.plan.restorePoint)
+    document.plan.restorePoint.graph = cleanV4Graph(document.plan.restorePoint.graph);
+  for (const room of document.rooms)
+    if (room.confirmed) room.confirmed.graph = cleanV4Graph(room.confirmed.graph);
+  if (JSON.stringify(document) !== JSON.stringify(value))
+    document.documentRevision++;
+  return document;
+}
 export function commandSchema(value: unknown, graph: GraphSnapshot) {
   const c = obj(value),
     vs = new Set(graph.vertices.map((v) => v.id)),
@@ -191,6 +228,7 @@ export function commandSchema(value: unknown, graph: GraphSnapshot) {
     drawWall: ["start", "end", "thicknessMm"],
     setWallThickness: ["chainId", "thicknessMm"],
     moveVertex: ["vertexId", "point"],
+    nudgeWallHandle: ["chainId", "handle", "axis", "direction"],
     setLength: ["constraintId", "target", "value"],
     setAngle: [
       "constraintId",
@@ -226,6 +264,12 @@ export function commandSchema(value: unknown, graph: GraphSnapshot) {
   if (["setLength", "setAngle", "setOrientation"].includes(type)) num(c.value);
   if (type === "addVertex" || type === "moveVertex") point(c.point);
   if (type === "moveVertex") ref(c.vertexId, vs);
+  if (type === "nudgeWallHandle") {
+    ref(c.chainId, cs);
+    choice(c.handle, ["start", "center", "end"]);
+    choice(c.axis, ["x", "y"]);
+    if (c.direction !== -1 && c.direction !== 1) fail();
+  }
   if (type === "connect") {
     if (num(c.thicknessMm) <= 0) fail();
     ref(c.fromVertexId, vs);

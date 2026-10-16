@@ -4,11 +4,9 @@ import {
   chainNodes,
   type EditorState,
   type EditorTool,
+  type PendingWallStart,
+  type SnapCandidate,
 } from "../../domain/plan/editor-state";
-import {
-  blockingVertices,
-  VERTEX_SAFETY_RADIUS,
-} from "../../domain/plan/vertex-safety";
 import DimensionOverlay from "./DimensionOverlay";
 import { useRef, useState, useEffect, useLayoutEffect } from "react";
 import type {
@@ -21,6 +19,7 @@ import type {
 import type { Layout } from "../../types";
 import { path } from "../../types";
 import { snap } from "../../domain/room/snapping";
+import { clampZoom, gridScreenStep, viewportAtAnchor, worldPoint, zoomAroundWorld } from "../../domain/room/viewport";
 export type Tool = EditorTool;
 export default function ProjectCanvas({
   graph,
@@ -31,7 +30,6 @@ export default function ProjectCanvas({
   highlightedSegments,
   onVoid,
   onConstraint,
-  onSector,
   onCanvasFocus,
   faces,
   wallArea = [],
@@ -43,17 +41,13 @@ export default function ProjectCanvas({
   onDrawWall,
   selectedVertex,
   selectedSegment,
-  startVertex,
+  selectedWallHandle,
+  onWallHandleSelect,
   diagnostic,
-  blockedVertex,
-  onBlocked,
-  onPoint,
   onSelection,
   onRoom,
-  onMove,
   onViewport,
   layout,
-  angle,
   onShift,
   onPart,
   onCancel,
@@ -61,7 +55,6 @@ export default function ProjectCanvas({
 }: {
   graph: GraphSnapshot;
   onCanvasFocus: () => void;
-  onSector: (sector: "cw" | "ccw") => void;
   resetEpoch: number;
   panelOpen: boolean;
   sidebarOpen: boolean;
@@ -79,25 +72,13 @@ export default function ProjectCanvas({
   onDrawWall?: (start: Point, end: Point) => void;
   selectedVertex: string;
   selectedSegment: string;
-  startVertex: string | null;
+  selectedWallHandle?: "start" | "center" | "end" | null;
+  onWallHandleSelect?: (handle: "start" | "center" | "end") => void;
   diagnostic: DiagnosticSelection | null;
-  blockedVertex: string;
-  onBlocked: (ids: string[], point: Point) => void;
-  onPoint: (
-    p: Point,
-    target: { vertexId?: string; segmentId?: string },
-  ) => void;
   onSelection: (v: string, s: string) => void;
   onRoom: (f: FaceCandidate) => void;
-  onMove: (v: string, p: Point) => void;
   onViewport: (v: ProjectDocumentV4["viewport"]) => void;
   layout?: Layout;
-  angle?: {
-    vertexId: string;
-    first: string;
-    second: string;
-    sector: "cw" | "ccw";
-  };
   onShift?: (x: number, y: number) => void;
   onPart?: (id: string) => void;
   onCancel: () => void;
@@ -105,24 +86,24 @@ export default function ProjectCanvas({
 }) {
   const svg = useRef<SVGSVGElement>(null),
     touches = useRef(new Map<number, Point>()),
-    pinch = useRef<{ distance: number; zoom: number; anchor: Point } | null>(null),
+    pinch = useRef<{ distance: number; zoom: number; anchor: Point; viewport: typeof viewport } | null>(null),
+    pinchResult = useRef<typeof viewport | null>(null),
     suppressTouch = useRef(false),
     gesture = useRef<{
       id: number;
       client: Point;
       world: Point;
-      vertexId?: string;
       target?: string;
+      wallHandle?: "start" | "center" | "end";
       viewport: typeof viewport;
       dragged: boolean;
     } | null>(null);
   const [preview, setPreview] = useState<(Point & { type: string }) | null>(
       null,
     ),
-    [dragPoint, setDragPoint] = useState<Point | null>(null),
-    [pendingPoint, setPendingPoint] = useState<Point | null>(null),
-    [pendingMove, setPendingMove] = useState<{ vertexId: string; point: Point } | null>(null),
     [wallPreview, setWallPreview] = useState<{ start: Point; end: Point } | null>(null),
+    [pendingWallStart, setPendingWallStart] = useState<PendingWallStart | null>(null),
+    [hoverWallPoint, setHoverWallPoint] = useState<Point | null>(null),
     [liveViewport, setLiveViewport] = useState<typeof viewport | null>(null);
   const [size, setSize] = useState({
     width: window.innerWidth,
@@ -166,37 +147,38 @@ export default function ProjectCanvas({
     return () => observer.disconnect();
   }, [panelOpen, sidebarOpen, size.width, size.height]);
   const renderedViewport = liveViewport ?? viewport;
+  useEffect(() => {
+    const limited = clampZoom(viewport.zoom, size.width);
+    if (limited !== viewport.zoom && !pinch.current)
+      onViewport({ ...viewport, zoom: limited });
+  }, [size.width, viewport.zoom]);
+  useEffect(() => {
+    const node = svg.current;
+    if (!node) return;
+    const wheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = node.getBoundingClientRect();
+      const nextZoom = clampZoom(viewport.zoom * Math.exp(-event.deltaY * 0.0015), rect.width);
+      if (nextZoom === viewport.zoom) return;
+      let anchor: Point;
+      try { anchor = worldPoint(node, event.clientX, event.clientY); }
+      catch { return; }
+      onViewport(zoomAroundWorld(viewport, anchor, nextZoom, rect.width));
+    };
+    node.addEventListener("wheel", wheel, { passive: false });
+    return () => node.removeEventListener("wheel", wheel);
+  }, [viewport, onViewport, sidebarShift, panelLift]);
   const width = 9000 / renderedViewport.zoom,
     height = (width * size.height) / Math.max(1, size.width),
     left = renderedViewport.centerX - width / 2 - sidebarShift * width / Math.max(1, size.width),
     bottom =
       renderedViewport.centerY - height / 2 - (panelLift * width) / Math.max(1, size.width);
   const vs = new Map(graph.vertices.map((v) => [v.id, v]));
+  const selectedChain = graph.segments.find((segment) => segment.id === selectedSegment)?.chainId;
+  const selectedWall = graph.chains.find((chain) => chain.id === selectedChain);
   // The viewBox shares the observed viewport aspect ratio, so scale is uniform.
   // Derive render sizes from current props, never the previous render's CTM.
   const screenScale = () => Math.max(size.width, 1) / width;
-  const blockers = (point: Point) => {
-    const matrix = svg.current?.getScreenCTM();
-    if (!matrix) return null;
-    const screen = (p: Point) =>
-      new DOMPoint(p.x, -p.y).matrixTransform(matrix);
-    return blockingVertices(
-      screen(point),
-      graph.vertices.map((v) => ({ id: v.id, x: screen(v).x, y: screen(v).y })),
-    );
-  };
-  const placementPoint = pendingPoint && tool === "addVertex" ? { ...pendingPoint, type: "Вершина" } : preview;
-  const previewBlocked =
-    placementPoint && tool === "addVertex"
-      ? blockingVertices(
-          { x: placementPoint.x * screenScale(), y: placementPoint.y * screenScale() },
-          graph.vertices.map((v) => ({
-            id: v.id,
-            x: v.x * screenScale(),
-            y: v.y * screenScale(),
-          })),
-        )
-      : [];
   const clientWorld = (clientX: number, clientY: number) => {
     const matrix = svg.current?.getScreenCTM();
     if (!matrix) return null;
@@ -210,7 +192,7 @@ export default function ProjectCanvas({
     const vertex = graph.vertices.find(
       (v) => Math.hypot(v.x - p.x, v.y - p.y) <= r,
     );
-    if (vertex && tool !== "angle")
+    if (vertex)
       return {
         p: { x: vertex.x, y: vertex.y },
         vertexId: vertex.id,
@@ -244,12 +226,11 @@ export default function ProjectCanvas({
     if (!p) return null;
     const r = (e.pointerType === "mouse" ? 8 : 12) / screenScale(),
       hit = target(p, r);
-    if ((tool === "connect" || tool === "wall") && hit) return { ...hit.p, type: hit.type };
+    if (tool === "wall" && hit) return { ...hit.p, type: hit.type };
     return snap(p.x, p.y, viewport.gridStepMm, r);
   };
   const clear = () => {
     gesture.current = null;
-    setDragPoint(null);
     setPreview(null);
     setLiveViewport(null);
     setWallPreview(null);
@@ -299,36 +280,24 @@ export default function ProjectCanvas({
       centerY: start.viewport.centerY + (clientY - start.client.y) * unitsPerPixel,
     };
   };
-  useEffect(() => { clear(); setPendingPoint(null); setPendingMove(null); touches.current.clear(); pinch.current = null; }, [tool]);
-  const [active, setActive] = useState(""),
-    [cursor, setCursor] = useState<Point>({
-      x: viewport.centerX,
-      y: viewport.centerY,
-    }),
-    [keyboardMove, setKeyboardMove] = useState<string | null>(null);
-  useEffect(() => {
-    setKeyboardMove(null);
-    setCursor({ x: viewport.centerX, y: viewport.centerY });
-  }, [tool]);
+  useEffect(() => { clear(); setPendingWallStart(null); setHoverWallPoint(null); touches.current.clear(); pinch.current = null; }, [tool]);
+  const [active, setActive] = useState("");
   useEffect(() => {
     setActive("");
-    setKeyboardMove(null);
-    setCursor({ x: viewport.centerX, y: viewport.centerY });
     clear();
-    setPendingPoint(null);
-    setPendingMove(null);
+    setPendingWallStart(null);
+    setHoverWallPoint(null);
     touches.current.clear();
     pinch.current = null;
   }, [resetEpoch]);
-  const touchPoint = (e: React.PointerEvent) => snapped(e, e.pointerType === "touch" && (tool === "addVertex" || tool === "move") ? 48 : 0);
+  const touchPoint = (e: React.PointerEvent) => snapped(e);
   const beginPinch = () => {
     const [a, b] = [...touches.current.values()];
     const anchor = clientWorld((a.x + b.x) / 2, (a.y + b.y) / 2);
     if (!anchor) return;
-    pinch.current = { distance: Math.hypot(a.x - b.x, a.y - b.y), zoom: viewport.zoom, anchor };
+    pinch.current = { distance: Math.hypot(a.x - b.x, a.y - b.y), zoom: viewport.zoom, anchor, viewport: { ...viewport } };
+    pinchResult.current = null;
     suppressTouch.current = true;
-    setPendingPoint(null);
-    setPendingMove(null);
     clear();
   };
   const updatePinch = () => {
@@ -336,13 +305,12 @@ export default function ProjectCanvas({
     const [a, b] = [...touches.current.values()];
     const middle = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     const distance = Math.hypot(a.x - b.x, a.y - b.y);
-    const zoom = Math.max(0.2, Math.min(8, pinch.current.zoom * distance / Math.max(1, pinch.current.distance)));
+    const zoom = clampZoom(pinch.current.zoom * distance / Math.max(1, pinch.current.distance), size.width);
     const rect = svg.current.getBoundingClientRect();
-    const span = 9000 / zoom;
-    onViewport({ ...viewport, zoom,
-      centerX: pinch.current.anchor.x - (middle.x - rect.left - rect.width / 2 - sidebarShift) * span / rect.width,
-      centerY: pinch.current.anchor.y + (middle.y - rect.top - rect.height / 2 + panelLift) * span / rect.width,
-    });
+    const next = viewportAtAnchor(pinch.current.viewport, pinch.current.anchor,
+      middle, rect, zoom, sidebarShift, panelLift);
+    pinchResult.current = next;
+    setLiveViewport(next);
   };
   const voidRings = graph.voids.map((v) => ({
     id: v.id,
@@ -380,7 +348,6 @@ export default function ProjectCanvas({
     else onSelection("", "");
   };
   const targets = [
-    ...(editor.interaction.kind === "angleSector" ? ["arc:ccw", "arc:cw"] : []),
     ...graph.vertices.map((v) => "vertex:" + v.id),
     ...graph.segments.map((s) => "segment:" + s.id),
     ...faces.map((f) => "room:" + f.topologyKey),
@@ -393,18 +360,11 @@ export default function ProjectCanvas({
       ? chainNodes(graph, editor.interaction.chainId).map(
           (id) => "vertex:" + id,
         )
-      : editor.interaction.kind === "angleSector"
-        ? ["arc:ccw", "arc:cw"]
-        : tool === "angle"
-          ? targets.filter((t) => t.startsWith("segment:"))
-          : tool === "move"
-            ? targets.filter((t) => t.startsWith("vertex:"))
-            : targets;
+      : targets;
   useEffect(() => {
     if (active && !targets.includes(active)) {
       setActive("");
       svg.current?.focus();
-      setKeyboardMove(null);
     }
   }, [graph, editor.interaction.kind, editor.context.kind, tool]);
   const focusTarget = (id: string) => {
@@ -416,16 +376,11 @@ export default function ProjectCanvas({
       target?.focus();
     });
   };
-  const pick = (id: string, keyboard = false) => {
+  const pick = (id: string) => {
     const split = id.indexOf(":"),
       kind = id.slice(0, split),
       value = id.slice(split + 1);
     setActive(id);
-    if (tool === "angle" && kind !== "arc" && kind !== "segment") return;
-    if (kind === "arc") {
-      onSector(value as "cw" | "ccw");
-      return;
-    }
     if (kind === "vertex") {
       const v = vs.get(value);
       if (!v) return;
@@ -434,27 +389,11 @@ export default function ProjectCanvas({
         editor.interaction.kind === "rangeSecond"
       )
         onSelection(value, "");
-      else if (tool === "connect") onPoint(v, { vertexId: value });
-      else if (tool === "move" && keyboard) {
-        if (keyboardMove) {
-          onMove(keyboardMove, cursor);
-          setKeyboardMove(null);
-        } else {
-          setKeyboardMove(value);
-          setCursor(v);
-        }
-      } else onSelection(value, "");
+      else onSelection(value, "");
     } else if (kind === "segment") {
       const s = graph.segments.find((s) => s.id === value);
       if (!s) return;
-      const a = vs.get(s.startVertexId)!,
-        b = vs.get(s.endVertexId)!;
-      if (tool === "connect")
-        onPoint(
-          keyboard ? cursor : { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
-          { segmentId: value },
-        );
-      else onSelection("", value);
+      onSelection("", value);
     } else if (kind === "room") {
       const f = faces.find((f) => f.topologyKey === value);
       if (f) onRoom(f);
@@ -469,12 +408,6 @@ export default function ProjectCanvas({
     onFocus: () => {
       setActive(kind + ":" + id);
       onCanvasFocus();
-      if (tool === "connect" && kind === "segment") {
-        const edge = graph.segments.find((s) => s.id === id)!,
-          a = vs.get(edge.startVertexId)!,
-          b = vs.get(edge.endVertexId)!;
-        setCursor({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-      }
     },
   });
   const selectedRange =
@@ -492,24 +425,54 @@ export default function ProjectCanvas({
       : editor.interaction.kind === "rangeSecond"
         ? [editor.interaction.firstVertexId]
         : [];
-  const grid = viewport.gridStepMm;
-  const xs: number[] = [],
-    ys: number[] = [];
-  // Draw only a readable level of the grid; the document's snapping step stays exact.
-  const stride = Math.max(1, Math.ceil(16 / (grid * screenScale()))),
-    visible = grid * stride;
-  for (
-    let x = Math.ceil(left / visible) * visible;
-    x < left + width;
-    x += visible
-  )
-    xs.push(x);
-  for (
-    let y = Math.ceil(bottom / visible) * visible;
-    y < bottom + height;
-    y += visible
-  )
-    ys.push(y);
+  const gridLines = (step: number) => {
+    const xs: number[] = [], ys: number[] = [];
+    for (let x = Math.ceil(left / step) * step; x < left + width; x += step) xs.push(x);
+    for (let y = Math.ceil(bottom / step) * step; y < bottom + height; y += step) ys.push(y);
+    return { xs, ys };
+  };
+  const majorGrid = gridLines(100);
+  const minorGrid = gridScreenStep(10, size.width, renderedViewport.zoom) >= 6 - 1e-6
+    ? gridLines(10) : null;
+  const candidateSpacing = renderedViewport.zoom < 1 ? 100 : 44;
+  const candidateStep = Math.max(100, Math.ceil(candidateSpacing / Math.max(1, 100 * screenScale())) * 100);
+  const wallCandidates: SnapCandidate[] = [];
+  const addCandidate = (point: Point, type: SnapCandidate["type"], vertexId?: string) => {
+    if (point.x < left || point.x > left + width || point.y < bottom || point.y > bottom + height) return;
+    if (wallCandidates.some((candidate) => Math.hypot(candidate.point.x - point.x, candidate.point.y - point.y) < 1)) return;
+    if (type !== "wallEnd" && wallCandidates.some((candidate) =>
+      Math.hypot(candidate.point.x - point.x, candidate.point.y - point.y) * screenScale() < 44)) return;
+    wallCandidates.push({ point, screen: { x: (point.x - left) * screenScale(), y: (bottom + height - point.y) * screenScale() }, type, allowed: true, vertexId });
+  };
+  for (const chain of graph.chains)
+    for (const id of [chain.startVertexId, chain.endVertexId]) {
+      const vertex = vs.get(id);
+      if (vertex) addCandidate({ x: vertex.x, y: vertex.y }, "wallEnd", id);
+    }
+  if (pendingWallStart?.vertexId) {
+    for (const segment of graph.segments.filter((item) =>
+      item.startVertexId === pendingWallStart.vertexId || item.endVertexId === pendingWallStart.vertexId)) {
+      const a = vs.get(segment.startVertexId)!, b = vs.get(segment.endVertexId)!;
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      if (!len) continue;
+      const perp = { x: -(b.y - a.y) / len, y: (b.x - a.x) / len };
+      const limit = Math.min(100, Math.ceil(Math.hypot(width, height) / 100));
+      for (let i = -limit; i <= limit; i++) if (i)
+        addCandidate({ x: pendingWallStart.point.x + perp.x * i * 100, y: pendingWallStart.point.y + perp.y * i * 100 }, "perpendicularGuide");
+    }
+  }
+  for (let x = Math.ceil(left / candidateStep) * candidateStep; x <= left + width; x += candidateStep)
+    for (let y = Math.ceil(bottom / candidateStep) * candidateStep; y <= bottom + height; y += candidateStep)
+      addCandidate({ x, y }, "majorGrid");
+  const pickWallCandidate = (clientX: number, clientY: number) => {
+    const point = clientWorld(clientX, clientY);
+    if (!point) return null;
+    const nearby = wallCandidates.filter((candidate) =>
+      Math.hypot(candidate.point.x - point.x, candidate.point.y - point.y) * screenScale() <= 22);
+    const ends = nearby.filter((candidate) => candidate.type === "wallEnd");
+    if (ends.length > 1) return null;
+    return nearby[0] ?? null;
+  };
   return (
     <div
       className="project-canvas"
@@ -517,8 +480,8 @@ export default function ProjectCanvas({
       onKeyDown={(e) => {
         if (e.key === "Escape") {
           clear();
-          setPendingPoint(null);
-          setPendingMove(null);
+          setPendingWallStart(null);
+          setHoverWallPoint(null);
           onCancel();
         }
       }}
@@ -542,10 +505,9 @@ export default function ProjectCanvas({
           if (e.key === "Escape") {
             e.preventDefault();
             e.stopPropagation();
-            setKeyboardMove(null);
             clear();
-            setPendingPoint(null);
-            setPendingMove(null);
+            setPendingWallStart(null);
+            setHoverWallPoint(null);
             onCancel();
             return;
           }
@@ -573,71 +535,19 @@ export default function ProjectCanvas({
               });
               return;
             }
-            if (tool === "addVertex" || keyboardMove) {
-              setCursor((p) => ({
-                x:
-                  p.x +
-                  (e.key === "ArrowRight"
-                    ? step
-                    : e.key === "ArrowLeft"
-                      ? -step
-                      : 0),
-                y:
-                  p.y +
-                  (e.key === "ArrowUp"
-                    ? step
-                    : e.key === "ArrowDown"
-                      ? -step
-                      : 0),
-              }));
-              return;
-            }
-            if (
-              tool === "connect" &&
-              startVertex &&
-              active.startsWith("segment:") &&
-              (e.key === "ArrowLeft" || e.key === "ArrowRight")
-            ) {
-              const s = graph.segments.find((s) => s.id === active.slice(8))!,
-                a = vs.get(s.startVertexId)!,
-                b = vs.get(s.endVertexId)!,
-                dx = b.x - a.x,
-                dy = b.y - a.y,
-                l = Math.hypot(dx, dy);
-              const t = Math.max(
-                0,
-                Math.min(
-                  1,
-                  ((cursor.x - a.x) * dx + (cursor.y - a.y) * dy) / (l * l) +
-                    (e.key === "ArrowRight" ? step : -step) / l,
-                ),
-              );
-              setCursor({ x: a.x + t * dx, y: a.y + t * dy });
-              return;
-            }
             const delta =
                 e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1,
               i = eligible.indexOf(active),
               next = eligible[(i + delta + eligible.length) % eligible.length];
             if (next) {
               focusTarget(next);
-              if (next.startsWith("segment:")) {
-                const s = graph.segments.find((s) => s.id === next.slice(8))!,
-                  a = vs.get(s.startVertexId)!,
-                  b = vs.get(s.endVertexId)!;
-                setCursor({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-              }
             }
             return;
           }
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             e.stopPropagation();
-            if (tool === "addVertex") {
-              const ids = blockers(cursor);
-              if (ids?.length) onBlocked(ids, cursor);
-              else if (ids) onPoint(cursor, {});
-            } else if (active) pick(active, true);
+            if (active) pick(active);
           }
         }}
         aria-label="Редактор плана помещений"
@@ -659,16 +569,10 @@ export default function ProjectCanvas({
               return;
             }
             suppressTouch.current = false;
-            setPendingPoint(null);
-            setPendingMove(null);
             setPreview(touchPoint(e));
           }
           const p = world(e);
           if (!p) return;
-          const hit = target(
-            p,
-            (e.pointerType === "mouse" ? 8 : 12) / screenScale(),
-          );
           gesture.current = {
             id: e.pointerId,
             client: { x: e.clientX, y: e.clientY },
@@ -677,11 +581,11 @@ export default function ProjectCanvas({
               (e.target as Element)
                 .closest("[data-target]")
                 ?.getAttribute("data-target") || undefined,
-            vertexId: hit && "vertexId" in hit ? hit.vertexId : undefined,
+            wallHandle: (e.target as Element).closest("[data-wall-handle]")?.getAttribute("data-wall-handle") as "start" | "center" | "end" | undefined,
             viewport: { ...viewport },
             dragged: false,
           };
-          if (tool === "wall") {
+          if (tool === "wall" && e.pointerType !== "touch") {
             const point = touchPoint(e) ?? p;
             setWallPreview({ start: { x: point.x, y: point.y }, end: { x: point.x, y: point.y } });
           }
@@ -697,19 +601,19 @@ export default function ProjectCanvas({
           setPreview(touchPoint(e));
           const g = gesture.current;
           if (!g) return;
-          if (tool === "wall") setWallPreview((current) => current ? { ...current, end: touchPoint(e) ?? current.end } : current);
+          if (tool === "wall" && e.pointerType !== "touch") setWallPreview((current) => current ? { ...current, end: touchPoint(e) ?? current.end } : current);
           if (Math.hypot(e.clientX - g.client.x, e.clientY - g.client.y) > 4)
             g.dragged = true;
-          if (tool === "move" && g.vertexId) setDragPoint(touchPoint(e));
-          if (tool === "pan" && g.dragged)
+          if ((tool === "pan" || (tool === "wall" && e.pointerType === "touch")) && g.dragged)
             setLiveViewport(panViewport(g, e.clientX, e.clientY));
+          if (tool === "wall" && e.pointerType === "touch" && !g.dragged)
+            setHoverWallPoint(pickWallCandidate(e.clientX, e.clientY)?.point ?? null);
         }}
         onPointerCancel={(e) => {
           const wasPinching = !!pinch.current;
           touches.current.delete(e.pointerId);
           pinch.current = null;
-          setPendingPoint(null);
-          setPendingMove(null);
+          pinchResult.current = null;
           clear();
           if (!wasPinching) onCancel();
         }}
@@ -722,19 +626,42 @@ export default function ProjectCanvas({
           if (e.pointerType === "touch") {
             touches.current.delete(e.pointerId);
             if (pinch.current || suppressTouch.current) {
+              if (pinch.current && pinchResult.current) onViewport(pinchResult.current);
               if (!touches.current.size) { pinch.current = null; suppressTouch.current = false; }
+              pinchResult.current = null;
               clear();
               return;
             }
           }
           const g = gesture.current;
           if (!g) return;
+          if (g.wallHandle && !g.dragged) {
+            onWallHandleSelect?.(g.wallHandle);
+            clear();
+            return;
+          }
           if (tool === "pan") {
             if (g.dragged) onViewport(panViewport(g, e.clientX, e.clientY));
             clear();
             return;
           }
           if (tool === "wall") {
+            if (e.pointerType === "touch") {
+              if (g.dragged) onViewport(panViewport(g, e.clientX, e.clientY));
+              else {
+                const candidate = pickWallCandidate(e.clientX, e.clientY);
+                if (candidate) {
+                  if (!pendingWallStart) setPendingWallStart({ point: candidate.point, source: candidate.type === "wallEnd" ? "wallEnd" : "grid", vertexId: candidate.vertexId });
+                  else if (Math.hypot(candidate.point.x - pendingWallStart.point.x, candidate.point.y - pendingWallStart.point.y) > 1) {
+                    onDrawWall?.(pendingWallStart.point, firstWallContact(pendingWallStart.point, candidate.point).axis);
+                    setPendingWallStart(null);
+                    setHoverWallPoint(null);
+                  }
+                }
+              }
+              clear();
+              return;
+            }
             const end = touchPoint(e);
             const start = wallPreview?.start ?? g.world;
             if (end && Math.hypot(end.x - start.x, end.y - start.y) > 1)
@@ -742,26 +669,12 @@ export default function ProjectCanvas({
             clear();
             return;
           }
-          const p = world(e),
-            s = touchPoint(e);
-          if (!p || !s) {
-            clear();
-            return;
-          }
-          if (tool === "addVertex" && e.pointerType === "touch") {
-            setPendingPoint({ x: s.x, y: s.y });
-            setPreview(s);
-            gesture.current = null;
-            return;
-          }
-          if (tool === "move" && e.pointerType === "touch" && g.dragged && g.vertexId) {
-            setPendingMove({ vertexId: g.vertexId, point: { x: s.x, y: s.y } });
+          const p = world(e);
+          if (!p) {
             clear();
             return;
           }
           if (g.dragged) {
-            if (tool === "move" && g.vertexId)
-              onMove(g.vertexId, { x: s.x, y: s.y });
             if (layout && onShift)
               onShift(
                 layout.offset_x + p.x - g.world.x,
@@ -773,45 +686,35 @@ export default function ProjectCanvas({
               (e.pointerType === "mouse" ? 8 : 12) / screenScale(),
             );
             const direct = g.target;
-            if (
-              (tool === "select" || tool === "move" || tool === "angle") &&
-              direct
-            )
+            if (tool === "select" && direct)
               pick(direct);
             else if (tool === "selectRoom") chooseRoom(p);
-            else if (tool === "select" || tool === "move" || tool === "angle") {
+            else if (tool === "select") {
               if (hit)
                 onSelection(
                   "vertexId" in hit ? hit.vertexId : "",
                   "segmentId" in hit ? hit.segmentId : "",
                 );
               else chooseRoom(p);
-            } else if (tool === "addVertex") {
-              const ids = blockers(s);
-              if (ids === null) {
-                clear();
-                return;
-              }
-              if (ids.length) onBlocked(ids, { x: s.x, y: s.y });
-              else onPoint({ x: s.x, y: s.y }, {});
-            } else
-              onPoint(
-                tool === "connect" && hit ? hit.p : { x: s.x, y: s.y },
-                hit
-                  ? {
-                      ...("vertexId" in hit
-                        ? { vertexId: hit.vertexId }
-                        : { segmentId: hit.segmentId }),
-                    }
-                  : {},
-              );
+            }
           }
           clear();
         }}
       >
         <g transform="scale(1,-1)">
-          <g className="canvas-grid" pointerEvents="none">
-            {xs.map((x) => (
+          <defs><pattern id="wall-cursor-hatch" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="4" height="4" fill="#e9ddd0" /><line x1="0" y1="0" x2="0" y2="4" stroke="#715d50" strokeWidth="1" />
+          </pattern></defs>
+          <g className="canvas-grid canvas-grid-minor" pointerEvents="none">
+            {minorGrid?.xs.filter((x) => Math.round(x / 10) % 10 !== 0).map((x) => (
+              <line key={"mx" + x} x1={x} x2={x} y1={bottom} y2={bottom + height} />
+            ))}
+            {minorGrid?.ys.filter((y) => Math.round(y / 10) % 10 !== 0).map((y) => (
+              <line key={"my" + y} x1={left} x2={left + width} y1={y} y2={y} />
+            ))}
+          </g>
+          <g className="canvas-grid canvas-grid-major" pointerEvents="none">
+            {majorGrid.xs.map((x) => (
               <line
                 key={"x" + x}
                 x1={x}
@@ -820,10 +723,41 @@ export default function ProjectCanvas({
                 y2={bottom + height}
               />
             ))}
-            {ys.map((y) => (
+            {majorGrid.ys.map((y) => (
               <line key={"y" + y} x1={left} x2={left + width} y1={y} y2={y} />
             ))}
           </g>
+          {tool === "wall" && matchMedia("(hover: none) and (pointer: coarse)").matches &&
+            <g className="wall-candidates" pointerEvents="none">
+              {wallCandidates.map((candidate, index) =>
+                <circle key={index} data-candidate={candidate.type} cx={candidate.point.x} cy={candidate.point.y}
+                  r={5 / screenScale()} />)}
+            </g>}
+          {pendingWallStart && <g className="wall-ruler" pointerEvents="none">
+            <line className="ruler-axis" x1={left} y1={pendingWallStart.point.y} x2={left + width} y2={pendingWallStart.point.y} />
+            <line className="ruler-axis" x1={pendingWallStart.point.x} y1={bottom} x2={pendingWallStart.point.x} y2={bottom + height} />
+            {pendingWallStart.vertexId && graph.segments.filter((segment) =>
+              segment.startVertexId === pendingWallStart.vertexId || segment.endVertexId === pendingWallStart.vertexId).map((segment) => {
+                const a = vs.get(segment.startVertexId)!, b = vs.get(segment.endVertexId)!;
+                const len = Math.hypot(b.x - a.x, b.y - a.y);
+                if (!len) return null;
+                const nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
+                const reach = Math.hypot(width, height);
+                return <line key={segment.id} className="ruler-perpendicular"
+                  x1={pendingWallStart.point.x - nx * reach} y1={pendingWallStart.point.y - ny * reach}
+                  x2={pendingWallStart.point.x + nx * reach} y2={pendingWallStart.point.y + ny * reach} />;
+              })}
+            {hoverWallPoint && <>
+              <line x1={pendingWallStart.point.x} y1={pendingWallStart.point.y} x2={hoverWallPoint.x} y2={hoverWallPoint.y} />
+              <line className="ruler-axis" x1={pendingWallStart.point.x} y1={pendingWallStart.point.y} x2={hoverWallPoint.x} y2={pendingWallStart.point.y} />
+              <line className="ruler-axis" x1={hoverWallPoint.x} y1={pendingWallStart.point.y} x2={hoverWallPoint.x} y2={hoverWallPoint.y} />
+              <text x={(pendingWallStart.point.x + hoverWallPoint.x) / 2} y={(pendingWallStart.point.y + hoverWallPoint.y) / 2}
+                transform={`translate(0,${pendingWallStart.point.y + hoverWallPoint.y}) scale(1,-1)`}
+                fontSize={14 / screenScale()} textAnchor="middle">
+                {Math.round(Math.hypot(hoverWallPoint.x - pendingWallStart.point.x, hoverWallPoint.y - pendingWallStart.point.y))} мм
+              </text>
+            </>}
+          </g>}
           {faces.map((f) => (
             <path
               key={f.topologyKey}
@@ -878,6 +812,9 @@ export default function ProjectCanvas({
               d={path([polygon.outline, ...polygon.holes] as [number, number][][])}
               fillRule="evenodd" pointerEvents="none" />
           ))}
+          {tool === "wall" && preview && matchMedia("(hover: hover) and (pointer: fine)").matches &&
+            <rect className="wall-cursor" x={preview.x - 5} y={preview.y - 5} width="10" height="10"
+              fill="url(#wall-cursor-hatch)" pointerEvents="none" />}
           {graph.segments.map((s) => {
             const a = vs.get(s.startVertexId)!,
               b = vs.get(s.endVertexId)!;
@@ -898,13 +835,6 @@ export default function ProjectCanvas({
                   className={
                     "graph-wall " +
                     (s.id === selectedSegment ||
-                    (editor.interaction.kind === "angleSecond" &&
-                      s.id === editor.interaction.firstSegmentId) ||
-                    (editor.interaction.kind === "angleSector" &&
-                      [
-                        editor.interaction.firstSegmentId,
-                        editor.interaction.secondSegmentId,
-                      ].includes(s.id)) ||
                     selectedRange.includes(s.id) ||
                     highlightedSegments?.includes(s.id)
                       ? "selected"
@@ -933,90 +863,29 @@ export default function ProjectCanvas({
               </g>
             );
           })}
+          {(editor.interaction.kind === "rangeFirst" || editor.interaction.kind === "rangeSecond") &&
+            chainNodes(graph, editor.interaction.chainId).map((id) => {
+              const vertex = vs.get(id);
+              return vertex ? <circle key={`range:${id}`} cx={vertex.x} cy={vertex.y}
+                r={12 / screenScale()} fill="transparent"
+                {...targetProps("vertex", id, "Конец диапазона стены")}
+              /> : null;
+            })}
+          {selectedWall && editor.interaction.kind === "idle" && (["start", "center", "end"] as const).map((handle) => {
+            const a = vs.get(selectedWall.startVertexId)!;
+            const b = vs.get(selectedWall.endVertexId)!;
+            const point = handle === "start" ? a : handle === "end" ? b : { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+            return <g key={handle} data-wall-handle={handle} aria-label={`Точка стены: ${handle === "start" ? "начало" : handle === "end" ? "конец" : "середина"}`}>
+              <circle cx={point.x} cy={point.y} r={22.1 / screenScale()} fill="transparent" />
+              <circle className={"wall-handle " + (selectedWallHandle === handle ? "selected" : "")} cx={point.x} cy={point.y} r={7 / screenScale()} pointerEvents="none" />
+            </g>;
+          })}
           <DimensionOverlay
             graph={graph}
             scale={screenScale()}
             selectedSegment={selectedSegment}
-            angle={
-              editor.context.kind === "angle"
-                ? {
-                    vertexId: editor.context.vertexId,
-                    first: editor.context.firstSegmentId,
-                    second: editor.context.secondSegmentId,
-                    sector: editor.context.sector,
-                  }
-                : angle
-            }
-            anglePair={
-              editor.interaction.kind === "angleSector"
-                ? editor.interaction
-                : undefined
-            }
             activeTarget={active}
-            onSector={onSector}
           />
-          {tool === "addVertex" &&
-            graph.vertices.map((v) => (
-              <circle
-                key={"safety:" + v.id}
-                data-safety-vertex={v.id}
-                cx={v.x}
-                cy={v.y}
-                r={VERTEX_SAFETY_RADIUS / screenScale()}
-                className={
-                  "vertex-safety-zone " +
-                  (previewBlocked.includes(v.id) || blockedVertex === v.id
-                    ? "blocked"
-                    : "")
-                }
-                vectorEffect="non-scaling-stroke"
-                pointerEvents="none"
-              />
-            ))}
-          {graph.vertices.map((v) => (
-            <circle
-              key={v.id}
-              cx={v.x}
-              cy={v.y}
-              r={
-                (v.id === selectedVertex ||
-                v.id === startVertex ||
-                v.id === blockedVertex ||
-                rangeEnds.includes(v.id)
-                  ? 7
-                  : 4) / screenScale()
-              }
-              className={
-                "graph-vertex " +
-                (v.id === selectedVertex ||
-                v.id === startVertex ||
-                v.id === blockedVertex ||
-                rangeEnds.includes(v.id)
-                  ? "selected"
-                  : "")
-              }
-              {...targetProps(
-                "vertex",
-                v.id,
-                `Вершина ${graph.vertices.indexOf(v) + 1}`,
-              )}
-              pointerEvents={tool === "angle" ? "none" : "all"}
-            />
-          ))}
-          {(tool === "addVertex" ||
-            keyboardMove ||
-            (tool === "connect" && startVertex)) && (
-            <circle
-              data-keyboard-cursor
-              cx={cursor.x}
-              cy={cursor.y}
-              r={8 / screenScale()}
-              fill="none"
-              stroke="#ad5b24"
-              strokeWidth={2 / screenScale()}
-              pointerEvents="none"
-            />
-          )}
           {graph.constraints.map((c, i) => {
             const edge = graph.segments.find(
               (s) =>
@@ -1057,56 +926,6 @@ export default function ProjectCanvas({
               </g>
             );
           })}
-          {placementPoint && ["addVertex", "connect", "move"].includes(tool) && (
-            <circle
-              cx={placementPoint.x}
-              cy={placementPoint.y}
-              r={8 / screenScale()}
-              fill="none"
-              stroke={previewBlocked.length ? "#a5352b" : "#b86b38"}
-              data-placement-blocked={previewBlocked.length ? "true" : "false"}
-              strokeDasharray={
-                previewBlocked.length
-                  ? `${3 / screenScale()} ${2 / screenScale()}`
-                  : undefined
-              }
-              strokeWidth={2 / screenScale()}
-              pointerEvents="none"
-            />
-          )}
-          {startVertex && preview && vs.has(startVertex) && (
-            <line
-              x1={vs.get(startVertex)!.x}
-              y1={vs.get(startVertex)!.y}
-              x2={preview.x}
-              y2={preview.y}
-              stroke="#b86b38"
-              strokeDasharray={`${6 / screenScale()} ${4 / screenScale()}`}
-              vectorEffect="non-scaling-stroke"
-              pointerEvents="none"
-            />
-          )}
-          {dragPoint && gesture.current?.vertexId && (
-            <circle
-              data-drag-preview
-              cx={dragPoint.x}
-              cy={dragPoint.y}
-              r={8 / screenScale()}
-              fill="#b86b38"
-              pointerEvents="none"
-            />
-          )}
-          {pendingMove && (
-            <circle
-              cx={pendingMove.point.x}
-              cy={pendingMove.point.y}
-              r={10 / screenScale()}
-              fill="none"
-              stroke="#b86b38"
-              strokeWidth={2 / screenScale()}
-              pointerEvents="none"
-            />
-          )}
         </g>
         {diagnostic && (
           <g
@@ -1140,51 +959,13 @@ export default function ProjectCanvas({
                 </g>
               );
             })}
-            {diagnostic.vertexIds.map((id, i) => {
-              const v = vs.get(id);
-              if (!v) return null;
-              return (
-                <g
-                  key={id}
-                  data-diagnostic-vertex={id}
-                  transform={`translate(${v.x},${-v.y}) scale(${1 / screenScale()})`}
-                >
-                  <circle r={10 + i * 3} className="diagnostic-node" />
-                  <text x="20" y={-20 - i * 24}>
-                    Вершина {graph.vertices.findIndex((v) => v.id === id) + 1}
-                  </text>
-                </g>
-              );
-            })}
           </g>
         )}
       </svg>
-      {placementPoint && previewBlocked.length > 0 && (
-        <span className="snap-status" aria-live="off">
-          Зона безопасности: точку создать нельзя
-        </span>
-      )}
-      {pendingPoint && tool === "addVertex" && (
-        <div className="mobile-placement" data-overlay role="group" aria-label="Размещение вершины">
-          <button onClick={() => {
-            const ids = blockers(pendingPoint);
-            if (ids?.length) onBlocked(ids, pendingPoint);
-            else if (ids) onPoint(pendingPoint, {});
-            setPendingPoint(null);
-            setPreview(null);
-          }}>Поставить вершину</button>
-          <button onClick={() => { setPendingPoint(null); setPreview(null); }}>Отмена</button>
-        </div>
-      )}
-      {pendingMove && tool === "move" && (
-        <div className="mobile-placement" data-overlay role="group" aria-label="Перемещение вершины">
-          <button onClick={() => {
-            onMove(pendingMove.vertexId, pendingMove.point);
-            setPendingMove(null);
-          }}>Переместить вершину</button>
-          <button onClick={() => setPendingMove(null)}>Отмена</button>
-        </div>
-      )}
+      {pendingWallStart && <button className="cancel-wall-start" type="button"
+        onClick={() => { setPendingWallStart(null); setHoverWallPoint(null); clear(); }}>
+        Отменить начало стены
+      </button>}
       {children}
     </div>
   );

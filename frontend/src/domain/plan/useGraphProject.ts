@@ -260,6 +260,44 @@ export function useGraphProject(
     if (removing.current || removed.current) return;
     const current = ref.current,
       previous = current.plan.pendingEdit;
+    if (command.type === "nudgeWallHandle") {
+      if (previous) { setError("Сначала завершите предыдущее действие."); return; }
+      const basis = structuredClone(current.plan.draft);
+      const basisKey = JSON.stringify(basis);
+      const revision = current.plan.draftRevision + 1;
+      const commandId = crypto.randomUUID();
+      const token = ++generation.current;
+      const capturedEpoch = epoch.current;
+      setBusy(true);
+      setError("");
+      try {
+        const result = await api<GraphResponse>("plan/command", {
+          schemaVersion: 4, commandId, draftRevision: revision,
+          basisKey, graph: basis, command,
+        });
+        if (token !== generation.current || !isCurrent(capturedEpoch) ||
+          ref.current.plan.draftRevision !== current.plan.draftRevision ||
+          JSON.stringify(ref.current.plan.draft) !== basisKey) return;
+        if (result.status !== "applied") {
+          setError(result.issues[0]?.message || "Точку стены нельзя сдвинуть в этом направлении.");
+          return;
+        }
+        const updated = update((document) => ({ ...document, plan: {
+          ...document.plan, draft: result.graph, draftRevision: revision, pendingEdit: null,
+        }}), true);
+        const next = await accept(result, updated);
+        if (token !== generation.current || !isCurrent(capturedEpoch)) return;
+        install(next);
+        persist(next);
+        setResponse({ ...result, graph: next.plan.draft });
+        notify(command.type);
+      } catch (error) {
+        if (token === generation.current && isCurrent(capturedEpoch)) setError((error as Error).message);
+      } finally {
+        if (token === generation.current && isCurrent(capturedEpoch)) setBusy(false);
+      }
+      return;
+    }
     if (
       !retry &&
       previous &&

@@ -2,6 +2,7 @@ import { expect, type Page } from "@playwright/test";
 import { initial } from "../../src/types";
 import { createV4 } from "../../src/domain/plan/migration";
 import { newRoom } from "../../src/domain/plan/rooms";
+import type { GraphSnapshot } from "../../src/domain/plan/types";
 
 export type TouchPoint = { id: number; x: number; y: number };
 
@@ -196,6 +197,120 @@ export const v4FilledCatalog = () => ({
     viewport: { centerX: 1000, centerY: 1000, zoom: 1, gridStepMm: 100 },
   }],
 });
+
+/** A valid v4 document with removable graph data in every persisted snapshot. */
+export function v4CleanupDocument() {
+  const document = createV4("Проект с устаревшими углами", "", "v4-cleanup");
+  const graph: GraphSnapshot = v4WallGraph();
+  graph.vertices.push({ id: "orphan-vertex", x: 5000, y: 5000 });
+  graph.constraints.push(
+    {
+      id: "fixed-angle",
+      kind: "angle",
+      target: {
+        vertexId: "v4v1",
+        firstSegmentId: "v4s0",
+        secondSegmentId: "v4s1",
+        sector: "ccw",
+      },
+      value: 90,
+      fixed: true,
+    },
+    {
+      id: "released-angle",
+      kind: "angle",
+      target: {
+        vertexId: "v4v2",
+        firstSegmentId: "v4s1",
+        secondSegmentId: "v4s2",
+        sector: "ccw",
+      },
+      value: 90,
+      fixed: false,
+    },
+    {
+      id: "length-condition",
+      kind: "chainLength",
+      target: { chainId: "v4c0" },
+      value: 2000,
+      fixed: true,
+    },
+  );
+  graph.fieldInputs = {
+    "angle:fixed-angle:value": "90",
+    "angle:released-angle:value": "90",
+    "angle:missing-angle:value": "45",
+    "vertex:v4v1:angle-ccw": "90",
+    "vertex:orphan-vertex:angle-cw": "45",
+    "v4c0:interiorAngle": "90",
+    "missing-wall:interiorAngle": "45",
+    "length-condition:value": "2000",
+    "unrelated:raw": "7,5",
+  };
+  document.documentRevision = 5;
+  document.plan.draftRevision = 3;
+  document.plan.draft = graph;
+  document.plan.pendingEdit = {
+    kind: "graphV4",
+    commandId: "pending-old-angle",
+    command: {
+      type: "setAngle",
+      constraintId: "fixed-angle",
+      vertexId: "v4v1",
+      firstSegmentId: "v4s0",
+      secondSegmentId: "v4s1",
+      sector: "ccw",
+      value: 90,
+    },
+    basisGraph: structuredClone(graph),
+    targetDraftRevision: document.plan.draftRevision,
+  };
+  document.plan.restorePoint = {
+    graph: structuredClone(graph),
+    bindings: [],
+    selectedRoomId: null,
+  };
+  const room = newRoom("fixture-topology", "Помещение 1");
+  room.id = "fixture-room";
+  room.rules.angle = 17;
+  room.confirmed = {
+    graph: structuredClone(graph),
+    boundary: {
+      outer: graph.segments.map((segment) => ({ segmentId: segment.id, forward: true })),
+      holes: [],
+    },
+    topologyKey: "fixture-topology",
+    dependencyKey: "fixture-dependency",
+    geometryKey: "fixture-geometry",
+    measurementKey: "fixture-measurement",
+    acknowledgment: null,
+    sourceDraftRevision: 2,
+  };
+  document.rooms = [room];
+  document.selectedRoomId = room.id;
+  return document;
+}
+
+export function v4CleanedDocument() {
+  const document = v4CleanupDocument();
+  for (const graph of [
+    document.plan.draft,
+    document.plan.pendingEdit!.basisGraph,
+    document.plan.restorePoint!.graph,
+    document.rooms[0].confirmed!.graph,
+  ]) {
+    graph.vertices = graph.vertices.filter((vertex) => vertex.id !== "orphan-vertex");
+    graph.constraints = graph.constraints.filter((constraint) => constraint.kind !== "angle");
+    graph.fieldInputs = Object.fromEntries(
+      Object.entries(graph.fieldInputs).filter(([key]) =>
+        !key.startsWith("angle:") && !/^vertex:[^:]+:angle-/.test(key) && !key.endsWith(":interiorAngle")
+      ),
+    );
+  }
+  document.plan.pendingEdit = null;
+  document.documentRevision++;
+  return document;
+}
 export function graphTwoRooms() {
   const a = graphRectangle(),
     b = graphRectangle(2000, 2000, "b");

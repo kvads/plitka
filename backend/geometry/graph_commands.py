@@ -8,6 +8,27 @@ from .deletion import cascade, apply_deletion, remove_condition_raw
 from .wall_geometry import disconnected_wall_overlaps
 DIMENSION={'setLength','setAngle','setOrientation','releaseConstraint','reconcile'}
 
+def nudge_wall_handle(g,c):
+    chain=next((item for item in g['chains'] if item['id']==c['chainId']),None)
+    if chain is None:raise ValueError('Стена не найдена')
+    segments={item['id']:item for item in g['segments']}
+    ids=[chain['startVertexId']]+[segments[sid]['endVertexId'] for sid in chain['segmentIds']]
+    vertices={item['id']:item for item in g['vertices']}
+    moved=ids if c['handle']=='center' else [ids[0] if c['handle']=='start' else ids[-1]]
+    for vertex_id in moved:
+        vertices[vertex_id][c['axis']]+=c['direction']
+    if len(ids)>2:
+        first,last=vertices[ids[0]],vertices[ids[-1]]
+        dx,dy=last['x']-first['x'],last['y']-first['y']
+        if dx*dx+dy*dy<1e-12:raise ValueError('Длина стены должна быть больше нуля')
+        length=(dx*dx+dy*dy)**.5
+        for vertex_id in ids[1:-1]:
+            p=vertices[vertex_id]
+            cross=abs((p['x']-first['x'])*dy-(p['y']-first['y'])*dx)/length
+            dot=(p['x']-first['x'])*dx+(p['y']-first['y'])*dy
+            if cross>1e-5 or dot<=0 or dot>=dx*dx+dy*dy:
+                raise ValueError('Правка нарушает прямолинейность стены')
+
 def apply_condition(g,c):
     t=c['type'];condition=None
     if t=='setLength':
@@ -52,6 +73,14 @@ def execute(basis,c,command_id):
             if collisions:raise GeometryRejection(collisions)
             if not ok:raise ValueError('Перемещение нарушает геометрию или фиксированные размеры')
             g=candidate
+        elif t=='nudgeWallHandle':
+            nudge_wall_handle(g,c)
+            before_vertices={vertex['id']:vertex for vertex in basis['vertices']}
+            moved={vertex['id'] for vertex in g['vertices'] if before_vertices.get(vertex['id'])!=vertex}
+            affected={segment['chainId'] for segment in g['segments'] if segment['startVertexId'] in moved or segment['endVertexId'] in moved}
+            for chain_id in affected:
+                overlaps=disconnected_wall_overlaps(g,chain_id)
+                if overlaps:raise GeometryRejection([issue('physical_overlap','Стена накладывается на несоединённую стену',[chain_id,*overlaps])])
         elif t=='deleteElements':delete_elements(g,c,command_id)
         elif t=='deleteRoom':g=apply_deletion(g,dict(kind='room',topologyKey=c['topologyKey']),c['impactKey'],command_id)
         elif t=='deleteVoid':g=apply_deletion(g,dict(kind='void',voidId=c['voidId']),c['impactKey'],command_id)
@@ -89,5 +118,8 @@ def execute(basis,c,command_id):
                 f['validation']['valid']=False;f['validation']['issues'].append(err)
     if failure:result['issues'].append(issue('unresolved' if status=='unresolved' else 'command_invalid',failure,[], 'global'))
     old={x['id'] for k in ['vertices','segments','chains','voids','constraints'] for x in basis[k]};new={x['id'] for k in ['vertices','segments','chains','voids','constraints'] for x in g[k]}
-    result.update(splitMap=split,addedIds=sorted(new-old),removedIds=sorted(old-new),affectedChainIds=sorted(ch['id'] for ch in g['chains'] if ch not in basis['chains']))
+    old_vertices={v['id']:v for v in basis['vertices']}
+    changed_vertices={v['id'] for v in g['vertices'] if old_vertices.get(v['id'])!=v}
+    changed_chains={s['chainId'] for s in g['segments'] if s['startVertexId'] in changed_vertices or s['endVertexId'] in changed_vertices}
+    result.update(splitMap=split,addedIds=sorted(new-old),removedIds=sorted(old-new),affectedChainIds=sorted(changed_chains|{ch['id'] for ch in g['chains'] if ch not in basis['chains']}))
     return result

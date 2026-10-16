@@ -1,9 +1,309 @@
 import { expect, test } from "@playwright/test";
-import { graphRectangle, openGraph, openProject, screenPoint, setSidebarOpen, settle, stored, toRules, touchSession } from "./fixtures/projects";
+import { canvasPick, graphRectangle, openGraph, openProject, screenPoint, setSidebarOpen, settle, stored, toRules, touchSession } from "./fixtures/projects";
 
 test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
 
-const toolNames = ["Выбрать", "Добавить вершину", "Соединить стены", "Стена", "Угол", "Переместить вершину", "Переместить полотно", "Выбрать помещение"];
+const toolNames = ["Выбрать", "Стена", "Переместить полотно", "Выбрать помещение"];
+
+test("mobile wall uses two taps and keeps the first point through a pan", async ({ page }) => {
+  await openGraph(page, { vertices: [], segments: [], chains: [], voids: [], constraints: [], fieldInputs: {} },
+    { centerX: 500, centerY: 500, zoom: 4 });
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const touch = await touchSession(page);
+  const first = await screenPoint(page, 0, 0);
+  await touch.dispatch("touchStart", [{ id: 1001, x: first.x, y: first.y }]);
+  await touch.dispatch("touchEnd", []);
+  await expect(page.getByRole("button", { name: "Отменить начало стены" })).toBeVisible();
+  expect((await stored(page)).plan.draft.chains).toHaveLength(0);
+  const rulerY = await page.locator(".wall-ruler line").first().getAttribute("y1");
+  const outside = await screenPoint(page, 150, 150);
+  await touch.dispatch("touchStart", [{ id: 1004, x: outside.x, y: outside.y }]);
+  await touch.dispatch("touchEnd", []);
+  expect((await stored(page)).plan.draft.chains).toHaveLength(0);
+  await touch.dispatch("touchStart", [{ id: 1002, x: 210, y: 500 }]);
+  await touch.dispatch("touchMove", [{ id: 1002, x: 230, y: 500 }]);
+  await touch.dispatch("touchEnd", []);
+  await expect(page.getByRole("button", { name: "Отменить начало стены" })).toBeVisible();
+  await expect(page.locator(".wall-ruler line").first()).toHaveAttribute("y1", rulerY!);
+  await touch.dispatch("touchStart", [{ id: 1005, x: 170, y: 450 }, { id: 1006, x: 230, y: 450 }]);
+  await touch.dispatch("touchMove", [{ id: 1005, x: 150, y: 450 }, { id: 1006, x: 250, y: 450 }]);
+  await touch.dispatch("touchEnd", []);
+  await expect(page.locator(".wall-ruler line").first()).toHaveAttribute("y1", rulerY!);
+  expect((await stored(page)).plan.draft.chains).toHaveLength(0);
+  const second = await screenPoint(page, 600, 0);
+  await touch.dispatch("touchStart", [{ id: 1003, x: second.x, y: second.y }]);
+  await touch.dispatch("touchMove", [{ id: 1003, x: second.x + 1, y: second.y }]);
+  await expect(page.locator(".wall-ruler text")).toContainText("600 мм");
+  expect((await stored(page)).plan.draft.chains).toHaveLength(0);
+  await touch.dispatch("touchEnd", []);
+  await expect.poll(async () => (await stored(page)).plan.draft.chains.length).toBe(1);
+  await touch.close();
+});
+
+for (let attempt = 0; attempt < 10; attempt++) {
+  test(`mobile two-tap wall commits exactly once, attempt ${attempt + 1}`, async ({ page }) => {
+    await openGraph(page, { vertices: [], segments: [], chains: [], voids: [], constraints: [], fieldInputs: {} },
+      { centerX: 500, centerY: 500, zoom: 4 });
+    await page.getByRole("button", { name: "Стена", exact: true }).click();
+    const touch = await touchSession(page);
+    let commands = 0;
+    page.on("request", (request) => {
+      if (request.url().endsWith("/api/plan/command") && request.postDataJSON()?.command?.type === "drawWall") commands++;
+    });
+    const start = await screenPoint(page, 0, 0);
+    await touch.dispatch("touchStart", [{ id: 1400 + attempt * 2, x: start.x, y: start.y }]);
+    await touch.dispatch("touchEnd", []);
+    expect(commands).toBe(0);
+    const end = await screenPoint(page, 900, 0);
+    await touch.dispatch("touchStart", [{ id: 1401 + attempt * 2, x: end.x, y: end.y }]);
+    await touch.dispatch("touchEnd", []);
+    await expect.poll(async () => (await stored(page)).plan.draft.chains.length).toBe(1);
+    expect(commands).toBe(1);
+    await touch.close();
+  });
+}
+
+test("perpendicular candidate from a slanted wall keeps a precise right angle", async ({ page }) => {
+  const graph = {
+    vertices: [{ id: "a", x: 0, y: 0 }, { id: "b", x: 1000, y: 1000 }],
+    segments: [{ id: "s", startVertexId: "a", endVertexId: "b", chainId: "c" }],
+    chains: [{ id: "c", startVertexId: "a", endVertexId: "b", segmentIds: ["s"], thicknessMm: 100 }],
+    voids: [], constraints: [], fieldInputs: {},
+  };
+  await openGraph(page, graph, { centerX: 900, centerY: 1100, zoom: 12 });
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const touch = await touchSession(page);
+  const start = await screenPoint(page, 1000, 1000);
+  await touch.dispatch("touchStart", [{ id: 1101, x: start.x, y: start.y }]);
+  await touch.dispatch("touchEnd", []);
+  await expect(page.getByRole("button", { name: "Отменить начало стены" })).toBeVisible();
+  const guide = page.locator('[data-candidate="perpendicularGuide"]').first();
+  await expect(guide).toBeAttached();
+  const end = await guide.evaluate((element) => {
+    const svg = element.ownerSVGElement!;
+    const p = new DOMPoint(Number(element.getAttribute("cx")), -Number(element.getAttribute("cy"))).matrixTransform(svg.getScreenCTM()!);
+    return { x: p.x, y: p.y };
+  });
+  await touch.dispatch("touchStart", [{ id: 1102, x: end.x, y: end.y }]);
+  await touch.dispatch("touchEnd", []);
+  await expect.poll(async () => (await stored(page)).plan.draft.chains.length).toBe(2);
+  const vertices = (await stored(page)).plan.draft.vertices;
+  const newEnd = vertices.find((v: { id: string }) => v.id !== "a" && v.id !== "b");
+  expect(Math.abs((newEnd.x - 1000) + (newEnd.y - 1000))).toBeLessThan(0.01);
+  await touch.close();
+});
+
+test("edge of a wall-end touch target uses the exact stored junction", async ({ page }) => {
+  const graph = {
+    vertices: [{ id: "a", x: 37, y: 43 }, { id: "b", x: 533, y: 443 }],
+    segments: [{ id: "s", startVertexId: "a", endVertexId: "b", chainId: "c" }],
+    chains: [{ id: "c", startVertexId: "a", endVertexId: "b", segmentIds: ["s"], thicknessMm: 100 }],
+    voids: [], constraints: [], fieldInputs: {},
+  };
+  await openGraph(page, graph, { centerX: 500, centerY: 300, zoom: 10 });
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const start = await screenPoint(page, 533, 443);
+  const end = await screenPoint(page, 600, 0);
+  const touch = await touchSession(page);
+  await touch.dispatch("touchStart", [{ id: 1501, x: start.x + 20, y: start.y }]);
+  await touch.dispatch("touchEnd", []);
+  await expect(page.getByRole("button", { name: "Отменить начало стены" })).toBeVisible();
+  await touch.dispatch("touchStart", [{ id: 1502, x: end.x, y: end.y }]);
+  await touch.dispatch("touchEnd", []);
+  await expect.poll(async () => (await stored(page)).plan.draft.chains.length).toBe(2);
+  const draft = (await stored(page)).plan.draft;
+  const added = draft.chains.find((chain: { id: string }) => chain.id !== "c");
+  const point = draft.vertices.find((vertex: { id: string }) => vertex.id === added.startVertexId);
+  expect(point).toMatchObject({ x: 533, y: 443 });
+  await touch.close();
+});
+
+test("a wall end wins over nearby grid points as the second tap", async ({ page }) => {
+  const graph = {
+    vertices: [{ id: "a", x: 37, y: 43 }, { id: "b", x: 533, y: 443 }],
+    segments: [{ id: "s", startVertexId: "a", endVertexId: "b", chainId: "c" }],
+    chains: [{ id: "c", startVertexId: "a", endVertexId: "b", segmentIds: ["s"], thicknessMm: 100 }],
+    voids: [], constraints: [], fieldInputs: {},
+  };
+  await openGraph(page, graph, { centerX: 500, centerY: 300, zoom: 10 });
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const touch = await touchSession(page);
+  const start = await screenPoint(page, 400, 0);
+  await touch.dispatch("touchStart", [{ id: 1701, x: start.x, y: start.y }]);
+  await touch.dispatch("touchEnd", []);
+  const end = await screenPoint(page, 533, 443);
+  await touch.dispatch("touchStart", [{ id: 1702, x: end.x + 20, y: end.y }]);
+  await touch.dispatch("touchEnd", []);
+  await expect.poll(async () => (await stored(page)).plan.draft.chains.length).toBe(2);
+  const draft = (await stored(page)).plan.draft;
+  const added = draft.chains.find((chain: { id: string }) => chain.id !== "c");
+  const endpoint = draft.vertices.find((vertex: { id: string }) => vertex.id === added.endVertexId);
+  expect(endpoint).toMatchObject({ x: 533, y: 443 });
+  await touch.close();
+});
+
+test("two competing wall ends refuse an ambiguous touch until zoomed closer", async ({ page }) => {
+  const graph = {
+    vertices: [{ id: "a", x: -300, y: 0 }, { id: "b", x: 0, y: 0 }, { id: "c", x: 60, y: 0 }, { id: "d", x: 360, y: 0 }],
+    segments: [{ id: "s1", startVertexId: "a", endVertexId: "b", chainId: "w1" }, { id: "s2", startVertexId: "c", endVertexId: "d", chainId: "w2" }],
+    chains: [{ id: "w1", startVertexId: "a", endVertexId: "b", segmentIds: ["s1"], thicknessMm: 100 }, { id: "w2", startVertexId: "c", endVertexId: "d", segmentIds: ["s2"], thicknessMm: 100 }],
+    voids: [], constraints: [], fieldInputs: {},
+  };
+  await openGraph(page, graph, { centerX: 30, centerY: 0, zoom: 10 });
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const touch = await touchSession(page);
+  const middle = await screenPoint(page, 30, 0);
+  await touch.dispatch("touchStart", [{ id: 1801, x: middle.x, y: middle.y }]);
+  await touch.dispatch("touchEnd", []);
+  await expect(page.getByRole("button", { name: "Отменить начало стены" })).toHaveCount(0);
+  expect((await stored(page)).plan.draft.chains).toHaveLength(2);
+  await touch.close();
+});
+
+test("mobile major-grid candidates thin out on zoom out and stay 44px apart", async ({ page }) => {
+  await openGraph(page, { vertices: [], segments: [], chains: [], voids: [], constraints: [], fieldInputs: {} },
+    { centerX: 1000, centerY: 1000, zoom: 0.2 });
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const countFar = await page.locator('[data-candidate="majorGrid"]').count();
+  await page.evaluate(() => {
+    const catalog = JSON.parse(localStorage.getItem("plitka-projects-v4")!);
+    catalog.projects[0].viewport.zoom = 8;
+    localStorage.setItem("plitka-projects-v4", JSON.stringify(catalog));
+  });
+  await page.reload();
+  await setSidebarOpen(page, true);
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const grid = page.locator('[data-candidate="majorGrid"]');
+  await expect.poll(() => grid.count()).toBeGreaterThan(countFar);
+  const spacing = await grid.evaluateAll((circles) => {
+    const svg = circles[0]?.ownerSVGElement!;
+    const points = circles.map((circle) => new DOMPoint(Number(circle.getAttribute("cx")), -Number(circle.getAttribute("cy"))).matrixTransform(svg.getScreenCTM()!));
+    let minimum = Infinity;
+    for (let i = 0; i < points.length; i++) for (let j = i + 1; j < points.length; j++)
+      minimum = Math.min(minimum, Math.hypot(points[i].x - points[j].x, points[i].y - points[j].y));
+    return minimum;
+  });
+  expect(spacing).toBeGreaterThanOrEqual(43.9);
+  await expect(page.locator('[data-candidate="minorGrid"]')).toHaveCount(0);
+});
+
+for (const width of [320, 375, 430]) for (const landscape of [false, true]) {
+  test(`mobile wall controls fit ${width}px ${landscape ? "landscape" : "portrait"}`, async ({ page }) => {
+    await page.setViewportSize(landscape ? { width: 812, height: width } : { width, height: 812 });
+    await openGraph(page, graphRectangle(), {}, false);
+    await expect(page.locator(".canvas-sidebar-toggle")).toHaveAttribute("aria-expanded", "false");
+    await setSidebarOpen(page, true);
+    await canvasPick(page, "segment", "as0");
+    const handle = page.locator('[data-wall-handle="end"] circle').first();
+    const handleBox = await handle.boundingBox();
+    expect(handleBox!.width).toBeGreaterThanOrEqual(44);
+    await page.locator('[data-wall-handle="end"]').click();
+    const arrow = page.getByRole("button", { name: "Сдвинуть точку стены → на 1 мм" });
+    await expect(arrow).toBeVisible();
+    const arrowBox = await arrow.boundingBox();
+    expect(arrowBox!.width).toBeGreaterThanOrEqual(44);
+    expect(arrowBox!.height).toBeGreaterThanOrEqual(44);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(landscape ? 812 : width);
+  });
+}
+
+test("mobile sidebar scrolls without moving the canvas", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await openGraph(page, graphRectangle());
+  const canvas = page.locator("svg[data-geometry]");
+  const view = await canvas.getAttribute("viewBox");
+  const sidebar = page.locator(".canvas-sidebar");
+  await sidebar.evaluate((node) => {
+    const spacer = document.createElement("div");
+    spacer.style.cssText = "min-height:1000px;flex:none";
+    node.appendChild(spacer);
+  });
+  const box = await sidebar.boundingBox();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.wheel(0, 200);
+  await expect.poll(() => sidebar.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
+  await expect(canvas).toHaveAttribute("viewBox", view!);
+});
+
+test("Escape, tool switch and explicit cancel discard an unfinished mobile wall", async ({ page }) => {
+  await openGraph(page, { vertices: [], segments: [], chains: [], voids: [], constraints: [], fieldInputs: {} },
+    { centerX: 500, centerY: 500, zoom: 4 });
+  const touch = await touchSession(page);
+  const tap = async (id: number) => {
+    const start = await screenPoint(page, 0, 0);
+    await touch.dispatch("touchStart", [{ id, x: start.x, y: start.y }]);
+    await touch.dispatch("touchEnd", []);
+    await expect(page.getByRole("button", { name: "Отменить начало стены" })).toBeVisible();
+  };
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  await tap(1201);
+  await page.locator("svg[data-geometry]").press("Escape");
+  await expect(page.getByRole("button", { name: "Отменить начало стены" })).toHaveCount(0);
+  await tap(1202);
+  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Отменить начало стены" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  await tap(1203);
+  await page.getByRole("button", { name: "Отменить начало стены" }).click();
+  await expect(page.getByRole("button", { name: "Отменить начало стены" })).toHaveCount(0);
+  expect((await stored(page)).plan.draft.chains).toHaveLength(0);
+  await touch.close();
+});
+
+for (const width of [320, 375, 430]) {
+  test(`10/100 mm grid becomes readable at maximum zoom on ${width}px canvas`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 812 });
+    await openGraph(page, graphRectangle(), { zoom: 0.2 });
+    const canvas = page.locator("svg[data-geometry]");
+    const baseline = await canvas.getAttribute("data-geometry");
+    expect(await page.locator(".canvas-grid-major line").count()).toBeGreaterThan(0);
+    await expect(page.locator(".canvas-grid-minor line")).toHaveCount(0);
+    const initialWidth = await canvas.evaluate((svg) => svg.getBoundingClientRect().width);
+    await page.evaluate((canvasWidth) => {
+      const state = JSON.parse(localStorage.getItem("plitka-projects-v4")!);
+      state.projects[0].viewport.zoom = Math.max(8, 5400 / canvasWidth);
+      localStorage.setItem("plitka-projects-v4", JSON.stringify(state));
+    }, initialWidth);
+    await page.reload();
+    await expect.poll(() => page.locator(".canvas-grid-minor line").count()).toBeGreaterThan(0);
+    const overlap = await page.evaluate(() => {
+      const major = new Set([...document.querySelectorAll(".canvas-grid-major line")].map((line) => line.getAttribute("x1") === line.getAttribute("x2") ? `x:${line.getAttribute("x1")}` : `y:${line.getAttribute("y1")}`));
+      return [...document.querySelectorAll(".canvas-grid-minor line")].some((line) => major.has(line.getAttribute("x1") === line.getAttribute("x2") ? `x:${line.getAttribute("x1")}` : `y:${line.getAttribute("y1")}`));
+    });
+    expect(overlap).toBe(false);
+    const actualWidth = await canvas.evaluate((svg) => svg.getBoundingClientRect().width);
+    expect(10 * actualWidth * (await stored(page)).viewport.zoom / 9000).toBeGreaterThanOrEqual(6);
+    expect(await canvas.getAttribute("data-geometry")).toBe(baseline);
+    expect((await stored(page)).viewport.gridStepMm).toBe(100);
+  });
+}
+
+test("resizing the open canvas clamps zoom to its new measured width", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 812 });
+  await openGraph(page, graphRectangle(), { zoom: 16.875 });
+  const before = (await stored(page)).plan.draft;
+  await page.setViewportSize({ width: 430, height: 812 });
+  const canvas = page.locator("svg[data-geometry]");
+  const width = await canvas.evaluate((svg) => svg.getBoundingClientRect().width);
+  await expect.poll(async () => (await stored(page)).viewport.zoom).toBeCloseTo(Math.max(8, 5400 / width), 3);
+  expect((await stored(page)).plan.draft).toEqual(before);
+  expect((await stored(page)).viewport.gridStepMm).toBe(100);
+});
+
+test("pointer cancellation restores the last committed viewport", async ({ page }) => {
+  await openGraph(page, graphRectangle());
+  await page.getByRole("button", { name: "Переместить полотно", exact: true }).click();
+  const canvas = page.locator("svg[data-geometry]");
+  const before = await canvas.getAttribute("viewBox");
+  const beforeViewport = (await stored(page)).viewport;
+  const touch = await touchSession(page);
+  await touch.dispatch("touchStart", [{ id: 1301, x: 220, y: 420 }]);
+  await touch.dispatch("touchMove", [{ id: 1301, x: 255, y: 450 }]);
+  await expect.poll(() => canvas.getAttribute("viewBox")).not.toBe(before);
+  await touch.dispatch("touchCancel", []);
+  expect((await stored(page)).viewport).toEqual(beforeViewport);
+  await touch.close();
+});
 
 test("single touch pan follows the finger before release", async ({ page }) => {
   await openGraph(page, graphRectangle());
@@ -43,12 +343,15 @@ for (const width of [320, 375, 430]) {
     }
     expect(await canvas.getAttribute("data-geometry")).toBe(geometry);
     await touch.close();
+    const viewport = (await stored(page)).viewport;
+    await page.reload();
+    await expect.poll(async () => (await stored(page)).viewport).toEqual(viewport);
   });
 }
 
 test("snap preview has no type label", async ({ page }) => {
   await openGraph(page, graphRectangle());
-  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
   const point = await screenPoint(page, 2000, 1500);
   await page.mouse.move(point.x, point.y);
   await expect(page.locator(".snap-status")).toHaveCount(0);
@@ -145,7 +448,7 @@ test("wall preview stops at the physical face before an axis junction", async ({
   expect(vertex.y).toBe(0);
 });
 
-test("second finger cancels an unfinished wall", async ({ page }) => {
+test("second finger interrupts touch drag without creating a wall", async ({ page }) => {
   await openGraph(page, { vertices: [], segments: [], chains: [], voids: [], constraints: [], fieldInputs: {} },
     { centerX: 500, centerY: 500, zoom: 4 });
   await page.getByRole("button", { name: "Стена", exact: true }).click();
@@ -154,7 +457,7 @@ test("second finger cancels an unfinished wall", async ({ page }) => {
   const second = { id: 92, x: 230, y: 340 };
   await touch.dispatch("touchStart", [first]);
   await touch.dispatch("touchMove", [{ ...first, x: 170, y: 360 }]);
-  await expect(page.locator(".physical-wall-preview")).toBeVisible();
+  await expect(page.locator(".physical-wall-preview")).toHaveCount(0);
   await touch.dispatch("touchStart", [{ ...first, x: 170, y: 360 }, second]);
   await expect(page.locator(".physical-wall-preview")).toHaveCount(0);
   await touch.dispatch("touchEnd", []);
@@ -178,6 +481,8 @@ test("ten wall strokes stop at the first existing wall", async ({ page }) => {
     await page.mouse.move(start.x, start.y);
     await page.mouse.down();
     await page.mouse.move(end.x, end.y);
+    const preview = await page.locator(".physical-wall-preview").getAttribute("d");
+    expect(preview).toContain("50");
     await page.mouse.up();
     await expect.poll(async () => (await stored(page)).plan.draft.chains.length).toBe(index + 2);
     const draft = (await stored(page)).plan.draft;
@@ -186,29 +491,16 @@ test("ten wall strokes stop at the first existing wall", async ({ page }) => {
   }
 });
 
-test("touch placement keeps the marker but hides numbers and needs three actions", async ({ page }) => {
-  await openGraph(page, graphRectangle());
-  await setSidebarOpen(page, true);
-  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
-  const before = (await stored(page)).plan.draft.vertices.length;
-  const target = await screenPoint(page, 2000, 1500);
-  await page.touchscreen.tap(target.x, target.y + 48);
-  const group = page.getByRole("group", { name: "Размещение вершины" });
-  await expect(group).toBeVisible();
-  await expect(group).not.toContainText(/\d+\s*[×;]\s*\d+/);
-  await expect(page.locator(".snap-status")).toHaveCount(0);
-  await group.getByRole("button", { name: "Поставить вершину" }).click();
-  await expect.poll(async () => (await stored(page)).plan.draft.vertices.length).toBe(before + 1);
-});
+
 
 test("touch sidebar starts closed in portrait and wide landscape and keeps manual choice", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await openGraph(page, graphRectangle(), {}, false);
   const toggle = page.locator(".canvas-sidebar-toggle");
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await expect(page.getByRole("button", { name: "Добавить вершину", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Стена", exact: true })).toHaveCount(0);
   await setSidebarOpen(page, true);
-  await expect(page.getByRole("button", { name: "Добавить вершину", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Стена", exact: true })).toBeVisible();
   await page.setViewportSize({ width: 812, height: 375 });
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(812);
@@ -244,7 +536,7 @@ for (const width of [320, 375, 430]) {
         expect(snapshot.layout).toBe(baseline.layout);
         const zoom = (await stored(page)).viewport.zoom;
         expect(zoom).toBeGreaterThanOrEqual(0.2);
-        expect(zoom).toBeLessThanOrEqual(8);
+        expect(zoom).toBeLessThanOrEqual(Math.max(8, 5400 / (await canvas.evaluate((svg) => svg.getBoundingClientRect().width))));
       }
       await expect(page.getByRole("group", { name: "Размещение вершины" })).toHaveCount(0);
       await expect(page.getByRole("group", { name: "Перемещение вершины" })).toHaveCount(0);
@@ -255,23 +547,7 @@ for (const width of [320, 375, 430]) {
   });
 }
 
-test("second finger and touch cancellation discard an unfinished point", async ({ page }) => {
-  await openGraph(page, graphRectangle());
-  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
-  const touch = await touchSession(page);
-  const baseline = await touch.snapshot();
-  const one = { id: 91, x: 230, y: 420 };
-  const two = { id: 92, x: 280, y: 420 };
-  await touch.dispatch("touchStart", [one]);
-  await touch.dispatch("touchStart", [one, two]);
-  await touch.dispatch("touchMove", [{ ...one, x: 210 }, { ...two, x: 300 }]);
-  await touch.dispatch("touchCancel", []);
-  expect(await touch.snapshot()).toEqual(baseline);
-  await expect(page.getByRole("group", { name: "Размещение вершины" })).toHaveCount(0);
-  await page.touchscreen.tap(240, 440);
-  await expect(page.getByRole("group", { name: "Размещение вершины" })).toBeVisible();
-  await touch.close();
-});
+
 
 test("pinch keeps the world point under the moving midpoint with an open panel", async ({ page }) => {
   await openGraph(page, graphRectangle());
@@ -336,7 +612,9 @@ test("pinch clamps at both zoom limits without changing the grid", async ({ page
   await touch.dispatch("touchStart", [{ id: 501, x: 165, y: 420 }, { id: 502, x: 205, y: 420 }]);
   await touch.dispatch("touchMove", [{ id: 501, x: 65, y: 420 }, { id: 502, x: 305, y: 420 }]);
   await touch.dispatch("touchEnd", []);
-  await expect.poll(async () => (await stored(page)).viewport.zoom).toBe(8);
+  const canvas = page.locator("svg[data-geometry]");
+  const maxZoom = Math.max(8, 5400 / (await canvas.evaluate((svg) => svg.getBoundingClientRect().width)));
+  await expect.poll(async () => (await stored(page)).viewport.zoom).toBeCloseTo(maxZoom, 3);
   await page.evaluate(() => {
     const state = JSON.parse(localStorage.getItem("plitka-projects-v4")!);
     state.projects[0].viewport.zoom = 0.25;
@@ -352,242 +630,14 @@ test("pinch clamps at both zoom limits without changing the grid", async ({ page
   await touch.close();
 });
 
-test("two fingers navigate without editing; a touch point needs confirmation", async ({ page }) => {
-  await openGraph(page, graphRectangle());
-  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
-  const canvas = page.locator("svg[data-geometry]");
-  const geometry = await canvas.getAttribute("data-geometry");
-  const before = await canvas.getAttribute("viewBox");
-  const client = await page.context().newCDPSession(page);
-  await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
-    { x: 220, y: 400, id: 1 }, { x: 270, y: 400, id: 2 },
-  ] });
-  await client.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [
-    { x: 185, y: 425, id: 1 }, { x: 305, y: 425, id: 2 },
-  ] });
-  await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await expect.poll(() => canvas.getAttribute("viewBox")).not.toBe(before);
-  const afterZoom = await canvas.getAttribute("viewBox");
-  await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
-    { x: 220, y: 390, id: 3 }, { x: 280, y: 390, id: 4 },
-  ] });
-  await client.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [
-    { x: 250, y: 420, id: 3 }, { x: 310, y: 420, id: 4 },
-  ] });
-  await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await expect.poll(() => canvas.getAttribute("viewBox")).not.toBe(afterZoom);
-  expect(await canvas.getAttribute("data-geometry")).toBe(geometry);
-  await expect(page.getByRole("group", { name: "Размещение вершины" })).toHaveCount(0);
 
-  await page.touchscreen.tap(250, 440);
-  await expect(page.getByRole("group", { name: "Размещение вершины" })).toBeVisible();
-  expect(await canvas.getAttribute("data-geometry")).toBe(geometry);
-  await page.getByRole("button", { name: "Отмена", exact: true }).click();
-  expect(await canvas.getAttribute("data-geometry")).toBe(geometry);
-
-  await page.touchscreen.tap(250, 440);
-  await page.getByRole("button", { name: "Поставить вершину" }).click();
-  await settle(page);
-  const next = JSON.parse((await canvas.getAttribute("data-geometry"))!);
-  expect(next.vertices).toHaveLength(JSON.parse(geometry!).vertices.length + 1);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375);
-});
 
 for (const width of [320, 430]) {
   test(`mobile controls fit ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 812 });
     await openGraph(page, graphRectangle());
-    await expect(page.getByRole("button", { name: "Увеличить" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Добавить вершину", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Увеличить" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Стена", exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
-  });
-}
-
-test("touch vertex move waits for confirmation and can be cancelled", async ({ page }) => {
-  await openGraph(page, graphRectangle());
-  await page.getByRole("button", { name: "Переместить вершину", exact: true }).click();
-  const canvas = page.locator("svg[data-geometry]");
-  const before = await canvas.getAttribute("data-geometry");
-  const point = await screenPoint(page, 4000, 0);
-  const client = await page.context().newCDPSession(page);
-  const drag = async (id: number) => {
-    await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: point.x, y: point.y, id }] });
-    await client.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: point.x - 45, y: point.y - 45, id }] });
-    await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  };
-  await drag(1);
-  await expect(page.getByRole("group", { name: "Перемещение вершины" })).toBeVisible();
-  expect(await canvas.getAttribute("data-geometry")).toBe(before);
-  await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
-    { x: 220, y: 400, id: 3 }, { x: 270, y: 400, id: 4 },
-  ] });
-  await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await expect(page.getByRole("group", { name: "Перемещение вершины" })).toHaveCount(0);
-  expect(await canvas.getAttribute("data-geometry")).toBe(before);
-
-  await drag(5);
-  await page.getByRole("group", { name: "Перемещение вершины" }).getByRole("button", { name: "Отмена" }).click();
-  expect(await canvas.getAttribute("data-geometry")).toBe(before);
-
-  await drag(6);
-  await page.getByRole("group", { name: "Перемещение вершины" })
-    .getByRole("button", { name: "Переместить вершину" }).click();
-  await settle(page);
-  const after = JSON.parse((await canvas.getAttribute("data-geometry"))!);
-  expect(after.vertices.find((v: { id: string }) => v.id === "av1")).not.toEqual(
-    JSON.parse(before!).vertices.find((v: { id: string }) => v.id === "av1"),
-  );
-});
-
-test("ten addition and move previews cancel without a graph command", async ({ page }) => {
-  await openGraph(page, graphRectangle());
-  const canvas = page.locator("svg[data-geometry]");
-  const before = await canvas.getAttribute("data-geometry");
-  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
-  for (let i = 0; i < 10; i++) {
-    await page.touchscreen.tap(210, 420);
-    await page.getByRole("group", { name: "Размещение вершины" }).getByRole("button", { name: "Отмена" }).click();
-  }
-  expect(await canvas.getAttribute("data-geometry")).toBe(before);
-  await page.getByRole("button", { name: "Переместить вершину", exact: true }).click();
-  const origin = await screenPoint(page, 4000, 0);
-  const touch = await touchSession(page);
-  for (let i = 0; i < 10; i++) {
-    await touch.dispatch("touchStart", [{ id: 101 + i, ...origin }]);
-    await touch.dispatch("touchMove", [{ id: 101 + i, x: origin.x - 35, y: origin.y - 35 }]);
-    await touch.dispatch("touchEnd", []);
-    await page.getByRole("group", { name: "Перемещение вершины" }).getByRole("button", { name: "Отмена" }).click();
-  }
-  expect(await canvas.getAttribute("data-geometry")).toBe(before);
-  await touch.close();
-});
-
-test("Escape, tool change, and touch cancellation clear placement previews", async ({ page }) => {
-  await openGraph(page, graphRectangle());
-  const canvas = page.locator("svg[data-geometry]");
-  const before = await canvas.getAttribute("data-geometry");
-  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
-  await page.touchscreen.tap(210, 420);
-  await expect(page.getByRole("group", { name: "Размещение вершины" })).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("group", { name: "Размещение вершины" })).toHaveCount(0);
-  await page.touchscreen.tap(210, 420);
-  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
-  await expect(page.getByRole("group", { name: "Размещение вершины" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Переместить вершину", exact: true }).click();
-  const origin = await screenPoint(page, 4000, 0);
-  const touch = await touchSession(page);
-  await touch.dispatch("touchStart", [{ id: 191, ...origin }]);
-  await touch.dispatch("touchMove", [{ id: 191, x: origin.x - 35, y: origin.y - 35 }]);
-  await touch.dispatch("touchCancel", []);
-  await expect(page.getByRole("group", { name: "Перемещение вершины" })).toHaveCount(0);
-  expect(await canvas.getAttribute("data-geometry")).toBe(before);
-  await touch.close();
-});
-
-test("move preview remains visible above the dragging finger", async ({ page }) => {
-  await openGraph(page, graphRectangle());
-  await page.getByRole("button", { name: "Переместить вершину", exact: true }).click();
-  const origin = await screenPoint(page, 4000, 0);
-  const finger = { x: origin.x - 40, y: origin.y - 40 };
-  const touch = await touchSession(page);
-  await touch.dispatch("touchStart", [{ id: 201, ...origin }]);
-  await touch.dispatch("touchMove", [{ id: 201, ...finger }]);
-  const marker = page.locator("svg[data-geometry] circle[data-drag-preview]");
-  await expect(marker).toBeVisible();
-  const markerScreen = await marker.evaluate((el) => {
-    const p = new DOMPoint(Number(el.getAttribute("cx")), Number(el.getAttribute("cy"))).matrixTransform((el as SVGCircleElement).getScreenCTM()!);
-    return { x: p.x, y: p.y };
-  });
-  expect(Math.abs(markerScreen.x - finger.x)).toBeLessThan(12);
-  expect(markerScreen.y).toBeLessThan(finger.y - 35);
-  await touch.dispatch("touchEnd", []);
-  await touch.close();
-});
-
-test("rejected confirmed move shows an error and retains the graph", async ({ page }) => {
-  await openGraph(page, graphRectangle());
-  await page.getByRole("button", { name: "Переместить вершину", exact: true }).click();
-  const before = await page.locator("svg[data-geometry]").getAttribute("data-geometry");
-  const origin = await screenPoint(page, 4000, 0);
-  const destination = await screenPoint(page, 0, 0);
-  const touch = await touchSession(page);
-  await touch.dispatch("touchStart", [{ id: 301, ...origin }]);
-  await touch.dispatch("touchMove", [{ id: 301, ...destination }]);
-  await touch.dispatch("touchEnd", []);
-  await page.getByRole("group", { name: "Перемещение вершины" }).getByRole("button", { name: "Переместить вершину" }).click();
-  await expect(page.getByRole("alert").first()).toBeVisible();
-  expect(await page.locator("svg[data-geometry]").getAttribute("data-geometry")).toBe(before);
-  await touch.close();
-});
-
-test("nine of ten preset touch targets save exactly at the preview marker", async ({ page }) => {
-  await openGraph(page, graphRectangle());
-  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
-  const canvas = page.locator("svg[data-geometry]");
-  const targets = [1000, 1600, 2200, 2800, 3400].flatMap((x) => [1000, 2000].map((y) => ({ x, y })));
-  let successes = 0;
-  for (const target of targets) {
-    const screen = await screenPoint(page, target.x, target.y);
-    const before = JSON.parse((await canvas.getAttribute("data-geometry"))!);
-    await page.touchscreen.tap(screen.x, screen.y + 48);
-    const marker = canvas.locator("circle[data-placement-blocked]");
-    await expect(marker).toBeVisible();
-    const preview = await marker.evaluate((el) => {
-      const point = { x: Number(el.getAttribute("cx")), y: Number(el.getAttribute("cy")) };
-      const screen = new DOMPoint(point.x, point.y).matrixTransform((el as SVGCircleElement).getScreenCTM()!);
-      return { point: { x: point.x, y: point.y }, screen: { x: screen.x, y: screen.y } };
-    });
-    await page.getByRole("button", { name: "Поставить вершину" }).click();
-    await settle(page);
-    const after = JSON.parse((await canvas.getAttribute("data-geometry"))!);
-    expect(after.vertices).toHaveLength(before.vertices.length + 1);
-    const saved = after.vertices.at(-1);
-    expect({ x: saved.x, y: saved.y }).toEqual(preview.point);
-    if (Math.hypot(preview.screen.x - screen.x, preview.screen.y - screen.y) <= 12) successes++;
-  }
-  expect(successes).toBeGreaterThanOrEqual(9);
-});
-
-test("touch placement warns and blocks a point within twelve screen pixels", async ({ page }) => {
-  await openGraph(page, graphRectangle());
-  await page.getByRole("button", { name: "Добавить вершину", exact: true }).click();
-  const canvas = page.locator("svg[data-geometry]");
-  const before = await canvas.getAttribute("data-geometry");
-  const vertex = await screenPoint(page, 0, 0);
-  await page.touchscreen.tap(vertex.x, vertex.y + 48);
-  await expect(canvas.locator('circle[data-placement-blocked="true"]')).toBeVisible();
-  await page.getByRole("button", { name: "Поставить вершину" }).click();
-  await expect(page.getByRole("alert").first()).toBeVisible();
-  expect(await canvas.getAttribute("data-geometry")).toBe(before);
-});
-
-for (const [width, height] of [[320, 812], [375, 812], [430, 812], [812, 320], [812, 375], [812, 430]]) {
-  test(`controls remain reachable at ${width}x${height}`, async ({ page }) => {
-    await page.setViewportSize({ width, height });
-    await openGraph(page, graphRectangle());
-    const tools = page.getByRole("toolbar", { name: "Инструменты плана" });
-    await tools.getByRole("button", { name: "Выбрать помещение", exact: true }).click();
-    await tools.getByRole("button", { name: "Добавить вершину", exact: true }).click();
-    const before = await page.locator("svg[data-geometry]").getAttribute("data-geometry");
-    await page.getByRole("button", { name: "Параметры", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Закрыть параметры" })).toBeVisible();
-    await page.getByRole("button", { name: "Закрыть параметры" }).click();
-    await expect(tools.getByRole("button", { name: "Добавить вершину", exact: true })).toHaveAttribute("aria-pressed", "true");
-    expect(await page.locator("svg[data-geometry]").getAttribute("data-geometry")).toBe(before);
-    const target = await screenPoint(page, 2000, 2700);
-    await page.touchscreen.tap(target.x, target.y + 48);
-    const controls = page.getByRole("group", { name: "Размещение вершины" });
-    await expect(controls).toBeVisible();
-    for (const name of ["Поставить вершину", "Отмена"]) {
-      const box = await controls.getByRole("button", { name }).boundingBox();
-      expect(box).not.toBeNull();
-      expect(box!.height).toBeGreaterThanOrEqual(44);
-      expect(box!.x).toBeGreaterThanOrEqual(0);
-      expect(box!.x + box!.width).toBeLessThanOrEqual(width);
-      expect(box!.y + box!.height).toBeLessThanOrEqual(height);
-    }
-    await controls.getByRole("button", { name: "Отмена" }).click();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   });
 }

@@ -1,4 +1,3 @@
-import { chooseAngle } from "./fixtures/projects";
 import { addPoint, canvasPick } from "./fixtures/projects";
 import { test, expect } from "@playwright/test";
 import {
@@ -14,6 +13,38 @@ import {
   graphCommand,
   graphValidate,
 } from "./fixtures/projects";
+
+test("only the selected wall shows three handles and obsolete controls stay hidden", async ({ page }) => {
+  await openGraph(page, graphRectangle());
+  await expect(page.locator(".graph-vertex")).toHaveCount(0);
+  await expect(page.locator("[data-wall-handle]")).toHaveCount(0);
+  for (const label of ["Добавить вершину", "Переместить вершину", "Соединить стены", "Угол", "Увеличить", "Уменьшить", "Скачать проект", "Открыть файл"])
+    await expect(page.getByRole("button", { name: label, exact: true })).toHaveCount(0);
+  await canvasPick(page, "segment", "as0");
+  await expect(page.locator("[data-wall-handle]")).toHaveCount(3);
+  await expect(page.locator(".snap-status")).toHaveCount(0);
+  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
+  await expect(page.locator("[data-wall-handle]")).toHaveCount(0);
+});
+
+test("wall end and center handles expose four keyboard reachable one millimeter arrows", async ({ page }) => {
+  await openGraph(page, graphRectangle());
+  await canvasPick(page, "segment", "as0");
+  for (const handle of ["start", "center", "end"] as const) {
+    await page.locator(`[data-wall-handle="${handle}"]`).click();
+    const label = handle === "center" ? "стену" : "точку стены";
+    for (const direction of ["←", "→", "↑", "↓"]) {
+      const button = page.getByRole("button", { name: `Сдвинуть ${label} ${direction} на 1 мм` });
+      await expect(button).toBeVisible();
+      await expect(button).toBeEnabled();
+      await button.focus();
+      await expect(button).toBeFocused();
+    }
+  }
+  await page.getByRole("button", { name: "Сдвинуть точку стены → на 1 мм" }).press("Enter");
+  await expect.poll(async () => (await stored(page)).plan.draft.vertices.find((v: { id: string }) => v.id === "av1")?.x).toBe(4001);
+});
+
 test("graph API derives rooms and preserves independent points", async ({
   page,
 }) => {
@@ -147,41 +178,7 @@ test("graph splits measured wall and preserves total", async ({ page }) => {
   );
   expect(ms.some((m: any) => Math.abs(m.value - 2500) < 0.1)).toBeTruthy();
 });
-test("graph UI numeric vertices persist and connect explicitly", async ({
-  page,
-}) => {
-  await openProject(page);
-  await page
-    .getByRole("button", { name: "Добавить вершину", exact: true })
-    .click();
-  await addPoint(page, 6000, 1000);
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          JSON.parse(localStorage.getItem("plitka-projects-v4")!).projects[0]
-            .plan.draft.vertices.length,
-      ),
-    )
-    .toBe(5);
-  await page.reload();
-  await expect(page.locator('[data-target^="vertex:"]')).toHaveCount(5);
-  await page
-    .getByRole("button", { name: "Соединить стены", exact: true })
-    .click();
-  await canvasPick(page, "vertex", 1);
-  await canvasPick(page, "vertex", 5);
 
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          JSON.parse(localStorage.getItem("plitka-projects-v4")!).projects[0]
-            .plan.draft.segments.length,
-      ),
-    )
-    .toBeGreaterThan(4);
-});
 test("graph measured 4000 wall solves 1500 segment and resplit retains range", async ({
   page,
 }) => {
@@ -470,94 +467,6 @@ test("free wall keeps anchor and direction and release repairs conflict", async 
   });
   expect(reconciled.status).toBe("applied");
 });
-test("angle raw comma survives successful solve and reload", async ({
-  page,
-}) => {
-  await openGraph(page, graphRectangle());
-  await chooseAngle(page, "as0", "as1", "cw");
-  await commit(page, "Угол между стенами", "60,5");
-  await expect
-    .poll(async () => (await stored(page)).plan.pendingEdit)
-    .toBeNull();
-  await expect(
-    page.getByLabel("Угол между стенами", { exact: true }),
-  ).toHaveValue("60,5");
-  await settle(page);
-  await page.reload();
-  await settle(page);
-  await chooseAngle(page, "as0", "as1", "cw");
-  await expect(
-    page.getByLabel("Угол между стенами", { exact: true }),
-  ).toHaveValue("60,5");
-});
-test("split and merge detach records and never inherit confirmation", async ({
-  page,
-}) => {
-  const g: any = graphRectangle();
-  g.vertices.push(
-    { id: "left", x: 0, y: 1500 },
-    { id: "right", x: 4000, y: 1500 },
-  );
-  await openGraph(page, g);
-  await confirmRoom(page);
-  await settle(page);
-  const old = (await stored(page)).selectedRoomId;
-  await page
-    .getByRole("button", { name: "Соединить стены", exact: true })
-    .click();
-  await canvasPick(page, "vertex", "left");
-  await canvasPick(page, "vertex", "right");
-
-  await settle(page);
-  const split = await stored(page);
-  expect(split.selectedRoomId).toBeNull();
-  expect(split.rooms.find((r: any) => r.id === old).binding).toBe("detached");
-  expect(split.rooms.filter((r: any) => r.binding === "attached")).toHaveLength(
-    2,
-  );
-  const partition = split.plan.draft.segments.find(
-    (s: any) => s.startVertexId === "left" && s.endVertexId === "right",
-  );
-  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
-  await canvasPick(page, "segment", partition.id);
-  page.on("dialog", (d) => d.accept());
-  await page.getByRole("button", { name: /Удалить (стену|вершину)/ }).click();
-  await settle(page);
-  const merged = await stored(page);
-  expect(
-    merged.rooms.filter((r: any) => r.binding === "attached"),
-  ).toHaveLength(1);
-  expect(
-    merged.rooms.find((r: any) => r.binding === "attached").confirmed,
-  ).toBeNull();
-  expect(merged.rooms.find((r: any) => r.id === old).binding).toBe("detached");
-});
-test("deleting constrained vertex previews and removes incident conditions", async ({
-  page,
-}) => {
-  const g: any = graphRectangle();
-  g.constraints.push({
-    id: "total",
-    kind: "chainLength",
-    target: { chainId: "ac0" },
-    value: 4000,
-    fixed: true,
-  });
-  await openGraph(page, g);
-  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
-  await canvasPick(page, "vertex", "av0");
-  page.on("dialog", async (d) => {
-    expect(d.message()).toContain("4000");
-    await d.accept();
-  });
-  await page.getByRole("button", { name: /Удалить (стену|вершину)/ }).click();
-  await settle(page);
-  const d = await stored(page);
-  expect(d.plan.pendingEdit).toBeNull();
-  expect(d.plan.draft.vertices).toHaveLength(3);
-  expect(d.plan.draft.constraints).toHaveLength(0);
-});
-
 import {
   graphCoincident,
   graphSafetyPoints,
@@ -613,7 +522,7 @@ for (const short of [false, true])
     await card.click();
     await expect(page.getByLabel("Вершина", { exact: true })).toHaveCount(0);
     await expect(page.locator(".canvas-panel").getByLabel("Стена", { exact: true })).toHaveCount(0);
-    await expect(page.locator("[data-diagnostic-vertex]")).toHaveCount(2);
+    await expect(page.locator("[data-diagnostic-vertex]")).toHaveCount(0);
     await expect(page.locator('[data-diagnostic-wall="zero"]')).toHaveCount(1);
     expect((await stored(page)).plan.draft).toEqual(g);
     if (short)
@@ -624,93 +533,6 @@ for (const short of [false, true])
       await page.screenshot({
         path: "/tmp/plitka-safety-diagnostic-desktop.png",
       });
-  });
-
-for (const zoom of [0.5, 1, 2])
-  test(`safety rings stay 12 CSS pixels zoom ${zoom}`, async ({ page }) => {
-    await openGraph(page, graphSafetyPoints(), { zoom });
-    await page
-      .getByRole("button", { name: "Добавить вершину", exact: true })
-      .click();
-    for (const width of [1440, 375]) {
-      await page.setViewportSize({ width, height: 900 });
-      const ring = page.locator('[data-safety-vertex="point"]');
-      // Chromium's boundingBox includes the non-scaling stroke; measure the circle itself.
-      const diameter = () =>
-        ring.evaluate((el) => {
-          const c = el as SVGCircleElement;
-          return 2 * c.r.baseVal.value * c.getScreenCTM()!.a;
-        });
-      await expect.poll(diameter).toBeCloseTo(24, 4);
-      if (width === 1440 && zoom === 1)
-        await page.screenshot({ path: "/tmp/plitka-safety-zone-desktop.png" });
-      await page
-        .getByRole("button", { name: "Увеличить", exact: true })
-        .click();
-      await expect.poll(diameter).toBeCloseTo(24, 4);
-    }
-    await page.getByRole("button", { name: "Выбрать", exact: true }).click();
-    await expect(page.locator("[data-safety-vertex]")).toHaveCount(0);
-  });
-
-for (const pointerType of ["mouse", "touch", "pen"])
-  test(`safety ${pointerType} checks snapped 11/12/13 pixel boundary`, async ({
-    page,
-  }) => {
-    // World points are on the horizontal grid axis; no nearby vertical grid line.
-    await page.setViewportSize({ width: 1440, height: 900 });
-    await openGraph(page, graphSafetyPoints(), { gridStepMm: 1000 });
-    await page
-      .getByRole("button", { name: "Добавить вершину", exact: true })
-      .click();
-    const svg = page.getByRole("group", { name: "Редактор плана помещений" });
-    const center = await screenPoint(page, 2500, 1800);
-    const before = await stored(page);
-    let commands = 0;
-    page.on("request", (r) => {
-      if (r.url().endsWith("/plan/command")) commands++;
-    });
-    for (const d of [11, 12]) {
-      await svg.dispatchEvent("pointerdown", {
-        pointerId: 1,
-        pointerType,
-        button: 0,
-        clientX: center.x + d,
-        clientY: center.y + (pointerType === "touch" ? 48 : 0),
-      });
-      await svg.dispatchEvent("pointerup", {
-        pointerId: 1,
-        pointerType,
-        button: 0,
-        clientX: center.x + d,
-        clientY: center.y + (pointerType === "touch" ? 48 : 0),
-      });
-      if (pointerType === "touch")
-        await page.getByRole("button", { name: "Поставить вершину", exact: true }).click();
-      await expect(page.getByRole("alert")).toContainText(/вершине|вершина/);
-      expect((await stored(page)).plan).toEqual(before.plan);
-      expect(commands).toBe(0);
-    }
-    await svg.dispatchEvent("pointerdown", {
-      pointerId: 1,
-      pointerType,
-      button: 0,
-      clientX: center.x + 13,
-      clientY: center.y + (pointerType === "touch" ? 48 : 0),
-    });
-    await svg.dispatchEvent("pointerup", {
-      pointerId: 1,
-      pointerType,
-      button: 0,
-      clientX: center.x + 13,
-      clientY: center.y + (pointerType === "touch" ? 48 : 0),
-    });
-    if (pointerType === "touch")
-      await page.getByRole("button", { name: "Поставить вершину", exact: true }).click();
-    await expect
-      .poll(async () => (await stored(page)).plan.draft.vertices.length)
-      .toBe(2);
-    expect(commands).toBe(1);
   });
 
 for (const shape of ["rectangle", "lShape"])
@@ -771,78 +593,9 @@ test("safety move and length refuse disconnected collision without rounding outs
   );
 });
 
-test("safety snapping decides placement before distance and zoom permits closer points", async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
-  const g = graphSafetyPoints();
-  g.vertices = [
-    { id: "point", x: 2500, y: 1850 },
-    { id: "inverse", x: 2535, y: 1000 },
-  ];
-  await openGraph(page, g, { zoom: 1.25 });
-  await page
-    .getByRole("button", { name: "Добавить вершину", exact: true })
-    .click();
-  const c = await screenPoint(page, 2500, 1850);
-  const before = await stored(page);
-  // Raw distance 13, snaps to (2500,1900), distance 10.
-  await page.mouse.click(c.x + 5, c.y - 12);
-  await expect(page.getByRole("alert")).toContainText("близко");
-  expect((await stored(page)).plan).toEqual(before.plan);
-  // Raw distance 9 from the second vertex, snaps to (2600,1000), distance 13.
-  const inverse = await screenPoint(page, 2580, 1000);
-  await page.mouse.click(inverse.x, inverse.y);
-  await expect
-    .poll(async () => (await stored(page)).plan.draft.vertices.length)
-    .toBe(3);
-  await page
-    .getByRole("button", { name: "Отменить правку", exact: true })
-    .click();
-  await settle(page);
-  // At the larger zoom, the same world position (2500,1900) is > 12 px away.
-  await page.getByRole("button", { name: "Увеличить", exact: true }).click();
-  const next = await screenPoint(page, 2500, 1900);
-  await page.mouse.click(next.x, next.y);
-  await expect
-    .poll(async () => (await stored(page)).plan.draft.vertices.length)
-    .toBe(3);
-  expect((await stored(page)).plan.draft.vertices[2]).toMatchObject({
-    x: 2500,
-    y: 1900,
-  });
-});
 
-test("safety overlapping zones choose a stable nearest id and numeric entry ignores pixel radius", async ({
-  page,
-}) => {
-  const g = graphSafetyPoints();
-  g.vertices = [
-    { id: "z", x: 2470, y: 1800 },
-    { id: "a", x: 2530, y: 1800 },
-  ];
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await openGraph(page, g, { gridStepMm: 1000 });
-  await page
-    .getByRole("button", { name: "Добавить вершину", exact: true })
-    .click();
-  const p = await screenPoint(page, 2500, 1800);
-  await page.mouse.click(p.x, p.y);
-  await expect(page.locator('[data-safety-vertex="a"]')).toHaveClass(/blocked/);
-  await expect(page.getByRole("alert")).toHaveCount(1);
-  const rejected = await graphCommand(page, g, {
-    type: "addVertex",
-    point: { x: 2530, y: 1800 },
-  });
-  expect(rejected.status).toBe("invalid");
-  expect(rejected.graph.vertices).toEqual(g.vertices);
-  const accepted = await graphCommand(page, g, {
-    type: "addVertex",
-    point: { x: 2530.05, y: 1800 },
-  });
-  expect(accepted.status).toBe("applied");
-  expect(accepted.graph.vertices[2]).toMatchObject({ x: 2530.05, y: 1800 });
-});
+
+
 
 test("safety three exact pairs, signed zero, old repairs and independent component edits", async ({
   page,
@@ -931,52 +684,6 @@ test("safety ambiguous junction rejects all splits without merging old vertices"
   ).toEqual(["j1"]);
 });
 
-for (const mode of ["drag", "numeric command"])
-  test(`safety ${mode} move preserves basis on disconnected vertex collision`, async ({
-    page,
-  }) => {
-    await page.setViewportSize({ width: 1440, height: 900 });
-    const g = graphSafetySolve();
-    await openGraph(page, g);
-    if (mode === "drag") {
-      await page
-        .getByRole("button", { name: "Переместить вершину", exact: true })
-        .click();
-      const a = await screenPoint(page, 1000, 0),
-        b = await screenPoint(page, 2000, 0);
-      await page.mouse.move(a.x, a.y);
-      await page.mouse.down();
-      await page.mouse.move(b.x, b.y, { steps: 3 });
-      await page.mouse.up();
-    } else {
-      const result = await graphCommand(page, g, {
-        type: "moveVertex",
-        vertexId: "b",
-        point: { x: 2000, y: 0 },
-      });
-      expect(result.status).toBe("invalid");
-      expect(result.graph).toEqual(g);
-      expect(
-        result.issues.some(
-          (i: any) =>
-            i.code === "coincident_vertices" &&
-            i.entityIds.includes("obstacle"),
-        ),
-      ).toBeTruthy();
-      return;
-    }
-    await expect
-      .poll(async () => (await stored(page)).plan.pendingEdit)
-      .not.toBeNull();
-    await settle(page);
-    expect((await stored(page)).plan.draft.vertices).toEqual(g.vertices);
-    const parameters = page.getByRole("button", { name: "Параметры", exact: true });
-    if (await parameters.getAttribute("aria-expanded") === "false") await parameters.click();
-    await expect(page.locator(".geometry-issues")).toContainText(
-      "b и obstacle",
-    );
-  });
-
 for (const mode of [
   "setOrientation",
   "releaseConstraint",
@@ -1047,7 +754,7 @@ test("safety diagnostic selection cannot delete neighbors and explicit wall dele
   const g = graphCoincident();
   await openGraph(page, g);
   await page.getByRole("button", { name: "Выбрать", exact: true }).click();
-  await canvasPick(page, "vertex", "av0");
+  await canvasPick(page, "segment", "zero");
   await page
     .locator(".geometry-issues")
     .getByRole("button")
@@ -1074,47 +781,7 @@ test("safety diagnostic selection cannot delete neighbors and explicit wall dele
   expect((await stored(page)).plan.draft).toEqual(g);
 });
 
-test("safety mobile diagnostic stays visible above menus and touch radius uses CSS pixels", async ({
-  browser,
-}) => {
-  const context = await browser.newContext({
-    baseURL: process.env.PW_BASE_URL || "http://127.0.0.1:5173",
-    viewport: { width: 375, height: 900 },
-    deviceScaleFactor: 2,
-    hasTouch: true,
-  });
-  const page = await context.newPage();
-  const g = graphCoincident();
-  await openGraph(page, g);
-  const issue = page
-    .locator(".geometry-issues")
-    .getByRole("button")
-    .filter({ hasText: "Координаты концов стены совпадают" });
-  await issue.focus();
-  await page.keyboard.press("Enter");
-  await expect(
-    page.getByRole("button", { name: "Параметры", exact: true }),
-  ).toHaveAttribute("aria-expanded", "false");
-  await expect(page.locator('[data-diagnostic-wall="zero"]')).toBeVisible();
-  await page.screenshot({ path: "/tmp/plitka-safety-diagnostic-375.png" });
-  await page
-    .getByRole("button", { name: "Добавить вершину", exact: true })
-    .tap();
-  const c = await screenPoint(page, 0, 0);
-  await page.touchscreen.tap(c.x, c.y + 48);
-  await page.getByRole("button", { name: "Поставить вершину", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("уже есть");
-  expect((await stored(page)).plan.draft).toEqual(g);
-  const radius = await page
-    .locator('[data-safety-vertex="av0"]')
-    .evaluate((el) => {
-      const c = el as SVGCircleElement;
-      return c.r.baseVal.value * c.getScreenCTM()!.a;
-    });
-  expect(radius).toBeCloseTo(12, 4);
-  await page.screenshot({ path: "/tmp/plitka-safety-zone-375.png" });
-  await context.close();
-});
+
 
 test("context direct canvas selection replaces lists and presets; deleting closes the panel", async ({
   page,
@@ -1147,12 +814,8 @@ for (const fixed of [true, false])
     await page
       .getByRole("button", { name: "Выбрать диапазон", exact: true })
       .click();
-    await page.getByRole("button", { name: "Вершина 3", exact: true }).click();
-    await page.getByRole("button", { name: "Вершина 5", exact: true }).click();
-    await expect(
-      page.getByText("Выберите вершину этой стены.", { exact: true }),
-    ).toBeVisible();
-    await page.getByRole("button", { name: "Вершина 1", exact: true }).click();
+    await canvasPick(page, "vertex", "v2");
+    await canvasPick(page, "vertex", "v0");
     await commit(page, "Длина диапазона", "2200,5");
     await settle(page);
     const graph = (await stored(page)).plan.draft;
@@ -1170,123 +833,10 @@ for (const fixed of [true, false])
       3000,
     );
   });
-test("context keyboard creates, moves and cancels without coordinate forms", async ({
-  page,
-}) => {
-  await openGraph(page, {
-    vertices: [],
-    segments: [],
-    chains: [],
-    constraints: [],
-    voids: [],
-    fieldInputs: {},
-  });
-  await page
-    .getByRole("button", { name: "Добавить вершину", exact: true })
-    .click();
-  const canvas = page.getByRole("group", {
-    name: "Редактор плана помещений",
-    exact: true,
-  });
-  await canvas.focus();
-  await canvas.press("ArrowRight");
-  await canvas.press("Enter");
-  await settle(page);
-  expect((await stored(page)).plan.draft.vertices).toHaveLength(1);
-  await page
-    .getByRole("button", { name: "Переместить вершину", exact: true })
-    .click();
-  const vertex = page.getByRole("button", { name: "Вершина 1", exact: true });
-  await vertex.focus();
-  await vertex.press("Enter");
-  await vertex.press("ArrowRight");
-  await vertex.press("Escape");
-  await settle(page);
-  expect((await stored(page)).plan.draft.vertices[0].x).toBe(2600);
-});
 
-for (const [sector, value] of [
-  ["ccw", "60,5"],
-  ["cw", "270"],
-] as const)
-  test(`angle tool explicit pair and ${value} degree sector`, async ({
-    page,
-  }) => {
-    await openGraph(page, graphJunction());
-    let commands = 0;
-    page.on("request", (r) => {
-      if (r.url().endsWith("/api/plan/command")) commands++;
-    });
-    await page.getByRole("button", { name: "Угол", exact: true }).click();
-    await page.getByRole("button", { name: "Стена 1", exact: true }).click();
-    await page.getByRole("button", { name: "Стена 4", exact: true }).click();
-    await expect(
-      page.getByText("Выберите другую стену с общей вершиной.", {
-        exact: true,
-      }),
-    ).toBeVisible();
-    await page.getByRole("button", { name: "Стена 2", exact: true }).click();
-    await expect(
-      page.getByLabel("Угол между стенами", { exact: true }),
-    ).toHaveCount(0);
-    expect(commands).toBe(0);
-    const arc = page.getByRole("button", {
-      name:
-        sector === "ccw"
-          ? "Дуга против часовой стрелки"
-          : "Дуга по часовой стрелке",
-      exact: true,
-    });
-    await arc.focus();
-    await arc.press("Enter");
-    await commit(page, "Угол между стенами", value);
-    await settle(page);
-    const d = await stored(page);
-    expect(d.plan.pendingEdit).toBeNull();
-    expect(d.plan.draft.constraints).toHaveLength(1);
-    expect(d.plan.draft.constraints[0].value).toBe(
-      Number(value.replace(",", ".")),
-    );
-    expect(commands).toBe(1);
-  });
-for (const value of ["0", "180", "360"])
-  test(`angle tool rejects manually entered ${value} with preserved raw`, async ({
-    page,
-  }) => {
-    await openGraph(page, graphJunction());
-    const before = (await stored(page)).plan.draft.vertices;
-    await page.getByRole("button", { name: "Угол", exact: true }).click();
-    await page.getByRole("button", { name: "Стена 1", exact: true }).click();
-    await page.getByRole("button", { name: "Стена 2", exact: true }).click();
-    const arc = page.getByRole("button", {
-      name: "Дуга против часовой стрелки",
-      exact: true,
-    });
-    await arc.focus();
-    await arc.press("Enter");
-    await commit(page, "Угол между стенами", value);
-    await settle(page);
-    const d = await stored(page);
-    expect(d.plan.pendingEdit).not.toBeNull();
-    expect(d.plan.draft.vertices).toEqual(before);
-    await expect(
-      page.getByLabel("Угол между стенами", { exact: true }),
-    ).toHaveValue(value);
-  });
 
-test("angle tool derived straight angle keeps vertex and no fixed condition", async ({
-  page,
-}) => {
-  await openGraph(page, graphJunction());
-  const before = await stored(page);
-  await chooseAngle(page, "eastWall", "westWall", "ccw");
-  await expect(
-    page.getByLabel("Угол между стенами", { exact: true }),
-  ).toHaveValue("180");
-  await page.keyboard.press("Escape");
-  expect((await stored(page)).plan).toEqual(before.plan);
-  expect((await stored(page)).plan.draft.constraints).toEqual([]);
-});
+
+
 for (const width of [375, 1440])
   test(`context accessible canvas and dialogs at ${width}px`, async ({
     page,
@@ -1294,10 +844,11 @@ for (const width of [375, 1440])
     await page.setViewportSize({ width, height: 900 });
     await openGraph(page, graphJunction());
     const before = await stored(page);
-    await chooseAngle(page, "northWall", "westWall", "ccw");
-    await expect(
-      page.getByLabel("Угол между стенами", { exact: true }),
-    ).toBeFocused();
+    await canvasPick(page, "segment", "northWall");
+    await page.locator('[data-wall-handle="center"]').click();
+    const arrow = page.getByRole("button", { name: "Сдвинуть стену → на 1 мм" });
+    await arrow.focus();
+    await expect(arrow).toBeFocused();
     await page.keyboard.press("Escape");
     expect((await stored(page)).plan).toEqual(before.plan);
     expect(
@@ -1322,106 +873,9 @@ for (const width of [375, 1440])
     await page.screenshot({ path: `/tmp/plitka-context-${width}.png` });
   });
 
-test("context keyboard connects to projected wall and commits move once", async ({
-  page,
-}) => {
-  await openGraph(page, graphRange());
-  await page
-    .getByRole("button", { name: "Соединить стены", exact: true })
-    .click();
-  await canvasPick(page, "vertex", "foreign");
-  const wall = page.getByRole("button", { name: "Стена 1", exact: true });
-  await wall.focus();
-  await wall.press("ArrowRight");
-  await wall.press("Enter");
-  await settle(page);
-  const connected = await stored(page);
-  expect(connected.plan.pendingEdit).toBeNull();
-  expect(
-    connected.plan.draft.vertices.some(
-      (v: any) => Math.abs(v.x - 600) < 0.1 && v.y === 0,
-    ),
-  ).toBe(true);
-  await page
-    .getByRole("button", { name: "Переместить вершину", exact: true })
-    .click();
-  const vertex = page.getByRole("button", { name: "Вершина 5", exact: true });
-  await vertex.focus();
-  await vertex.press("Enter");
-  await vertex.press("ArrowUp");
-  await vertex.press("Enter");
-  await settle(page);
-  expect(
-    (await stored(page)).plan.draft.vertices.find(
-      (v: any) => v.id === "foreign",
-    ).y,
-  ).toBe(1100);
-});
 
-test("context range survives an accepted internal split and closes on imported removal", async ({
-  page,
-}) => {
-  await openGraph(page, graphRange());
-  let release!: () => void, started!: () => void;
-  const gate = new Promise<void>((r) => (release = r)),
-    begin = new Promise<void>((r) => (started = r));
-  await page.route("**/api/plan/command", async (route) => {
-    const response = await route.fetch();
-    started();
-    await gate;
-    await route.fulfill({ response });
-  });
-  await page
-    .getByRole("button", { name: "Соединить стены", exact: true })
-    .click();
-  await canvasPick(page, "vertex", "foreign");
-  await canvasPick(page, "segment", "s0");
-  await begin;
-  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
-  await canvasPick(page, "segment", "s1");
-  await page
-    .getByRole("button", { name: "Выбрать диапазон", exact: true })
-    .click();
-  await canvasPick(page, "vertex", "v0");
-  await canvasPick(page, "vertex", "v2");
-  release();
-  await settle(page);
-  await expect(page.getByLabel("Длина диапазона", { exact: true })).toHaveValue(
-    "2000",
-  );
-  expect(
-    (await stored(page)).plan.draft.chains.find((c: any) => c.id === "chain")
-      .segmentIds,
-  ).toHaveLength(4);
-  await page
-    .getByRole("button", { name: "Отменить правку", exact: true })
-    .click();
-  await settle(page);
-  await expect(page.getByLabel("Длина диапазона", { exact: true })).toHaveValue(
-    "2000",
-  );
-  const document = await stored(page);
-  document.plan.draft = {
-    vertices: [],
-    segments: [],
-    chains: [],
-    constraints: [],
-    voids: [],
-    fieldInputs: {},
-  };
-  document.rooms = [];
-  document.selectedRoomId = null;
-  document.plan.restorePoint = null;
-  const { importFile } = await import("./fixtures/projects");
-  await importFile(page, {
-    format: "plitka-project",
-    version: 4,
-    project: document,
-  });
-  await expect(page.getByLabel("Длина диапазона", { exact: true })).toHaveCount(
-    0,
-  );
-});
+
+
 
 test("context range keyboard rejects repeated endpoint and cancels without a document edit", async ({
   page,
@@ -1442,7 +896,7 @@ test("context range keyboard rejects repeated endpoint and cancels without a doc
   await first.press("ArrowRight");
   await expect(page.locator('[data-target="vertex:v1"]')).toBeFocused();
   await page.keyboard.press("Enter");
-  await page.keyboard.press("Tab");
+  await page.getByLabel("Длина диапазона", { exact: true }).focus();
   await expect(
     page.getByLabel("Длина диапазона", { exact: true }),
   ).toBeFocused();
@@ -1456,64 +910,9 @@ test("context range keyboard rejects repeated endpoint and cancels without a doc
   ).toBeDisabled();
 });
 
-test("angle tool participant lost through ordinary Undo closes context and restores canvas focus", async ({
-  page,
-}) => {
-  await openGraph(page, graphJunction());
-  await page
-    .getByRole("button", { name: "Соединить стены", exact: true })
-    .click();
-  await canvasPick(page, "vertex", "north");
-  await canvasPick(page, "vertex", "west");
-  await settle(page);
-  const added = (await stored(page)).plan.draft.segments.find(
-    (s: any) => !graphJunction().segments.some((old: any) => old.id === s.id),
-  );
-  await chooseAngle(page, "northWall", added.id, "ccw");
-  await expect(
-    page.getByLabel("Угол между стенами", { exact: true }),
-  ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Отменить правку", exact: true })
-    .click();
-  await settle(page);
-  await expect(
-    page.getByLabel("Угол между стенами", { exact: true }),
-  ).toHaveCount(0);
-  await expect(page.locator("svg[data-geometry]")).toBeFocused();
-  expect((await stored(page)).plan.draft).toEqual(graphJunction());
-});
 
-test("context exact new point stays folded and preserves precision inside safety radius", async ({
-  page,
-}) => {
-  await openGraph(page, graphRange());
-  await page
-    .getByRole("button", { name: "Добавить вершину", exact: true })
-    .click();
-  await page.getByRole("button", { name: "Параметры", exact: true }).click();
-  await expect(
-    page.getByLabel("Новая вершина X", { exact: true }),
-  ).not.toBeVisible();
-  await page.getByText("Точное положение", { exact: true }).click();
-  await commit(page, "Новая вершина X", "0,125");
-  await commit(page, "Новая вершина Y", "0");
-  await page
-    .getByRole("button", { name: "Поставить точку", exact: true })
-    .click();
-  await settle(page);
-  expect(
-    (await stored(page)).plan.draft.vertices.some(
-      (v: any) => v.x === 0.125 && v.y === 0,
-    ),
-  ).toBe(true);
-  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
-  await canvasPick(page, "vertex", "v0");
-  await expect(page.getByLabel("Координата X", { exact: true })).toHaveCount(0);
-  await expect(page.getByLabel("Новая вершина X", { exact: true })).toHaveCount(
-    0,
-  );
-});
+
+
 
 test("context dimension focus identifies the full chain without moving geometry", async ({
   page,

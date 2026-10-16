@@ -1,13 +1,24 @@
 import type { GraphSnapshot, FaceCandidate, Point } from "./types";
-export type EditorTool =
-  | "select"
-  | "addVertex"
-  | "connect"
-  | "wall"
-  | "move"
-  | "pan"
-  | "selectRoom"
-  | "angle";
+
+// Canvas-only state. None of these objects are part of ProjectDocumentV4.
+export type WallHandle = "start" | "center" | "end";
+export type SelectedWall = { chainId: string; handle: WallHandle | null };
+export type PendingWallStart = { point: Point; source: "wallEnd" | "grid"; vertexId?: string };
+export type SnapCandidate = {
+  point: Point;
+  screen: Point;
+  type: "wallEnd" | "perpendicularGuide" | "majorGrid";
+  allowed: boolean;
+  vertexId?: string;
+};
+export type RulerOverlay = {
+  start: Point;
+  candidate: Point | null;
+  distanceMm: number | null;
+  axes: ("horizontal" | "vertical")[];
+  perpendiculars: { from: Point; direction: Point }[];
+};
+export type EditorTool = "select" | "wall" | "pan" | "selectRoom";
 export type EditorContext =
   | { kind: "none" }
   | { kind: "project" }
@@ -20,45 +31,19 @@ export type EditorContext =
       startVertexId: string;
       endVertexId: string;
       constraintId?: string;
-    }
-  | {
-      kind: "angle";
-      vertexId: string;
-      firstSegmentId: string;
-      secondSegmentId: string;
-      sector: "cw" | "ccw";
-      constraintId?: string;
     };
 export type ToolInteraction =
   | { kind: "idle" }
-  | { kind: "connect"; firstVertexId: string | null }
   | { kind: "rangeFirst"; chainId: string }
-  | { kind: "rangeSecond"; chainId: string; firstVertexId: string }
-  | { kind: "angleFirst" }
-  | { kind: "angleSecond"; firstSegmentId: string }
-  | {
-      kind: "angleSector";
-      vertexId: string;
-      firstSegmentId: string;
-      secondSegmentId: string;
-    }
-  | { kind: "move"; vertexId: string; origin: Point; preview: Point }
-  | { kind: "placeVertex"; cursor: Point };
-export interface KeyboardState {
-  activeTarget: string | null;
-  cursor: Point;
-  mode: "navigation" | "placement" | "movePreview";
-}
+  | { kind: "rangeSecond"; chainId: string; firstVertexId: string };
 export interface EditorState {
   context: EditorContext;
   interaction: ToolInteraction;
-  keyboard: KeyboardState;
   error: string;
 }
 export const initialEditor = (): EditorState => ({
   context: { kind: "none" },
   interaction: { kind: "idle" },
-  keyboard: { activeTarget: null, cursor: { x: 0, y: 0 }, mode: "navigation" },
   error: "",
 });
 export function chainNodes(g: GraphSnapshot, id: string) {
@@ -117,7 +102,7 @@ export function contextExists(
   if (c.kind === "room")
     return faces.some((f) => f.topologyKey === c.topologyKey);
   if (
-    (c.kind === "angle" || c.kind === "range") &&
+    c.kind === "range" &&
     c.constraintId &&
     !g.constraints.some((x) => x.id === c.constraintId)
   )
@@ -125,13 +110,6 @@ export function contextExists(
   if (c.kind === "range")
     return (
       rangeSegments(g, c.chainId, c.startVertexId, c.endVertexId).length > 0
-    );
-  if (c.kind === "angle")
-    return [c.firstSegmentId, c.secondSegmentId].every((id) =>
-      g.segments.some(
-        (s) =>
-          s.id === id && [s.startVertexId, s.endVertexId].includes(c.vertexId),
-      ),
     );
   return true;
 }
@@ -146,8 +124,6 @@ export type EditorAction =
       reset?: boolean;
     }
   | { type: "rangeVertex"; id: string; graph: GraphSnapshot }
-  | { type: "angleSegment"; id: string; graph: GraphSnapshot }
-  | { type: "sector"; sector: "cw" | "ccw" }
   | { type: "cancel" };
 export function editorReducer(
   state: EditorState,
@@ -184,39 +160,17 @@ export function editorReducer(
         ? g.chains.some((c) => c.id === i.chainId)
         : i.kind === "rangeSecond"
           ? chainNodes(g, i.chainId).includes(i.firstVertexId)
-          : i.kind === "angleSecond"
-            ? g.segments.some((s) => s.id === i.firstSegmentId)
-            : i.kind === "angleSector"
-              ? contextExists(
-                  { ...i, kind: "angle", sector: "ccw" },
-                  g,
-                  action.faces,
-                )
-              : i.kind === "move"
-                ? g.vertices.some((v) => v.id === i.vertexId)
-                : i.kind === "connect"
-                  ? i.firstVertexId === null ||
-                    g.vertices.some((v) => v.id === i.firstVertexId)
-                  : true;
+          : true;
     let context: EditorContext = contextExists(state.context, g, action.faces)
       ? state.context
       : { kind: "none" };
-    if (context.kind === "angle" || context.kind === "range") {
+    if (context.kind === "range") {
       const selected = context;
       const condition = g.constraints.find((c) =>
-        selected.kind === "range"
-          ? c.kind === "chainLength" &&
+          c.kind === "chainLength" &&
             c.target.chainId === selected.chainId &&
             c.target.range?.startVertexId === selected.startVertexId &&
-            c.target.range?.endVertexId === selected.endVertexId
-          : c.kind === "angle" &&
-            c.target.vertexId === selected.vertexId &&
-            ((c.target.firstSegmentId === selected.firstSegmentId &&
-              c.target.secondSegmentId === selected.secondSegmentId &&
-              c.target.sector === selected.sector) ||
-              (c.target.firstSegmentId === selected.secondSegmentId &&
-                c.target.secondSegmentId === selected.firstSegmentId &&
-                c.target.sector !== selected.sector)),
+            c.target.range?.endVertexId === selected.endVertexId,
       );
       if (condition) context = { ...context, constraintId: condition.id };
     }
@@ -258,43 +212,5 @@ export function editorReducer(
       error: "",
     };
   }
-  if (action.type === "angleSegment") {
-    if (i.kind !== "angleSecond")
-      return {
-        ...state,
-        context: { kind: "none" },
-        interaction: { kind: "angleSecond", firstSegmentId: action.id },
-        error: "",
-      };
-    const a = action.graph.segments.find((s) => s.id === i.firstSegmentId),
-      b = action.graph.segments.find((s) => s.id === action.id);
-    const shared =
-      a && b && a.id !== b.id
-        ? [a.startVertexId, a.endVertexId].filter((id) =>
-            [b.startVertexId, b.endVertexId].includes(id),
-          )
-        : [];
-    const vertexId = shared.length === 1 ? shared[0] : undefined;
-    if (!vertexId)
-      return { ...state, error: "Выберите другую стену с общей вершиной." };
-    return {
-      ...state,
-      interaction: {
-        kind: "angleSector",
-        vertexId,
-        firstSegmentId: i.firstSegmentId,
-        secondSegmentId: action.id,
-      },
-      context: { kind: "none" },
-      error: "",
-    };
-  }
-  if (action.type === "sector" && i.kind === "angleSector")
-    return {
-      ...state,
-      context: { ...i, kind: "angle", sector: action.sector },
-      interaction: { kind: "idle" },
-      error: "",
-    };
   return state;
 }

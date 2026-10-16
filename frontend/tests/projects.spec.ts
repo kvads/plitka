@@ -21,7 +21,8 @@ test("editor has no file or grid controls and a collapsed save error opens the s
       return original.call(this, key, value);
     };
   });
-  await page.getByRole("button", { name: "Увеличить", exact: true }).click();
+  await page.getByRole("button", { name: "Проект", exact: true }).click();
+  await page.getByLabel("Название проекта").fill("Изменённый проект");
   await expect(page.getByText("Не сохранено", { exact: true })).toBeVisible();
   await setSidebarOpen(page, false);
   await expect(page.getByRole("button", { name: /Не сохранено.*открыть меню/ })).toBeVisible();

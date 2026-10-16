@@ -1,4 +1,4 @@
-import { parseV4 } from "./schema";
+import { cleanV4Document, parseV4 } from "./schema";
 import type { ProjectDocumentV4 } from "./types";
 export const KEY = "plitka-projects-v4";
 const OLD_KEYS = ["plitka-project-v1", "plitka-projects-v1", "plitka-projects-v2", "plitka-projects-v3"];
@@ -29,6 +29,15 @@ export async function initializeV3() {
   return lock(async () => {
     if (localStorage.getItem(KEY) === null)
       localStorage.setItem(KEY, JSON.stringify({ schemaVersion: 4, projects: [] }));
+    const raw = JSON.parse(localStorage.getItem(KEY)!);
+    if (raw.schemaVersion !== 4 || !Array.isArray(raw.projects) ||
+      Object.keys(raw).some((key) => !["schemaVersion", "projects"].includes(key)))
+      throw new Error("Повреждённый каталог v4. Данные не изменены.");
+    const cleaned = raw.projects.map((project: ProjectDocumentV4) => cleanV4Document(project));
+    if (JSON.stringify(cleaned) !== JSON.stringify(raw.projects)) {
+      cleaned.forEach(parseV4);
+      localStorage.setItem(KEY, JSON.stringify({ schemaVersion: 4, projects: cleaned }));
+    }
     const rows = readV3();
     for (const key of OLD_KEYS) localStorage.removeItem(key);
     return rows;
