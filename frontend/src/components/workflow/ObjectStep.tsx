@@ -16,7 +16,6 @@ import RoomCanvas from "../room/RoomCanvas";
 import WallInspector from "../room/WallInspector";
 import GeometryIssues from "../room/GeometryIssues";
 import MeasurementsApproval from "../room/MeasurementsApproval";
-import NumberField from "./NumberField";
 export default function ObjectStep({
   doc,
   validation,
@@ -45,11 +44,7 @@ export default function ObjectStep({
   const g = doc.room.draft;
   const [cid, setCid] = useState(g.outer.id),
     [wid, setWid] = useState(""),
-    [draw, setDraw] = useState(false),
-    [vx, setVx] = useState<number | null>(0),
-    [vy, setVy] = useState<number | null>(0),
-    [vxRaw, setVxRaw] = useState<string | undefined>(),
-    [vyRaw, setVyRaw] = useState<string | undefined>();
+    [draw, setDraw] = useState(false);
   const c = [g.outer, ...g.holes].find((c) => c.id === cid) || g.outer;
   const approval = validation
     ? acknowledgment(g, validation.measurements)
@@ -144,11 +139,11 @@ export default function ObjectStep({
             Площадь помещения:{" "}
             <strong>
               {validation?.areaMm2 !== null && validation?.areaMm2 !== undefined
-                ? (validation.areaMm2 / 1e6).toLocaleString("ru-RU", {
-                    maximumFractionDigits: 6,
+                ? validation.areaMm2.toLocaleString("ru-RU", {
+                    maximumFractionDigits: 1,
                   })
                 : "—"}{" "}
-              м²
+              мм²
             </strong>
           </p>
         </div>
@@ -194,34 +189,6 @@ export default function ObjectStep({
           )}
           {!c.closed && (
             <>
-              <div className="two">
-                <NumberField
-                  label="Новая вершина X"
-                  value={vx ?? 0}
-                  raw={vxRaw}
-                  onCommit={(n, t) => {
-                    setVxRaw(t);
-                    setVx(n);
-                  }}
-                />
-                <NumberField
-                  label="Новая вершина Y"
-                  value={vy ?? 0}
-                  raw={vyRaw}
-                  onCommit={(n, t) => {
-                    setVyRaw(t);
-                    setVy(n);
-                  }}
-                />
-              </div>
-              <button
-                disabled={vx === null || vy === null}
-                onClick={() => {
-                  if (vx !== null && vy !== null) add(vx, vy);
-                }}
-              >
-                Добавить вершину
-              </button>
               <button
                 disabled={c.vertices.length < 3}
                 onClick={() => {
@@ -261,66 +228,6 @@ export default function ObjectStep({
               })
             }
           />
-          <details>
-            <summary>Координаты вершин</summary>
-            {c.vertices.map((v, i) => (
-              <div className="vertex-row" key={v.id}>
-                <strong>Вершина {i + 1}</strong>
-                <NumberField
-                  label={`Вершина ${i + 1} X`}
-                  value={v.x}
-                  raw={g.fieldInputs[v.id + ":x"]}
-                  onCommit={(n, t) =>
-                    n === null
-                      ? onGeometry({
-                          ...g,
-                          fieldInputs: { ...g.fieldInputs, [v.id + ":x"]: t },
-                        })
-                      : onOperation({
-                          type: "moveVertex",
-                          vertexId: v.id,
-                          x: n,
-                          y: v.y,
-                        })
-                  }
-                />
-                <NumberField
-                  label={`Вершина ${i + 1} Y`}
-                  value={v.y}
-                  raw={g.fieldInputs[v.id + ":y"]}
-                  onCommit={(n, t) =>
-                    n === null
-                      ? onGeometry({
-                          ...g,
-                          fieldInputs: { ...g.fieldInputs, [v.id + ":y"]: t },
-                        })
-                      : onOperation({
-                          type: "moveVertex",
-                          vertexId: v.id,
-                          x: v.x,
-                          y: n,
-                        })
-                  }
-                />
-                <button
-                  onClick={() =>
-                    onGeometry(
-                      replaceContour(
-                        g,
-                        rebuild({
-                          ...c,
-                          closed: c.closed && c.vertices.length > 3,
-                          vertices: c.vertices.filter((x) => x.id !== v.id),
-                        }),
-                      ),
-                    )
-                  }
-                >
-                  Удалить вершину {i + 1} и смежные условия
-                </button>
-              </div>
-            ))}
-          </details>
         </aside>
       </div>
       {doc.room.pendingEdit && (

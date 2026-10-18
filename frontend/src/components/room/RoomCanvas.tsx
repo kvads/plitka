@@ -180,21 +180,11 @@ export default function RoomCanvas({
             <path
               d={`M ${step} 0 L 0 0 0 ${step}`}
               fill="none"
-              stroke="#cfdbd5"
+              stroke="#ddd"
               strokeWidth={px(0.7)}
             />
-            <circle cx="0" cy="0" r={px(1.4)} fill="#829f90" />
+            <circle cx="0" cy="0" r={px(1.4)} fill="#999" />
           </pattern>
-          <marker
-            id="wall-arrow"
-            markerWidth="8"
-            markerHeight="8"
-            refX="7"
-            refY="4"
-            orient="auto"
-          >
-            <path d="M0,0 L8,4 L0,8" fill="#187365" />
-          </marker>
         </defs>
         <rect
           x={view.centerX - w / 2}
@@ -208,7 +198,7 @@ export default function RoomCanvas({
             <polygon
               points={c.vertices.map((v) => `${v.x},${-v.y}`).join(" ")}
               fill={
-                c.closed ? (c.kind === "hole" ? "#fff" : "#b7d3c12b") : "none"
+                c.closed ? (c.kind === "hole" ? "#fff" : "#bcbcbc2b") : "none"
               }
             />
             {c.walls.map((wall, i) => {
@@ -223,15 +213,12 @@ export default function RoomCanvas({
                     y2={-b.y}
                     stroke={
                       issues.includes(wall.id)
-                        ? "#b24b37"
+                        ? "#555"
                         : selected === wall.id
-                          ? "#187365"
-                          : "#536d64"
+                          ? "#666"
+                          : "#777"
                     }
                     strokeWidth={px(selected === wall.id ? 3 : 1.5)}
-                    markerEnd={
-                      selected === wall.id ? "url(#wall-arrow)" : undefined
-                    }
                   />
                   <line
                     data-wall-id={wall.id}
@@ -259,37 +246,15 @@ export default function RoomCanvas({
                 </g>
               );
             })}
-            {c.vertices.map((v) => (
-              <circle
-                key={v.id}
-                data-vertex-id={v.id}
-                cx={drag.current === v.id && preview ? preview.x : v.x}
-                cy={drag.current === v.id && preview ? -preview.y : -v.y}
-                r={px(4)}
-                stroke="transparent"
-                strokeWidth={px(20)}
-                pointerEvents="all"
-                fill={c.id === active.id ? "#187365" : "#879c93"}
-                onPointerDown={(e) => {
-                  if (!draw && !panning) {
-                    e.stopPropagation();
-                    drag.current = v.id;
-                    svg.current?.setPointerCapture(e.pointerId);
-                  }
-                }}
-              />
-            ))}
           </g>
         ))}
         {preview && (
-          <circle cx={preview.x} cy={-preview.y} r={px(4)} fill="#ce894b" />
+          <circle cx={preview.x} cy={-preview.y} r={px(4)} fill="#888" />
         )}
       </svg>
       <div className="canvas-caption">
-        {preview
-          ? `${preview.type} · ${preview.x.toFixed(1)}, ${preview.y.toFixed(1)} мм`
-          : "Выберите стену или вершину"}
-        {draw ? " · Нажимайте, чтобы добавлять вершины" : ""}
+        {preview ? "Выберите положение стены" : "Выберите стену"}
+        {draw ? " · Нажимайте, чтобы построить стену" : ""}
       </div>
     </div>
   );

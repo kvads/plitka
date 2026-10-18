@@ -25,7 +25,7 @@ def coincident_pairs(g):
 def collision_issues(basis, candidate):
     old = coincident_pairs(basis)
     return [issue('coincident_vertices',
-                  f'Вершины {a} и {b} совпадают в ({point[0]:.15g}; {point[1]:.15g}) мм. Выберите другое положение.', [a, b])
+                  'Точки стены совпали. Измените положение стены или приблизьте этот участок.', [a, b])
             for (a, b), point in coincident_pairs(candidate).items() if old.get((a, b)) != point]
 
 def ring_coords(refs,ss,vs):
@@ -69,7 +69,7 @@ def constraint_ids(c):
 def validate(g, check_constraints=True):
     vs,ss,cs=maps(g);out=[];ls={sid:line(s,vs) for sid,s in ss.items()}
     for (a,b),point in coincident_pairs(g).items():
-        out.append(issue('coincident_vertices', f'Координаты вершин совпадают: ({point[0]:.15g}; {point[1]:.15g}) мм', [a,b]))
+        out.append(issue('coincident_vertices', 'Точки стены совпали. Измените положение стены или приблизьте этот участок.', [a,b]))
     for v in vs.values():
         if abs(v['x'])>100000 or abs(v['y'])>100000:out.append(issue('coordinate_range','Координата вне диапазона ±100000 мм',[v['id']]))
     for sid,l in ls.items():

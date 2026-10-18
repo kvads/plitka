@@ -5,6 +5,14 @@ from shapely.ops import polygonize_full
 from shapely.geometry.polygon import orient
 from .graph_validation import maps,xy,line,ring_coords,measure,validate,issue,constraint_ids,EPS
 from .wall_geometry import wall_area, polygons, polygon_data
+from .precision import tenth
+
+def canonical_polygon_data(shape):
+    raw = polygon_data(shape)
+    return {
+        'outline': [[tenth(x), tenth(y)] for x, y in raw['outline']],
+        'holes': [[[tenth(x), tenth(y)] for x, y in ring] for ring in raw['holes']],
+    }
 
 def key(value):
     def normalize(v):
@@ -58,7 +66,7 @@ def measurements(g):
     vs,ss,cs=maps(g);out=[]
     def add(kind,target,value):
         condition=next((c for c in g['constraints'] if c['kind']==kind and c['target']==target and c['fixed']),None)
-        out.append(dict(key=key([kind,target]),kind=kind,target=target,value=value,source='entered' if condition else 'derived'))
+        out.append(dict(key=key([kind,target]),kind=kind,target=target,value=tenth(value) if value is not None else None,source='entered' if condition else 'derived'))
     for s in ss.values():add('segmentLength',{'segmentId':s['id']},line(s,vs).length)
     for c in cs.values():add('chainLength',{'chainId':c['id']},sum(line(ss[x],vs).length for x in c['segmentIds']))
     for c in g['constraints']:
@@ -102,7 +110,8 @@ def inspect(g):
                 boundary_angles.append(target)
                 if not any(m['target']==target and m['kind']=='angle' for m in ms):
                     entered=any(c['kind']=='angle' and c['target']==target and c['fixed'] for c in g['constraints'])
-                    ms.append(dict(key=key(['angle',target]),kind='angle',target=target,value=measure(dict(kind='angle',target=target),vs,ss,cs),source='entered' if entered else 'derived'))
+                    measured = measure(dict(kind='angle',target=target),vs,ss,cs)
+                    ms.append(dict(key=key(['angle',target]),kind='angle',target=target,value=tenth(measured) if measured is not None else None,source='entered' if entered else 'derived'))
         ms.sort(key=lambda m:m['key'])
 
         relevant=[]
@@ -118,14 +127,18 @@ def inspect(g):
         subset={k:[x for x in g[k] if x['id'] in deps] for k in ['vertices','segments','chains','voids','constraints']}
         subset['fieldInputs']={k:v for k,v in g['fieldInputs'].items() if any(':'+eid+':' in k for eid in deps)}
         for k in ['vertices','segments','chains','voids','constraints']:subset[k].sort(key=lambda x:x['id'])
-        axis_polygon=polygon_data(poly)
+        axis_polygon=canonical_polygon_data(poly)
         usable=polygons(poly.difference(occupied))
         usable=[shape for shape in usable if shape.area>EPS]
         if len(usable)!=1:
             err=issue('unusable_room','Полезный контур помещения пуст или разделён стенами',sorted(deps),'room')
             err['affectedRoomKeys']=[tk];issues.append(err);relevant.append(err)
-        polygon=polygon_data(usable[0]) if len(usable)==1 else None
-        area=usable[0].area if len(usable)==1 else None
+        polygon=canonical_polygon_data(usable[0]) if len(usable)==1 else None
+        area=tenth(Polygon(polygon['outline'], polygon['holes']).area) if polygon is not None else None
+        if polygon is not None and (area <= 0 or not Polygon(polygon['outline'], polygon['holes']).is_valid):
+            err=issue('unusable_room','После округления полезный контур помещения стал непригодным',sorted(deps),'room')
+            err['affectedRoomKeys']=[tk];issues.append(err);relevant.append(err)
+            polygon=None;area=None
         dk=key(subset);selected_ms=[m for m in ms if set(v for v in m['target'].values() if isinstance(v,str)) & deps and (m['kind']!='angle' or m['target'] in boundary_angles or m['source']=='entered')]
         faces.append(dict(topologyKey=tk,outer=outer,holes=holes,axisPolygon=axis_polygon,polygon=polygon,areaMm2=area,dependencyIds=sorted(deps),dependencyKey=dk,geometryKey=key(polygon),measurementKey=key([dk,selected_ms]),validation=dict(valid=not relevant,issues=relevant)))
-    return dict(status='invalid' if issues else 'valid',graph=g,wallArea=[polygon_data(shape) for shape in polygons(occupied)],faces=sorted(faces,key=lambda f:f['topologyKey']),measurements=ms,issues=issues)
+    return dict(status='invalid' if issues else 'valid',graph=g,wallArea=[canonical_polygon_data(shape) for shape in polygons(occupied)],faces=sorted(faces,key=lambda f:f['topologyKey']),measurements=ms,issues=issues)

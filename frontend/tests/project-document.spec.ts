@@ -1,5 +1,5 @@
-import { canvasPick, graphConflict, graphRectangle, openGraph, touchSession, v4EmptyCatalog, v4FilledCatalog, v4LegacyKeys, v4CleanupDocument, v4CleanedDocument } from "./fixtures/projects";
-import { cleanV4Document, cleanV4Graph, parseV4 } from "../src/domain/plan/schema";
+import { canvasPick, graphConflict, graphRectangle, openGraph, touchSession, v4FilledCatalog, v4WallGraph, preV5CatalogKeys, oldCatalogsWithLayouts, v5EmptyCatalog, v5FilledCatalog } from "./fixtures/projects";
+import { cleanV4Graph } from "../src/domain/plan/schema";
 import { test, expect } from "@playwright/test";
 import {
   openProject,
@@ -12,155 +12,36 @@ import {
 } from "./fixtures/projects";
 const envelope = async (page: any) => ({
   format: "plitka-project",
-  version: 4,
+  version: 5,
   project: await stored(page),
 });
 
-test("v4 cleanup removes obsolete vertex and angle data exactly once", () => {
-  const old = v4CleanupDocument();
-  const cleaned = cleanV4Document(old);
-  expect(cleaned).toEqual(v4CleanedDocument());
-  expect(cleanV4Document(cleaned)).toEqual(cleaned);
-  expect(parseV4(cleaned)).toEqual(cleaned);
-});
-
-test("opening old v4 project cleans every snapshot once without removing tile angle", async ({ page }) => {
-  const document = v4CleanupDocument();
-  await page.addInitScript((project) => {
-    if (!localStorage.getItem("plitka-projects-v4")) localStorage.setItem("plitka-projects-v4", JSON.stringify({ schemaVersion: 4, projects: [project] }));
-    if (!location.hash) location.hash = `project/${project.id}`;
-  }, document);
+test("old project catalog is removed when the v5 editor opens", async ({ page }) => {
+  await page.addInitScript(catalog => {
+    if (sessionStorage.getItem("seed-old-project")) return;
+    sessionStorage.setItem("seed-old-project", "yes");
+    localStorage.setItem("plitka-projects-v4", JSON.stringify(catalog));
+  }, v4FilledCatalog());
   await page.goto("/");
-  await expect.poll(async () => (await stored(page)).documentRevision).toBe(6);
-  const cleaned = await stored(page);
-  expect(cleaned.plan.draftRevision).toBe(3);
-  expect(cleaned.rooms[0].rules.angle).toBe(17);
-  expect(cleaned.plan.pendingEdit).toBeNull();
-  expect(cleaned.plan.draft).toEqual(v4CleanedDocument().plan.draft);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("plitka-projects-v4"))).toBeNull();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v5")!))).toEqual(v5EmptyCatalog);
   await page.reload();
-  const afterReload = await stored(page);
-  expect(afterReload.documentRevision).toBeGreaterThanOrEqual(6);
-  expect(cleanV4Document(afterReload)).toEqual(afterReload);
-  const stale = await page.evaluate(async (oldDocument) => {
-    const { saveV4 } = await import("/src/domain/plan/storage.ts");
-    try { await saveV4(oldDocument, oldDocument.documentRevision); return "saved"; }
-    catch (error) { return (error as Error).message; }
-  }, document);
-  expect(stale).toContain("Конфликт");
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v5")!))).toEqual(v5EmptyCatalog);
 });
 
-test("wall nudge and Undo never revive old angle records in cleaned v4 snapshots", async ({ page }) => {
-  const document = v4CleanupDocument();
-  await page.addInitScript((project) => {
-    if (!localStorage.getItem("plitka-projects-v4")) localStorage.setItem("plitka-projects-v4", JSON.stringify({ schemaVersion: 4, projects: [project] }));
-    if (!location.hash) location.hash = `project/${project.id}`;
-  }, document);
-  await page.goto("/");
-  await expect.poll(async () => (await stored(page)).documentRevision).toBe(6);
-  await canvasPick(page, "segment", "v4s0");
-  await page.locator('[data-wall-handle="center"]').click();
-  await page.getByRole("button", { name: "Сдвинуть стену → на 1 мм" }).click();
-  await expect.poll(async () => (await stored(page)).plan.draft.vertices.find((v: { id: string }) => v.id === "v4v1")?.x).toBe(2001);
-  await page.getByRole("button", { name: "Отменить правку" }).click();
-  await expect.poll(async () => (await stored(page)).plan.draft.vertices.find((v: { id: string }) => v.id === "v4v1")?.x).toBe(2000);
-  await settle(page);
-  const graphs = (await stored(page));
-  for (const graph of [graphs.plan.draft, graphs.plan.restorePoint?.graph, graphs.rooms[0]?.confirmed?.graph].filter(Boolean)) {
-    expect(graph.vertices.some((vertex: { id: string }) => vertex.id === "orphan-vertex")).toBe(false);
-    expect(graph.constraints.some((constraint: { kind: string }) => constraint.kind === "angle")).toBe(false);
-  }
-  const revision = graphs.documentRevision;
-  await page.reload();
-  await expect.poll(async () => (await stored(page)).documentRevision).toBe(revision);
-  await settle(page);
-  await page.getByRole("button", { name: "Проект", exact: true }).click();
-  await page.getByRole("button", { name: "Вернуть план к сохранённому снимку", exact: true }).click();
-  await page.getByRole("button", { name: "Восстановить план", exact: true }).click();
-  await settle(page);
-  const restored = (await stored(page)).plan.draft;
-  expect(restored.vertices.some((vertex: { id: string }) => vertex.id === "orphan-vertex")).toBe(false);
-  expect(restored.constraints.some((constraint: { kind: string }) => constraint.kind === "angle")).toBe(false);
-});
-
-test("v4 parser requires thickness in every graph snapshot", () => {
-  const document = v4FilledCatalog().projects[0];
-  expect(v4EmptyCatalog.projects).toEqual([]);
-  expect(parseV4(document).schemaVersion).toBe(4);
-  for (const version of [1, 2, 3])
-    expect(() => parseV4({ ...document, schemaVersion: version })).toThrow();
-  for (const thickness of [undefined, 0, -1, "100", Number.NaN]) {
-    const wrong: any = structuredClone(document);
-    if (thickness === undefined) delete wrong.plan.draft.chains[0].thicknessMm;
-    else wrong.plan.draft.chains[0].thicknessMm = thickness;
-    expect(() => parseV4(wrong)).toThrow();
-  }
-  const nested: any = structuredClone(document);
-  nested.plan.restorePoint = { graph: structuredClone(nested.plan.draft), bindings: [], selectedRoomId: null };
-  delete nested.plan.restorePoint.graph.chains[0].thicknessMm;
-  expect(() => parseV4(nested)).toThrow();
-  const pending: any = structuredClone(document);
-  pending.plan.draftRevision = 1;
-  pending.plan.pendingEdit = { kind: "graphV4", commandId: "pending", command: { type: "addVertex", point: { x: 3000, y: 0 } },
-    basisGraph: structuredClone(pending.plan.draft), targetDraftRevision: 1 };
-  delete pending.plan.pendingEdit.basisGraph.chains[0].thicknessMm;
-  expect(() => parseV4(pending)).toThrow();
-  const confirmed: any = structuredClone(document);
-  confirmed.rooms = [{ id: "room", topologyKey: "topology", binding: "attached", name: "Комната", material: { tile: 600, grout: 2 },
-    rules: { gap: 10, threshold: 100, angle: 0 }, fieldInputs: {}, acknowledgment: null, boundaryMemory: null,
-    confirmed: { graph: structuredClone(confirmed.plan.draft), boundary: { outer: [], holes: [] }, topologyKey: "topology",
-      dependencyKey: "dependency", geometryKey: "geometry", measurementKey: "measurement", acknowledgment: null, sourceDraftRevision: 0 } }];
-  delete confirmed.rooms[0].confirmed.graph.chains[0].thicknessMm;
-  expect(() => parseV4(confirmed)).toThrow();
-});
-
-test("v4 initialization removes known old catalogs and keeps the empty catalog", async ({ page }) => {
-  await page.addInitScript((keys) => {
-    for (const key of keys) localStorage.setItem(key, "old");
-    localStorage.setItem("unrelated-setting", "keep");
-  }, [...v4LegacyKeys]);
-  await page.goto("/");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("plitka-projects-v4"))).toContain('"schemaVersion":4');
-  const first = await page.evaluate((keys) => ({
-    catalog: JSON.parse(localStorage.getItem("plitka-projects-v4")!),
-    old: keys.map((key) => localStorage.getItem(key)),
-  }), [...v4LegacyKeys]);
-  expect(first.catalog).toEqual(v4EmptyCatalog);
-  expect(first.old).toEqual([null, null, null, null]);
-  expect(await page.evaluate(() => localStorage.getItem("unrelated-setting"))).toBe("keep");
-  await page.evaluate(() => localStorage.setItem("plitka-projects-v2", "interrupted-cleanup"));
-  await page.reload();
-  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v4")!))).toEqual(v4EmptyCatalog);
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("plitka-projects-v2"))).toBeNull();
-});
-
-test("old project file is rejected without changing the v4 catalog", async ({ page }) => {
-  await page.goto("/");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("plitka-projects-v4"))).not.toBeNull();
-  const before = await page.evaluate(() => localStorage.getItem("plitka-projects-v4"));
-  const message = await page.evaluate(async () => {
-    const { importV4 } = await import("/src/domain/plan/storage.ts");
-    try {
-      await importV4(new File([JSON.stringify({ format: "plitka-project", version: 3, project: {} })], "old.json"));
-      return "accepted";
-    } catch (error) { return (error as Error).message; }
-  });
-  expect(message).toMatch(/версия|версии|старой модели/i);
-  expect(await page.evaluate(() => localStorage.getItem("plitka-projects-v4"))).toBe(before);
-});
-
-test("two windows initialize one v4 catalog under the write lock", async ({ browser }) => {
+test("two windows initialize the same v5 catalog under the write lock", async ({ browser }) => {
   const context = await browser.newContext({ baseURL: process.env.PW_BASE_URL || "http://127.0.0.1:5173" });
   const first = await context.newPage();
   const second = await context.newPage();
   await first.goto("/");
   await first.evaluate(() => {
-    localStorage.removeItem("plitka-projects-v4");
-    localStorage.setItem("plitka-projects-v3", "obsolete");
+    localStorage.removeItem("plitka-projects-v5");
+    localStorage.setItem("plitka-projects-v4", "old");
   });
   await Promise.all([first.reload(), second.goto("/")]);
-  await expect.poll(() => first.evaluate(() => localStorage.getItem("plitka-projects-v4"))).not.toBeNull();
-  expect(await first.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v4")!))).toEqual(v4EmptyCatalog);
-  expect(await second.evaluate(() => localStorage.getItem("plitka-projects-v3"))).toBeNull();
+  await expect.poll(() => first.evaluate(() => localStorage.getItem("plitka-projects-v5"))).not.toBeNull();
+  await expect.poll(() => second.evaluate(() => localStorage.getItem("plitka-projects-v4"))).toBeNull();
+  expect(await first.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v5")!))).toEqual(v5EmptyCatalog);
   await context.close();
 });
 
@@ -210,13 +91,13 @@ async function wall(page: any) {
   await page.getByRole("button", { name: "Выбрать", exact: true }).click();
   await canvasPick(page, "segment", 1);
 }
-test("new v4 project keeps its graph and has no legacy catalog", async ({
+test("new v5 project keeps its graph and has no legacy catalog", async ({
   page,
 }) => {
   await openProject(page);
   await settle(page);
   const before = await stored(page);
-  expect(before.schemaVersion).toBe(4);
+  expect(before.schemaVersion).toBe(5);
   expect(before.plan.draft.vertices.map((v: any) => [v.x, v.y])).toEqual([
     [0, 0],
     [4200, 0],
@@ -230,7 +111,7 @@ test("new v4 project keeps its graph and has no legacy catalog", async ({
     await page.evaluate(() => !!localStorage.getItem("plitka-projects-v1")),
   ).toBeFalsy();
 });
-test("v4 snapshots share IDs and import uses local revision", async ({
+test("v5 snapshots share IDs and import uses local revision", async ({
   page,
 }) => {
   await openProject(page);
@@ -251,7 +132,7 @@ test("damaged and future files never mutate current project", async ({
   await openProject(page);
   await settle(page);
   const before = await stored(page);
-  for (const version of [5, 3]) {
+  for (const version of [6, 3]) {
     const value = await envelope(page);
     value.version = version;
     if (version === 3)
@@ -292,7 +173,7 @@ test("storage failure retains draft and explicit retry saves it", async ({
     (window as any).restoreStorage = () =>
       (Storage.prototype.setItem = original);
     Storage.prototype.setItem = function (k, v) {
-      if (k === "plitka-projects-v4")
+      if (k === "plitka-projects-v5")
         throw new DOMException("Quota exceeded", "QuotaExceededError");
       return original.call(this, k, v);
     };
@@ -385,17 +266,13 @@ test("saved pending can be cancelled after reload retaining confirmed", async ({
   expect(after.plan.draft).toEqual(before.plan.draft);
   expect(after.rooms[0].confirmed).toEqual(before.rooms[0].confirmed);
 });
-test("corrupt v3 does not silently fall back to legacy", async ({ page }) => {
-  await page.addInitScript(() =>
-    localStorage.setItem("plitka-projects-v4", "broken"),
-  );
-  await openProject(page, undefined, false);
-  await expect(page.getByRole("alert")).toBeVisible();
-  expect(
-    await page.evaluate(() => localStorage.getItem("plitka-projects-v4")),
-  ).toBe("broken");
+test("corrupt old catalog is discarded when v5 initializes", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("plitka-projects-v4", "broken"));
+  await page.goto("/");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("plitka-projects-v4"))).toBeNull();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v5")!))).toEqual(v5EmptyCatalog);
 });
-test("old v2 tab change leaves the v4 editor untouched", async ({ page }) => {
+test("old v2 tab change leaves the v5 editor untouched", async ({ page }) => {
   await openProject(page);
   await settle(page);
   const before = await stored(page);
@@ -754,7 +631,12 @@ for (const pending of ["graphV4"] as const)
     expect(after.plan.draft).toEqual(before.plan.draft);
     expect(after.rooms).toEqual(before.rooms);
     expect(after.plan.restorePoint).toEqual(before.plan.restorePoint);
-    expect(after.plan.pendingEdit).toBeNull();
+    expect(after.plan.pendingEdit).toMatchObject({
+      kind: before.plan.pendingEdit.kind,
+      command: before.plan.pendingEdit.command,
+      basisGraph: before.plan.pendingEdit.basisGraph,
+    });
+    expect(after.plan.pendingEdit.targetDraftRevision).toBe(after.plan.draftRevision);
     expect(commands).toBe(0);
   });
 test("clear project skips old snapshots waiting inside Web Lock", async ({
@@ -797,7 +679,7 @@ test("clear project remains exportable and undoable after quota failure", async 
     (window as any).restoreStorage = () =>
       (Storage.prototype.setItem = original);
     Storage.prototype.setItem = function (k, v) {
-      if (k === "plitka-projects-v4")
+      if (k === "plitka-projects-v5")
         throw new DOMException("Нет места", "QuotaExceededError");
       original.call(this, k, v);
     };
@@ -839,7 +721,7 @@ async function deletionPreview(page: any, graph: any, target: any) {
     { graph, target },
   );
 }
-test("deletion preview removes entire shared boundary and preserves external walls and independent vertices", async ({
+test("deletion preview removes entire shared boundary and preserves external walls", async ({
   page,
 }) => {
   const g = graphNeighbours();
@@ -864,7 +746,6 @@ test("deletion preview removes entire shared boundary and preserves external wal
   });
   expect(result.status).toBe("applied");
   expect(result.graph.segments.map((s: any) => s.id)).toContain("external");
-  expect(result.graph.vertices.map((v: any) => v.id)).toContain("independent");
   expect(result.graph.vertices.map((v: any) => v.id)).toContain("av2");
   expect(result.graph.vertices.map((v: any) => v.id)).not.toContain("av0");
   const changed = structuredClone(g);
@@ -1048,7 +929,7 @@ test("deletion range preserves error categories and removes retired chain condit
   expect(deleted.status).toBe("applied");
   expect(deleted.graph.chains).toHaveLength(2);
   expect(deleted.graph.constraints).toEqual([]);
-  expect(deleted.graph.vertices).toHaveLength(5);
+  expect(deleted.graph.vertices).toHaveLength(4);
 });
 
 
@@ -1083,7 +964,7 @@ test("clear project never overwrites a conflicting external revision", async ({
 }) => {
   await openGraph(page, graphNeighbours());
   await page.evaluate(() => {
-    const key = "plitka-projects-v4",
+    const key = "plitka-projects-v5",
       rows = JSON.parse(localStorage.getItem(key)!);
     rows.projects[0].documentRevision += 10;
     rows.projects[0].address = "Другая вкладка";
@@ -1108,7 +989,7 @@ test("clear project new import works and exported document excludes runtime stat
   await importFile(page, before);
   expect((await stored(page)).plan.draft).toEqual(before.project.plan.draft);
   const exported = await envelope(page);
-  expect(exported.version).toBe(4);
+  expect(exported.version).toBe(5);
   expect(Object.keys(exported.project)).toEqual(Object.keys(before.project));
   expect(JSON.stringify(exported)).not.toMatch(
     /beforeClear|lifecycleEpoch|ImportPreview|"history"|rangeFirst|rangeSecond/,
@@ -1184,7 +1065,7 @@ for (const type of ["deleteRoom", "deleteVoid", "deleteConstraint"] as const)
     };
     await importFile(page, {
       format: "plitka-project",
-      version: 4,
+      version: 5,
       project: d,
     });
     await page.reload();
@@ -1293,9 +1174,9 @@ test("clear project final queued save survives unmount and leaves another projec
   other.id = "other";
   other.name = "Другой проект";
   await page.evaluate((other) => {
-    const data = JSON.parse(localStorage.getItem("plitka-projects-v4")!);
+    const data = JSON.parse(localStorage.getItem("plitka-projects-v5")!);
     data.projects.push(other);
-    localStorage.setItem("plitka-projects-v4", JSON.stringify(data));
+    localStorage.setItem("plitka-projects-v5", JSON.stringify(data));
   }, other);
   await page.evaluate(() => {
     (window as any).locked = false;
@@ -1315,7 +1196,7 @@ test("clear project final queued save survives unmount and leaves another projec
     .toBe(0);
   expect(
     await page.evaluate(() =>
-      JSON.parse(localStorage.getItem("plitka-projects-v4")!).projects.find(
+      JSON.parse(localStorage.getItem("plitka-projects-v5")!).projects.find(
         (d: any) => d.id === "other",
       ),
     ),
@@ -1365,7 +1246,7 @@ test('delete project write failure preserves catalog and retry succeeds', async 
   await page.evaluate(() => {
     const original = Storage.prototype.setItem;
     (window as any).restoreDeleteStorage = () => Storage.prototype.setItem = original;
-    Storage.prototype.setItem = function(k, v) { if(k === 'plitka-projects-v4') throw new Error('Запись недоступна'); original.call(this, k, v); };
+    Storage.prototype.setItem = function(k, v) { if(k === 'plitka-projects-v5') throw new Error('Запись недоступна'); original.call(this, k, v); };
   });
   const dialog = await openDelete(page);
   await dialog.getByRole('button', { name: 'Удалить проект', exact: true }).click();
@@ -1380,9 +1261,9 @@ test('delete project changed revision requires a new confirmation', async ({ pag
   const dialog = await openDelete(page);
   const other = await context.newPage(); await other.goto('/');
   await other.evaluate(() => {
-    const rows = JSON.parse(localStorage.getItem('plitka-projects-v4')!);
+    const rows = JSON.parse(localStorage.getItem('plitka-projects-v5')!);
     rows.projects[0].name = 'Новая версия'; rows.projects[0].documentRevision++;
-    localStorage.setItem('plitka-projects-v4', JSON.stringify(rows));
+    localStorage.setItem('plitka-projects-v5', JSON.stringify(rows));
   });
   await dialog.getByRole('button', { name: 'Удалить проект', exact: true }).click();
   await expect(dialog.getByRole('alert')).toContainText('изменён');
@@ -1400,7 +1281,7 @@ for (const pending of ['graphV4'] as const)
   await page.evaluate(() => {
     const original = Storage.prototype.setItem;
     (window as any).restoreDelete = () => Storage.prototype.setItem = original;
-    Storage.prototype.setItem = function(k,v) { if(k === 'plitka-projects-v4') throw new Error('Нет места'); original.call(this,k,v); };
+    Storage.prototype.setItem = function(k,v) { if(k === 'plitka-projects-v5') throw new Error('Нет места'); original.call(this,k,v); };
   });
   await page.getByRole('button', { name: 'Проект', exact: true }).click();
   await page.getByRole('button', { name: 'Удалить проект', exact: true }).click();
@@ -1435,8 +1316,8 @@ for (const mode of ['locks', 'corrupt', 'missing'] as const)
   const dialog = await openDelete(page);
   await page.evaluate(mode => {
     if(mode === 'locks') Object.defineProperty(navigator, 'locks', { value: undefined, configurable: true });
-    else if(mode === 'corrupt') localStorage.setItem('plitka-projects-v4', '{broken');
-    else { const c = JSON.parse(localStorage.getItem('plitka-projects-v4')!); c.projects.shift(); localStorage.setItem('plitka-projects-v4', JSON.stringify(c)); }
+    else if(mode === 'corrupt') localStorage.setItem('plitka-projects-v5', '{broken');
+    else { const c = JSON.parse(localStorage.getItem('plitka-projects-v5')!); c.projects.shift(); localStorage.setItem('plitka-projects-v5', JSON.stringify(c)); }
   }, mode);
   await dialog.getByRole('button', { name: 'Удалить проект', exact: true }).click();
   if(mode === 'missing') { await expect(page.getByText('Проект уже удалён', { exact: true })).toBeVisible(); await expect(page.locator('.project-row')).toHaveCount(1); }
@@ -1492,9 +1373,9 @@ test(`delete project lock order ${order} cannot resurrect`, async ({ page, conte
   await holdProjectWrites(other);
   async function queueSave() {
     await other.evaluate(async doc => {
-      const { saveV3 } = await import('/src/domain/plan/storage.ts');
+      const { saveV5 } = await import('/src/domain/plan/storage.ts');
       (window as any).saveFinished = false;
-      void saveV3({ ...doc, address: 'Новый адрес' }, doc.documentRevision)
+      void saveV5({ ...doc, address: 'Новый адрес' }, doc.documentRevision)
         .then(() => { (window as any).saveResult = 'saved'; }, () => { (window as any).saveResult = 'conflict'; })
         .finally(() => { (window as any).saveFinished = true; });
     }, before.projects[0]);
@@ -1552,7 +1433,7 @@ import { openGraph as flowOpenGraph, graphTwoRooms as flowTwoRooms, clearProject
 for(const stage of ['object','tile','rules','variants']) test(`room flow legacy stage ${stage} and empty name normalize`,async({page})=>{
   await flowOpenGraph(page,flowTwoRooms());const d=await stored(page);
   d.workflow.requestedStage=stage;d.rooms[0].name='';delete d.rooms[0].boundaryMemory;
-  await importFile(page,{format:'plitka-project',version:4,project:d});
+  await importFile(page,{format:'plitka-project',version:5,project:d});
   await expect(page.getByRole('button',{name:stage==='object'?'1. План':'2. Варианты',exact:true})).toHaveAttribute('aria-current','step');
   const after=await stored(page);expect(after.rooms.every((r:any)=>r.name.trim())).toBe(true);
   expect(after.plan.draft).toEqual(d.plan.draft);
@@ -1560,17 +1441,17 @@ for(const stage of ['object','tile','rules','variants']) test(`room flow legacy 
 test('room flow file round trip preserves memory and rejects malformed memory',async({page})=>{
   await flowOpenGraph(page,flowTwoRooms());const d=await stored(page);
   expect(d.rooms[0].boundaryMemory.geometryKey).toMatch(/^[a-f0-9]{64}$/);
-  await importFile(page,{format:'plitka-project',version:4,project:d});
+  await importFile(page,{format:'plitka-project',version:5,project:d});
   expect((await stored(page)).rooms).toEqual(d.rooms);
   const bad=structuredClone(d);bad.rooms[0].boundaryMemory.geometryKey='broken';
-  await expect(parseImportFixture(page,{format:'plitka-project',version:4,project:bad})).rejects.toThrow();
+  await expect(parseImportFixture(page,{format:'plitka-project',version:5,project:bad})).rejects.toThrow();
   expect((await stored(page)).rooms).toEqual(d.rooms);
 });
 test('room flow ambiguous detached memory never steals settings',async({page})=>{
   await flowOpenGraph(page,flowTwoRooms());const d=await stored(page),r=d.rooms[0];
   r.binding='detached';r.topologyKey='old';r.name='Исходная';r.material.tile=777;
   d.rooms.push({...structuredClone(r),id:'duplicate',name:'Дубликат'});
-  await importFile(page,{format:'plitka-project',version:4,project:d});
+  await importFile(page,{format:'plitka-project',version:5,project:d});
   const after=await stored(page);expect(after.rooms.find((x:any)=>x.id===r.id).binding).toBe('detached');
   expect(after.rooms.find((x:any)=>x.id==='duplicate').binding).toBe('detached');
   expect(after.rooms.filter((x:any)=>x.binding==='attached')).toHaveLength(2);
@@ -1589,7 +1470,131 @@ test('room flow changing holes retains outer room identity',async({page})=>{
   // A moved inner ring changes its geometry but leaves the outer boundary unchanged.
   const holeIds=new Set(d.plan.draft.voids[0].boundary.flatMap((ref:any)=>{const seg=d.plan.draft.segments.find((s:any)=>s.id===ref.segmentId);return [seg.startVertexId,seg.endVertexId];}));
   for(const v of d.plan.draft.vertices)if(holeIds.has(v.id))v.x+=50;
-  await importFile(page,{format:'plitka-project',version:4,project:d});
+  await importFile(page,{format:'plitka-project',version:5,project:d});
   const after=(await stored(page)).rooms.find((r:any)=>r.id===room.id);
   expect(after.binding).toBe('attached');expect(after.name).toBe('Кухня');expect(after.material.tile).toBe(777);
+});
+
+test('v5 initialization removes every legacy catalog and preserves the new catalog on reload', async ({ page }) => {
+  await page.addInitScript(({ oldCatalogs, catalog }) => {
+    if (sessionStorage.getItem('seed-v5')) return;
+    sessionStorage.setItem('seed-v5', 'yes');
+    for (const [key, old] of Object.entries(oldCatalogs)) localStorage.setItem(key, JSON.stringify(old));
+    localStorage.setItem('plitka-projects-v5', JSON.stringify(catalog));
+  }, { oldCatalogs: oldCatalogsWithLayouts(), catalog: v5FilledCatalog() });
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(keys => keys.every(key => !localStorage.getItem(key)), preV5CatalogKeys)).toBe(true);
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('plitka-projects-v5')!).projects.length)).toBe(1);
+  await page.reload();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('plitka-projects-v5')!))).toEqual(v5FilledCatalog());
+});
+
+test('v5 parser rejects precision beyond one decimal in nested snapshots', async ({ page }) => {
+  await openProject(page);
+  await confirmRoom(page);
+  await settle(page);
+  const document: any = await stored(page);
+  document.plan.restorePoint = { graph: structuredClone(document.plan.draft), bindings: [], selectedRoomId: null };
+  document.rooms[0].confirmed = {
+    graph: structuredClone(document.plan.draft),
+    boundary: { outer: document.plan.draft.segments.map((s: any) => ({ segmentId: s.id, forward: true })), holes: [] },
+    topologyKey: document.rooms[0].topologyKey,
+    dependencyKey: 'test-dependency', geometryKey: 'test-geometry', measurementKey: 'test-measurement',
+    acknowledgment: null, sourceDraftRevision: document.plan.draftRevision,
+  };
+  const result = await page.evaluate(async (good) => {
+    const { parseV5 } = await import('/src/domain/plan/schema.ts');
+    const changes = [
+      (d: any) => d.plan.draft.vertices[0].x = 0.01,
+      (d: any) => d.plan.restorePoint.graph.chains[0].thicknessMm = 100.01,
+      (d: any) => d.rooms[0].material.tile = 600.01,
+      (d: any) => d.rooms[0].rules.angle = 0.01,
+      (d: any) => d.rooms[0].confirmed.graph.vertices[0].x = 0.01,
+    ];
+    const rejects = changes.map(change => {
+      const bad = structuredClone(good);
+      change(bad);
+      try { parseV5(bad); return false; } catch { return true; }
+    });
+    const view = structuredClone(good);
+    view.viewport.centerX = 123.4567;
+    return { good: parseV5(good).schemaVersion, rejects, viewport: parseV5(view).viewport.centerX };
+  }, document);
+  expect(result).toEqual({ good: 5, rejects: [true, true, true, true, true], viewport: 123.4567 });
+  expect(v5EmptyCatalog.projects).toEqual([]);
+});
+
+test('new project persists in v5 after two reloads', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Новый проект' }).click();
+  await page.getByLabel('Название проекта').fill('Проверка v5');
+  await page.getByRole('button', { name: 'Создать проект' }).click();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('plitka-projects-v5')!).projects.length)).toBe(1);
+  await page.reload();
+  await page.reload();
+  const catalog = await page.evaluate(() => JSON.parse(localStorage.getItem('plitka-projects-v5')!));
+  expect(catalog.projects[0].schemaVersion).toBe(5);
+  expect(catalog.projects[0].name).toBe('Проверка v5');
+});
+
+test('v5 catalog write failure leaves old catalogs intact and retry completes deletion', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem('seed-write-failure')) return;
+    sessionStorage.setItem('seed-write-failure', 'yes');
+    localStorage.setItem('plitka-projects-v4', JSON.stringify({ schemaVersion: 4, projects: [] }));
+    const original = Storage.prototype.setItem;
+    (window as any).restoreCatalogWrite = () => Storage.prototype.setItem = original;
+    Storage.prototype.setItem = function(key, value) {
+      if (key === 'plitka-projects-v5') throw new DOMException('Нет места', 'QuotaExceededError');
+      return original.call(this, key, value);
+    };
+  });
+  await page.goto('/');
+  await expect(page.getByRole('alert')).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('plitka-projects-v5'))).toBeNull();
+  expect(await page.evaluate(() => localStorage.getItem('plitka-projects-v4'))).not.toBeNull();
+  await page.evaluate(() => (window as any).restoreCatalogWrite());
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('plitka-projects-v5'))).not.toBeNull();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('plitka-projects-v4'))).toBeNull();
+});
+
+test('interrupted v5 cleanup resumes without replacing the new catalog', async ({ page }) => {
+  const catalog = v5FilledCatalog();
+  await page.addInitScript(catalog => {
+    if (sessionStorage.getItem('seed-interrupted-cleanup')) return;
+    sessionStorage.setItem('seed-interrupted-cleanup', 'yes');
+    localStorage.setItem('plitka-projects-v5', JSON.stringify(catalog));
+    localStorage.setItem('plitka-projects-v4', JSON.stringify({ schemaVersion: 4, projects: [] }));
+    const original = Storage.prototype.removeItem;
+    (window as any).restoreCatalogDelete = () => Storage.prototype.removeItem = original;
+    Storage.prototype.removeItem = function(key) {
+      if (key === 'plitka-projects-v4') throw new Error('Прерванная очистка');
+      return original.call(this, key);
+    };
+  }, catalog);
+  await page.goto('/');
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('plitka-projects-v5')!))).toEqual(catalog);
+  expect(await page.evaluate(() => localStorage.getItem('plitka-projects-v4'))).not.toBeNull();
+  await page.evaluate(() => (window as any).restoreCatalogDelete());
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('plitka-projects-v4'))).toBeNull();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('plitka-projects-v5')!))).toEqual(catalog);
+});
+
+test('an already open v4 editor cannot restore its deleted project through a stale save', async ({ page }) => {
+  await page.addInitScript(catalog => {
+    if (sessionStorage.getItem('seed-old-tab')) return;
+    sessionStorage.setItem('seed-old-tab', 'yes');
+    localStorage.setItem('plitka-projects-v4', JSON.stringify(catalog));
+  }, v4FilledCatalog());
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('plitka-projects-v4'))).toBeNull();
+  const result = await page.evaluate(async project => {
+    const { saveV4 } = await import('/src/domain/plan/storage.ts');
+    try { await saveV4(project, project.documentRevision); return 'saved'; }
+    catch (error) { return (error as Error).message; }
+  }, v4FilledCatalog().projects[0]);
+  expect(result).toMatch(/Конфликт/);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('plitka-projects-v5')!).projects)).toEqual([]);
 });

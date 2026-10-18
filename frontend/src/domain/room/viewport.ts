@@ -1,6 +1,6 @@
-import type { Point, ProjectDocumentV4 } from "../plan/types";
+import type { Point, ProjectDocumentV5 } from "../plan/types";
 
-export type Viewport = ProjectDocumentV4["viewport"];
+export type Viewport = ProjectDocumentV5["viewport"];
 
 export function worldPoint(svg: SVGSVGElement, x: number, y: number): Point {
   const matrix = svg.getScreenCTM();

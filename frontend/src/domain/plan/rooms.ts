@@ -3,7 +3,7 @@ import type {
   GraphSnapshot,
   RoomRecord,
   FaceCandidate,
-  ProjectDocumentV4,
+  ProjectDocumentV5,
   Measurement,
 } from "./types";
 export const uid = () => crypto.randomUUID();
@@ -30,7 +30,7 @@ export function normalizeRoomNames(rooms: RoomRecord[]) {
   for (const r of result) if (!r.name.trim()) r.name = nextRoomName(result);
   return result;
 }
-export async function bindRooms(doc: ProjectDocumentV4, faces: FaceCandidate[]): Promise<ProjectDocumentV4> {
+export async function bindRooms(doc: ProjectDocumentV5, faces: FaceCandidate[]): Promise<ProjectDocumentV5> {
   const rooms = normalizeRoomNames(doc.rooms);
   const memories = await Promise.all(faces.map(f => faceMemory(doc.plan.draft, f)));
   for (const r of rooms) {
@@ -178,7 +178,7 @@ export function rulesReady(r?: RoomRecord) {
   );
 }
 export function pendingAffectsRoom(
-  doc: ProjectDocumentV4,
+  doc: ProjectDocumentV5,
   face?: FaceCandidate,
 ) {
   const pending = doc.plan.pendingEdit;

@@ -12,13 +12,16 @@ import { useRef, useState, useEffect, useLayoutEffect } from "react";
 import type {
   GraphSnapshot,
   FaceCandidate,
-  ProjectDocumentV4,
+  ProjectDocumentV5,
   Point,
   DiagnosticSelection,
 } from "../../domain/plan/types";
 import type { Layout } from "../../types";
 import { path } from "../../types";
 import { snap } from "../../domain/room/snapping";
+import { selectedWallAngles } from "../../domain/plan/selected-wall-angles";
+import { selectedWallFootprint } from "../../domain/plan/selected-wall-footprint";
+import { roundTenth } from "../../domain/plan/precision";
 import { clampZoom, gridScreenStep, viewportAtAnchor, worldPoint, zoomAroundWorld } from "../../domain/room/viewport";
 export type Tool = EditorTool;
 export default function ProjectCanvas({
@@ -34,6 +37,7 @@ export default function ProjectCanvas({
   faces,
   wallArea = [],
   roomNames = {},
+  roomMissing = {},
   selectedKey,
   viewport,
   tool,
@@ -51,6 +55,7 @@ export default function ProjectCanvas({
   onShift,
   onPart,
   onCancel,
+  onDeactivate,
   children,
 }: {
   graph: GraphSnapshot;
@@ -65,8 +70,9 @@ export default function ProjectCanvas({
   faces: FaceCandidate[];
   wallArea?: { outline: number[][]; holes: number[][][] }[];
   roomNames?: Record<string, string>;
+  roomMissing?: Record<string, boolean>;
   selectedKey?: string | null;
-  viewport: ProjectDocumentV4["viewport"];
+  viewport: ProjectDocumentV5["viewport"];
   tool: Tool;
   wallThickness?: number;
   onDrawWall?: (start: Point, end: Point) => void;
@@ -77,11 +83,12 @@ export default function ProjectCanvas({
   diagnostic: DiagnosticSelection | null;
   onSelection: (v: string, s: string) => void;
   onRoom: (f: FaceCandidate) => void;
-  onViewport: (v: ProjectDocumentV4["viewport"]) => void;
+  onViewport: (v: ProjectDocumentV5["viewport"]) => void;
   layout?: Layout;
   onShift?: (x: number, y: number) => void;
   onPart?: (id: string) => void;
   onCancel: () => void;
+  onDeactivate: () => void;
   children: React.ReactNode;
 }) {
   const svg = useRef<SVGSVGElement>(null),
@@ -130,8 +137,11 @@ export default function ProjectCanvas({
       const rect = svg.current!.getBoundingClientRect();
       const sideRight = sidebarOpen ? (sidebar?.getBoundingClientRect().right ?? rect.left) : rect.left - 8;
       const panelRect = panelOpen ? panel?.getBoundingClientRect() : undefined;
-      const leftEdge = Math.max(rect.left, Math.min(rect.right, sideRight + 8));
-      const rightEdge = panelRect && panelRect.top < rect.bottom && panelRect.height > rect.height * .5
+      const tallPanel = panelRect && panelRect.top < rect.bottom && panelRect.height > rect.height * .5;
+      const panelOnLeft = tallPanel && panelRect.left + panelRect.width / 2 < rect.left + rect.width / 2;
+      const leftEdge = Math.max(rect.left, Math.min(rect.right,
+        panelOnLeft ? panelRect.right + 8 : sideRight + 8));
+      const rightEdge = tallPanel && !panelOnLeft
         ? Math.min(rect.right, panelRect.left - 8) : rect.right;
       const nextShift = (Math.max(leftEdge, rightEdge) + leftEdge) / 2 - (rect.left + rect.width / 2);
       setSidebarShift((current) => Math.abs(current - nextShift) < .5 ? current : nextShift);
@@ -176,9 +186,33 @@ export default function ProjectCanvas({
   const vs = new Map(graph.vertices.map((v) => [v.id, v]));
   const selectedChain = graph.segments.find((segment) => segment.id === selectedSegment)?.chainId;
   const selectedWall = graph.chains.find((chain) => chain.id === selectedChain);
+  const selectedFootprint = selectedWall ? selectedWallFootprint(graph, selectedWall.id) : null;
+  const selectedAngles = selectedWall ? selectedWallAngles(graph, selectedWall.id) : [];
   // The viewBox shares the observed viewport aspect ratio, so scale is uniform.
   // Derive render sizes from current props, never the previous render's CTM.
   const screenScale = () => Math.max(size.width, 1) / width;
+  const wallHandlePoints = selectedWall ? (() => {
+    const a = vs.get(selectedWall.startVertexId)!;
+    const b = vs.get(selectedWall.endVertexId)!;
+    return [a, b, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }];
+  })() : [];
+  const angleLabels: Point[] = [];
+  const selectedAngleVisuals = selectedAngles.map((angle) => {
+    const start = Math.atan2(angle.from.y, angle.from.x);
+    const delta = Math.atan2(angle.from.x * angle.to.y - angle.from.y * angle.to.x,
+      angle.from.x * angle.to.x + angle.from.y * angle.to.y);
+    const middle = start + delta / 2;
+    let label: Point = angle.origin;
+    for (let step = 0; step < 16; step++) {
+      const radius = (43 + step * 16) / screenScale();
+      label = { x: angle.origin.x + Math.cos(middle) * radius,
+        y: angle.origin.y + Math.sin(middle) * radius };
+      if (angleLabels.every(other => Math.hypot(label.x - other.x, label.y - other.y) * screenScale() >= 45) &&
+          wallHandlePoints.every(handle => Math.hypot(label.x - handle.x, label.y - handle.y) * screenScale() >= 34)) break;
+    }
+    angleLabels.push(label);
+    return { angle, start, delta, label };
+  });
   const clientWorld = (clientX: number, clientY: number) => {
     const matrix = svg.current?.getScreenCTM();
     if (!matrix) return null;
@@ -336,7 +370,7 @@ export default function ProjectCanvas({
   const chooseRoom = (p: Point) => {
     const hole = voidRings.find((v) => contains(p, v.points));
     if (hole) {
-      onVoid(hole.id);
+      if (tool !== "selectRoom") onVoid(hole.id);
       return;
     }
     const candidates = faces.filter(
@@ -431,7 +465,9 @@ export default function ProjectCanvas({
     for (let y = Math.ceil(bottom / step) * step; y < bottom + height; y += step) ys.push(y);
     return { xs, ys };
   };
-  const majorGrid = gridLines(100);
+  const thousandGrid = gridLines(1000);
+  const majorGrid = gridScreenStep(100, size.width, renderedViewport.zoom) >= 6 - 1e-6
+    ? gridLines(100) : null;
   const minorGrid = gridScreenStep(10, size.width, renderedViewport.zoom) >= 6 - 1e-6
     ? gridLines(10) : null;
   const candidateSpacing = renderedViewport.zoom < 1 ? 100 : 44;
@@ -458,7 +494,8 @@ export default function ProjectCanvas({
       const perp = { x: -(b.y - a.y) / len, y: (b.x - a.x) / len };
       const limit = Math.min(100, Math.ceil(Math.hypot(width, height) / 100));
       for (let i = -limit; i <= limit; i++) if (i)
-        addCandidate({ x: pendingWallStart.point.x + perp.x * i * 100, y: pendingWallStart.point.y + perp.y * i * 100 }, "perpendicularGuide");
+        addCandidate({ x: roundTenth(pendingWallStart.point.x + perp.x * i * 100),
+          y: roundTenth(pendingWallStart.point.y + perp.y * i * 100) }, "perpendicularGuide");
     }
   }
   for (let x = Math.ceil(left / candidateStep) * candidateStep; x <= left + width; x += candidateStep)
@@ -482,7 +519,7 @@ export default function ProjectCanvas({
           clear();
           setPendingWallStart(null);
           setHoverWallPoint(null);
-          onCancel();
+          onDeactivate();
         }
       }}
     >
@@ -508,14 +545,14 @@ export default function ProjectCanvas({
             clear();
             setPendingWallStart(null);
             setHoverWallPoint(null);
-            onCancel();
+            onDeactivate();
             return;
           }
           const step = e.shiftKey ? 1 : viewport.gridStepMm;
           if (e.key.startsWith("Arrow")) {
             e.preventDefault();
             e.stopPropagation();
-            if (tool === "pan") {
+            if (tool === "pan" && editor.interaction.kind === "idle") {
               onViewport({
                 ...viewport,
                 centerX:
@@ -604,7 +641,7 @@ export default function ProjectCanvas({
           if (tool === "wall" && e.pointerType !== "touch") setWallPreview((current) => current ? { ...current, end: touchPoint(e) ?? current.end } : current);
           if (Math.hypot(e.clientX - g.client.x, e.clientY - g.client.y) > 4)
             g.dragged = true;
-          if ((tool === "pan" || (tool === "wall" && e.pointerType === "touch")) && g.dragged)
+          if ((tool === "pan" || tool === "selectRoom" || (tool === "wall" && e.pointerType === "touch")) && g.dragged)
             setLiveViewport(panViewport(g, e.clientX, e.clientY));
           if (tool === "wall" && e.pointerType === "touch" && !g.dragged)
             setHoverWallPoint(pickWallCandidate(e.clientX, e.clientY)?.point ?? null);
@@ -642,6 +679,13 @@ export default function ProjectCanvas({
           }
           if (tool === "pan") {
             if (g.dragged) onViewport(panViewport(g, e.clientX, e.clientY));
+            else if (g.target?.startsWith("segment:") || g.target?.startsWith("room:")) pick(g.target);
+            else onSelection("", "");
+            clear();
+            return;
+          }
+          if (tool === "selectRoom" && g.dragged) {
+            onViewport(panViewport(g, e.clientX, e.clientY));
             clear();
             return;
           }
@@ -703,7 +747,7 @@ export default function ProjectCanvas({
       >
         <g transform="scale(1,-1)">
           <defs><pattern id="wall-cursor-hatch" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-            <rect width="4" height="4" fill="#e9ddd0" /><line x1="0" y1="0" x2="0" y2="4" stroke="#715d50" strokeWidth="1" />
+            <rect width="4" height="4" fill="#e6e6e6" /><line x1="0" y1="0" x2="0" y2="4" stroke="#666" strokeWidth="1" />
           </pattern></defs>
           <g className="canvas-grid canvas-grid-minor" pointerEvents="none">
             {minorGrid?.xs.filter((x) => Math.round(x / 10) % 10 !== 0).map((x) => (
@@ -714,7 +758,7 @@ export default function ProjectCanvas({
             ))}
           </g>
           <g className="canvas-grid canvas-grid-major" pointerEvents="none">
-            {majorGrid.xs.map((x) => (
+            {majorGrid?.xs.filter((x) => Math.round(x / 100) % 10 !== 0).map((x) => (
               <line
                 key={"x" + x}
                 x1={x}
@@ -723,9 +767,13 @@ export default function ProjectCanvas({
                 y2={bottom + height}
               />
             ))}
-            {majorGrid.ys.map((y) => (
+            {majorGrid?.ys.filter((y) => Math.round(y / 100) % 10 !== 0).map((y) => (
               <line key={"y" + y} x1={left} x2={left + width} y1={y} y2={y} />
             ))}
+          </g>
+          <g className="canvas-grid canvas-grid-thousand" pointerEvents="none">
+            {thousandGrid.xs.map((x) => <line key={"tx" + x} x1={x} x2={x} y1={bottom} y2={bottom + height} />)}
+            {thousandGrid.ys.map((y) => <line key={"ty" + y} x1={left} x2={left + width} y1={y} y2={y} />)}
           </g>
           {tool === "wall" && matchMedia("(hover: none) and (pointer: coarse)").matches &&
             <g className="wall-candidates" pointerEvents="none">
@@ -765,14 +813,12 @@ export default function ProjectCanvas({
                 number,
                 number,
               ][][])}
-              className={
-                "room-face " + (f.topologyKey === selectedKey ? "selected" : "")
-              }
+              className={"room-face " + (f.topologyKey === selectedKey ? "selected " : "") + (roomMissing[f.topologyKey] ? "missing-layout" : "")}
               fillRule="evenodd"
               {...targetProps(
                 "room",
                 f.topologyKey,
-                roomNames[f.topologyKey] || `Помещение ${faces.indexOf(f) + 1}`,
+                `${roomNames[f.topologyKey] || `Помещение ${faces.indexOf(f) + 1}`}${roomMissing[f.topologyKey] ? ", нет актуальной раскладки" : ""}`,
               )}
             />
           ))}
@@ -782,7 +828,7 @@ export default function ProjectCanvas({
             const shape = f.polygon ?? f.axisPolygon;
             const [x,y,labelWidth] = roomLabelPoint(shape.outline, shape.holes);
             const maxChars = Math.max(1, Math.floor(labelWidth * screenScale() / 8) - 2);
-            return <text key={'label:'+f.topologyKey} data-room-label={f.topologyKey} x={x} y={y} transform={`translate(0,${2*y}) scale(1,-1)`} textAnchor="middle" dominantBaseline="middle" fontSize={14 / screenScale()} pointerEvents="none" fill="#263b35" aria-label={name}><title>{name}</title>{name.length > maxChars ? name.slice(0, Math.max(0,maxChars-1))+'…' : name}</text>;
+            return <text key={'label:'+f.topologyKey} data-room-label={f.topologyKey} x={x} y={y} transform={`translate(0,${2*y}) scale(1,-1)`} textAnchor="middle" dominantBaseline="middle" fontSize={14 / screenScale()} pointerEvents="none" fill="#333" aria-label={name}><title>{name}</title>{name.length > maxChars ? name.slice(0, Math.max(0,maxChars-1))+'…' : name}</text>;
           })}
           {voidRings.map((v, i) => (
             <path
@@ -796,12 +842,12 @@ export default function ProjectCanvas({
             <path
               key={p.id}
               d={path(p.rings)}
-              fill={p.issues.length ? "#edcc9e" : "#bdd3c8"}
+              fill={p.issues.length ? "#bbb" : "#d4d4d4"}
               fillRule="evenodd"
-              stroke="#718e81"
+              stroke="#777"
               strokeWidth={1 / screenScale()}
               onClick={() => {
-                if (!gesture.current?.dragged) onPart?.(p.id);
+                if (tool !== "selectRoom" && !gesture.current?.dragged) onPart?.(p.id);
               }}
             />
           ))}
@@ -812,6 +858,9 @@ export default function ProjectCanvas({
               d={path([polygon.outline, ...polygon.holes] as [number, number][][])}
               fillRule="evenodd" pointerEvents="none" />
           ))}
+          {selectedFootprint && <path data-selected-wall-footprint={selectedWall?.id}
+            className="selected-wall-footprint" d={path([selectedFootprint.map((point) => [point.x, point.y]) as [number, number][]])}
+            pointerEvents="none" />}
           {tool === "wall" && preview && matchMedia("(hover: hover) and (pointer: fine)").matches &&
             <rect className="wall-cursor" x={preview.x - 5} y={preview.y - 5} width="10" height="10"
               fill="url(#wall-cursor-hatch)" pointerEvents="none" />}
@@ -834,8 +883,7 @@ export default function ProjectCanvas({
                   y2={b.y}
                   className={
                     "graph-wall " +
-                    (s.id === selectedSegment ||
-                    selectedRange.includes(s.id) ||
+                    (selectedRange.includes(s.id) ||
                     highlightedSegments?.includes(s.id)
                       ? "selected"
                       : "")
@@ -871,6 +919,24 @@ export default function ProjectCanvas({
                 {...targetProps("vertex", id, "Конец диапазона стены")}
               /> : null;
             })}
+          {selectedWall && editor.interaction.kind === "idle" &&
+            <g className="selected-wall-angles" pointerEvents="none">
+              {selectedAngleVisuals.map(({ angle, start, delta, label }) => {
+                const radius = 29 / screenScale();
+                const points = Array.from({ length: 9 }, (_, step) => {
+                  const theta = start + delta * step / 8;
+                  return `${angle.origin.x + Math.cos(theta) * radius},${angle.origin.y + Math.sin(theta) * radius}`;
+                }).join(' ');
+                return <g key={`${angle.junctionVertexId}:${angle.adjacentChainId}`}>
+                  <polyline data-angle-arc points={points} fill="none" stroke="#444" strokeWidth={2 / screenScale()} />
+                  <text data-angle-label transform={`translate(${label.x},${label.y}) scale(1,-1)`} textAnchor="middle"
+                    dominantBaseline="middle" fontSize={12 / screenScale()} fill="#333"
+                    stroke="#fff" strokeWidth={3 / screenScale()} paintOrder="stroke">
+                    {angle.value.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}°
+                  </text>
+                </g>;
+              })}
+            </g>}
           {selectedWall && editor.interaction.kind === "idle" && (["start", "center", "end"] as const).map((handle) => {
             const a = vs.get(selectedWall.startVertexId)!;
             const b = vs.get(selectedWall.endVertexId)!;
@@ -912,8 +978,8 @@ export default function ProjectCanvas({
                   width={24 / screenScale()}
                   height={24 / screenScale()}
                   rx={5 / screenScale()}
-                  fill="#fff9e7"
-                  stroke="#946537"
+                  fill="#eee"
+                  stroke="#666"
                   strokeWidth={1 / screenScale()}
                 />
                 <text

@@ -63,5 +63,5 @@ export const initial: LayoutRequest = {
 };
 export const path = (rings: Point[][]) =>
   rings.map((r) => "M" + r.map((p) => p.join(",")).join("L") + "Z").join(" ");
-export const format = (n: number, digits = 0) =>
-  n.toLocaleString("ru-RU", { maximumFractionDigits: digits });
+export const format = (n: number, _digits = 1) =>
+  n.toLocaleString("ru-RU", { maximumFractionDigits: 1 });

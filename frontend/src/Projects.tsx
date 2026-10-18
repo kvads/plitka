@@ -4,13 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import App from "./components/canvas/GraphWorkflow";
 import {
   KEY,
-  readV4 as readProjects,
-  saveV4 as saveDocument,
-  initializeV4,
-  importV4 as importDocument,
+  readV5 as readProjects,
+  saveV5 as saveDocument,
+  initializeV5,
+  importV5 as importDocument,
 } from "./domain/plan/storage";
-import { createV4 as createDocument } from "./domain/plan/migration";
-import type { ProjectDocumentV4 as ProjectDocument } from "./domain/plan/types";
+import { createV5 as createDocument } from "./domain/plan/migration";
+import type { ProjectDocumentV5 as ProjectDocument } from "./domain/plan/types";
 const routeId = () =>
   location.hash.startsWith("#project/") ? location.hash.slice(9) : "";
 export default function Projects() {
@@ -21,7 +21,7 @@ export default function Projects() {
   });
   useEffect(() => {
     let active = true;
-    initializeV4()
+    initializeV5()
       .then((rows) => {
         if (active) {
           setLoaded({ rows, error: "", ready: true });

@@ -16,7 +16,7 @@ export default function GeometryIssues({
         >
           ⚠ {x.message}
           {x.actual !== undefined &&
-            ` (${x.actual.toFixed(1)} вместо ${x.expected})`}
+            ` (${x.actual.toLocaleString("ru-RU", { maximumFractionDigits: 1 })} вместо ${x.expected?.toLocaleString("ru-RU", { maximumFractionDigits: 1 })})`}
         </button>
       ))}
     </div>

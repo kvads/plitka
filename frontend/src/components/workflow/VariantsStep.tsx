@@ -164,7 +164,7 @@ export default function VariantsStep({
               <tr>
                 <th>Деталь</th>
                 <th>Размер, мм</th>
-                <th>Площадь, м²</th>
+                <th>Площадь, мм²</th>
                 <th>Проверка</th>
               </tr>
             </thead>
@@ -214,15 +214,15 @@ export default function VariantsStep({
       </div>
       <div className="stats">
         {[
-          ["Площадь комнаты", f(l.metrics.room_area, 3) + " м²"],
+          ["Площадь комнаты", f(l.metrics.room_area, 1) + " мм²"],
           ["Исходных плиток", l.metrics.tiles],
           ["Целых плиток", l.metrics.full],
-          ["Площадь швов", f(l.metrics.grout_area, 3) + " м²"],
+          ["Площадь швов", f(l.metrics.grout_area, 1) + " мм²"],
           ["Подрезанных плиток", l.metrics.cut],
           ["Отходы материала", f(l.metrics.waste_percent, 1) + "%"],
           ["Деталей с замечаниями", l.metrics.warnings],
           ["Минимальная ширина", f(l.metrics.min_width, 1) + " мм"],
-          ["Площадь покрытия", f(l.metrics.covered_area, 3) + " м²"],
+          ["Площадь покрытия", f(l.metrics.covered_area, 1) + " мм²"],
           [
             "Разница краёв",
             l.metrics.symmetry === null

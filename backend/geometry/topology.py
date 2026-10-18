@@ -1,16 +1,20 @@
 import copy,math,uuid
 from shapely.geometry import Point,LineString
 from .graph_validation import maps,xy,line,EPS,issue,GeometryRejection
+from .precision import tenth
 
 def new_id(command_id,role):return str(uuid.uuid5(uuid.NAMESPACE_URL,command_id+':'+role))
 def add_vertex(g,p,command_id,role='vertex'):
     existing = [v['id'] for v in g['vertices'] if xy(v)==(p['x'],p['y'])]
     if existing:
         raise GeometryRejection([issue('coincident_vertices',
-            f"В этой точке уже есть вершина: ({p['x']:.15g}; {p['y']:.15g}) мм", existing)])
+            'В этом месте уже есть точка стены. Выберите другое положение.', existing)])
     vid=new_id(command_id,role);g['vertices'].append(dict(id=vid,x=p['x'],y=p['y']));return vid
 
 def junction_vertex(g,p,command_id,role):
+    p = {'x': tenth(p['x']), 'y': tenth(p['y'])}
+    if role.startswith('intersection:'):
+        role = f"intersection:{p['x']:.1f}:{p['y']:.1f}"
     matches = [v for v in g['vertices'] if math.dist(xy(v),(p['x'],p['y']))<EPS]
     if len(matches)>1:
         raise GeometryRejection([issue('ambiguous_junction',

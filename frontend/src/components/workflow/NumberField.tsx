@@ -25,9 +25,11 @@ export default function NumberField({
   const skipBlur = useRef(false);
   useEffect(() => setText(raw ?? String(value)), [value, raw]);
   const n = Number(text.replace(",", "."));
-  const invalid = !text.trim() || !Number.isFinite(n) || n < min || n > max;
+  const extraPrecision = /^\s*[+-]?\d+(?:[.,]\d{2,})\s*$/.test(text);
+  const invalid = !text.trim() || !Number.isFinite(n) || n < min || n > max || extraPrecision;
   const commit = (force = false) => {
     if (!force && text === (raw ?? String(value))) return;
+    if (extraPrecision) return;
     onCommit(text.trim() && Number.isFinite(n) ? n : null, text);
   };
   return (
@@ -64,7 +66,7 @@ export default function NumberField({
       </div>
       {invalid && (
         <small id={id + "-error"} className="field-error">
-          Введите число от {min} до {max} {unit}
+          {extraPrecision ? "Допустим не более одного знака после запятой" : `Введите число от ${min} до ${max} ${unit}`}
         </small>
       )}
     </label>

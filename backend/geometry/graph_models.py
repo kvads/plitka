@@ -2,6 +2,7 @@
 from typing import Annotated, Literal
 from pydantic import Field, model_validator
 from .models import Model, Vertex
+from .precision import assert_graph_precision, is_tenth
 
 Id = Annotated[str, Field(min_length=1, max_length=100)]
 
@@ -201,6 +202,11 @@ class ValidateRequest(Model):
     basisKey: str = Field(max_length=2000000)
     graph: GraphSnapshot
     selectedRoomKey: str | None = Field(default=None,max_length=100000)
+
+    @model_validator(mode='after')
+    def decimal_precision(self):
+        assert_graph_precision(self.graph.model_dump(exclude_none=True))
+        return self
 class CommandRequest(Model):
     schemaVersion: Literal[4]
     commandId: Id
@@ -209,6 +215,22 @@ class CommandRequest(Model):
     graph: GraphSnapshot
     command: Command
     selectedRoomKey: str | None = Field(default=None,max_length=100000)
+
+    @model_validator(mode='after')
+    def decimal_precision(self):
+        assert_graph_precision(self.graph.model_dump(exclude_none=True))
+        def values(item):
+            if isinstance(item, dict):
+                for value in item.values():
+                    yield from values(value)
+            elif isinstance(item, list):
+                for value in item:
+                    yield from values(value)
+            elif isinstance(item, float):
+                yield item
+        if not all(is_tenth(value) for value in values(self.command.model_dump(exclude_none=True))):
+            raise ValueError('Допустим не более одного знака после запятой.')
+        return self
 
 class Issue(Model):
     code: str

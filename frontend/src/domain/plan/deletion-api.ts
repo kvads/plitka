@@ -2,10 +2,10 @@ import { api } from "../../api";
 import type {
   DeletionTarget,
   DeletionPreviewResponse,
-  ProjectDocumentV4,
+  ProjectDocumentV5,
 } from "./types";
 export function deletionPreview(
-  doc: ProjectDocumentV4,
+  doc: ProjectDocumentV5,
   target: DeletionTarget,
   requestId: string,
 ) {

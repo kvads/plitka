@@ -1,4 +1,4 @@
-import { addPoint, canvasPick } from "./fixtures/projects";
+import { addPoint, canvasPick, selectTool, setSidebarOpen } from "./fixtures/projects";
 import { test, expect } from "@playwright/test";
 import {
   openProject,
@@ -12,6 +12,7 @@ import {
   graphWithVoid,
   graphCommand,
   graphValidate,
+  touchSession,
 } from "./fixtures/projects";
 
 test("only the selected wall shows three handles and obsolete controls stay hidden", async ({ page }) => {
@@ -23,7 +24,7 @@ test("only the selected wall shows three handles and obsolete controls stay hidd
   await canvasPick(page, "segment", "as0");
   await expect(page.locator("[data-wall-handle]")).toHaveCount(3);
   await expect(page.locator(".snap-status")).toHaveCount(0);
-  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
+  await selectTool(page, 'Выбрать');
   await expect(page.locator("[data-wall-handle]")).toHaveCount(0);
 });
 
@@ -45,7 +46,7 @@ test("wall end and center handles expose four keyboard reachable one millimeter 
   await expect.poll(async () => (await stored(page)).plan.draft.vertices.find((v: { id: string }) => v.id === "av1")?.x).toBe(4001);
 });
 
-test("graph API derives rooms and preserves independent points", async ({
+test("graph API derives rooms without independent points", async ({
   page,
 }) => {
   await page.goto("/");
@@ -66,7 +67,7 @@ test("graph API derives rooms and preserves independent points", async ({
   expect(result.status).toBe(200);
   expect(result.data.faces).toHaveLength(2);
   expect(result.data.faces.every((f: any) => f.validation.valid)).toBeTruthy();
-  expect(result.data.graph.vertices).toHaveLength(9);
+  expect(result.data.graph.vertices).toHaveLength(8);
 });
 test("graph API explicit hole excludes inner room", async ({ page }) => {
   await page.goto("/");
@@ -262,8 +263,8 @@ test("graph rectangle and parallelogram preserve physical area", async ({
   const rectangle = await graphValidate(page, graphRectangle(4200, 3600));
   expect(rectangle.faces[0].areaMm2 / 1e6).toBeCloseTo(14.35, 6);
   const g = graphRectangle();
-  g.vertices[2] = { ...g.vertices[2], x: 5500, y: 1500 * Math.sqrt(3) };
-  g.vertices[3] = { ...g.vertices[3], x: 1500, y: 1500 * Math.sqrt(3) };
+  g.vertices[2] = { ...g.vertices[2], x: 5500, y: 2598.1 };
+  g.vertices[3] = { ...g.vertices[3], x: 1500, y: 2598.1 };
   const r = await graphValidate(page, g);
   expect(r.faces[0].validation.valid).toBeTruthy();
   expect(r.faces[0].areaMm2 / 1e6).toBeCloseTo(9.703852, 3);
@@ -361,7 +362,7 @@ test("correcting invalid raw dimension solves and keeps decimal comma", async ({
   page,
 }) => {
   await openProject(page);
-  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
+  await selectTool(page, 'Выбрать');
   await canvasPick(page, "segment", 1);
   await commit(page, "Общая длина стены", "ошибка");
   await settle(page);
@@ -493,7 +494,7 @@ test("safety API rejects explicit duplicate, preserves nearby independent coordi
   ).toBeTruthy();
   const near = await graphCommand(page, g, {
     type: "addVertex",
-    point: { x: 2500.00000005, y: 1800 },
+    point: { x: 2500.1, y: 1800 },
   });
   expect(near.status).toBe("applied");
   expect(near.graph.vertices).toHaveLength(2);
@@ -502,8 +503,13 @@ for (const short of [false, true])
   test(`safety diagnostic distinguishes ${short ? "short" : "coincident"} wall`, async ({
     page,
   }) => {
-    const g = graphCoincident(short);
-    await openGraph(page, g);
+      const g = graphCoincident(short);
+      if (short) {
+        await page.goto('/');
+        expect((await graphValidate(page, g)).http).toBe(422);
+        return;
+      }
+      await openGraph(page, g);
     const r = await graphValidate(page, g);
     expect(r.graph).toEqual(g);
     expect(r.issues.find((i: any) => i.code === "zero_wall").entityIds).toEqual(
@@ -632,7 +638,7 @@ test("safety three exact pairs, signed zero, old repairs and independent compone
   const unrelated = await graphCommand(page, g, {
     type: "moveVertex",
     vertexId: "precise",
-    point: { x: 7000.000000005, y: 4000 },
+    point: { x: 7000, y: 4000 },
   });
   expect(unrelated.status).toBe("applied");
   expect(unrelated.graph.vertices.slice(0, 3)).toEqual(g.vertices.slice(0, 3));
@@ -690,7 +696,7 @@ for (const mode of [
   "reconcile",
   "setAngle",
 ])
-  test(`safety ${mode} rejects collision after solver normalization`, async ({
+  test(`safety ${mode} rejects sub-tenth coordinates before solving`, async ({
     page,
   }) => {
     await page.goto("/");
@@ -736,16 +742,7 @@ for (const mode of [
       };
     }
     const r = await graphCommand(page, g, command);
-    expect(r.status).toBe("unresolved");
-    expect(r.graph.vertices).toEqual(g.vertices);
-    expect(
-      r.issues.some(
-        (i: any) =>
-          i.code === "coincident_vertices" && i.entityIds.includes("obstacle"),
-      ),
-    ).toBeTruthy();
-    if (mode === "releaseConstraint")
-      expect(r.graph.constraints[0].fixed).toBe(false);
+    expect(r.http).toBe(422);
   });
 
 test("safety diagnostic selection cannot delete neighbors and explicit wall deletion is safe", async ({
@@ -753,7 +750,7 @@ test("safety diagnostic selection cannot delete neighbors and explicit wall dele
 }) => {
   const g = graphCoincident();
   await openGraph(page, g);
-  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
+  await selectTool(page, 'Выбрать');
   await canvasPick(page, "segment", "zero");
   await page
     .locator(".geometry-issues")
@@ -763,13 +760,13 @@ test("safety diagnostic selection cannot delete neighbors and explicit wall dele
   await expect(
     page.getByRole("button", { name: /Удалить (стену|вершину)/ }),
   ).toHaveCount(0);
-  await page.getByRole("button", { name: "Выбрать", exact: true }).click();
+  await selectTool(page, 'Выбрать');
   await canvasPick(page, "segment", "zero");
   page.on("dialog", (d) => d.accept());
   await page.getByRole("button", { name: /Удалить (стену|вершину)/ }).click();
   await settle(page);
   const d = await stored(page);
-  expect(d.plan.draft.vertices).toEqual(g.vertices);
+  expect(d.plan.draft.vertices).toEqual(g.vertices.filter((v) => v.id !== "duplicate"));
   expect(d.plan.draft.segments).toEqual(
     g.segments.filter((s) => s.id !== "zero"),
   );
@@ -856,7 +853,7 @@ for (const width of [375, 1440])
         () => document.documentElement.scrollWidth <= innerWidth,
       ),
     ).toBe(true);
-    await page.getByRole("button", { name: "Проект", exact: true }).click();
+    await setSidebarOpen(page, true); await page.getByRole("button", { name: "Проект", exact: true }).click();
     await page
       .getByRole("button", { name: "Очистить проект", exact: true })
       .click();
@@ -957,7 +954,7 @@ test("context range closes when explicit restoration removes its chain", async (
     .click();
   await canvasPick(page, "vertex", "v0");
   await canvasPick(page, "vertex", "v2");
-  await page.getByRole("button", { name: "Проект", exact: true }).click();
+  await setSidebarOpen(page, true); await page.getByRole("button", { name: "Проект", exact: true }).click();
   await page
     .getByRole("button", {
       name: "Вернуть план к сохранённому снимку",
@@ -972,4 +969,144 @@ test("context range closes when explicit restoration removes its chain", async (
     0,
   );
   expect((await stored(page)).plan.draft.vertices).toEqual([]);
+});
+test('selected wall angles include end and inner junctions without duplicate chains', async () => {
+  const { selectedWallAngles } = await import('../src/domain/plan/selected-wall-angles');
+  const graph: any = {
+    vertices: [{id:'a',x:0,y:0},{id:'m',x:100,y:0},{id:'b',x:200,y:0},
+      {id:'u',x:100,y:100},{id:'d',x:100,y:-100},{id:'v',x:0,y:100},{id:'w',x:200,y:100}],
+    segments: [{id:'s1',chainId:'main',startVertexId:'a',endVertexId:'m'},
+      {id:'s2',chainId:'main',startVertexId:'m',endVertexId:'b'},
+      {id:'s3',chainId:'branch',startVertexId:'m',endVertexId:'u'},
+      {id:'s4',chainId:'top',startVertexId:'a',endVertexId:'v'},
+      {id:'s5',chainId:'down',startVertexId:'m',endVertexId:'d'},
+      {id:'s6',chainId:'end',startVertexId:'b',endVertexId:'w'}],
+    chains: [{id:'main',startVertexId:'a',endVertexId:'b',segmentIds:['s1','s2'],thicknessMm:100},
+      {id:'branch',startVertexId:'m',endVertexId:'u',segmentIds:['s3'],thicknessMm:100},
+      {id:'top',startVertexId:'a',endVertexId:'v',segmentIds:['s4'],thicknessMm:100},
+      {id:'down',startVertexId:'m',endVertexId:'d',segmentIds:['s5'],thicknessMm:100},
+      {id:'end',startVertexId:'b',endVertexId:'w',segmentIds:['s6'],thicknessMm:100}],
+    voids:[],constraints:[],fieldInputs:{}
+  };
+  const angles = selectedWallAngles(graph,'main');
+  expect(angles.map(angle => [angle.junctionVertexId,angle.adjacentChainId,Math.round(angle.value)]))
+    .toEqual([['a','top',90],['b','end',90],['m','branch',90],['m','down',90]]);
+  expect(selectedWallAngles(graph,'branch')).toHaveLength(2);
+});
+
+test('selected wall shows separate non-interactive angle labels for two adjacent walls', async ({ page }) => {
+  await openGraph(page, graphJunction());
+  await canvasPick(page, 'segment', 'northWall');
+  const labels = page.locator('[data-angle-label]');
+  await expect(labels).toHaveCount(2);
+  await expect(labels.nth(0)).toHaveText('90°');
+  await expect(labels.nth(1)).toHaveText('90°');
+  await expect(page.locator('.selected-wall-angles')).toHaveAttribute('pointer-events', 'none');
+  const positions = await labels.evaluateAll(nodes => nodes.map(node => {
+    const r = (node as SVGTextElement).getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+  }));
+  expect(positions[0].right <= positions[1].left || positions[1].right <= positions[0].left ||
+    positions[0].bottom <= positions[1].top || positions[1].bottom <= positions[0].top).toBe(true);
+  await canvasPick(page, 'segment', 'freeWall');
+  await expect(labels).toHaveCount(0);
+});
+
+test('number field rejects two decimal places without editing a mobile project', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 700 });
+  await openGraph(page, graphRectangle());
+  await canvasPick(page, 'segment', 'as0');
+  const field = page.getByLabel('Общая длина стены', { exact: true });
+  const before = await stored(page);
+  for (const text of ['3175,12', '3175.12']) {
+    await field.fill(text);
+    await field.press('Enter');
+    await expect(field).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.getByText('Допустим не более одного знака после запятой')).toBeVisible();
+    expect((await stored(page)).plan).toEqual(before.plan);
+    expect((await stored(page)).documentRevision).toBe(before.documentRevision);
+  }
+  await field.fill('3175,1');
+  await field.press('Enter');
+  await settle(page);
+  expect((await stored(page)).plan.draft.fieldInputs).toHaveProperty('chain:ac0:length', '3175,1');
+  await page.reload();
+  await settle(page);
+  expect((await stored(page)).plan.draft.fieldInputs).toHaveProperty('chain:ac0:length', '3175,1');
+  await canvasPick(page, 'segment', 'as0');
+  await expect(page.getByLabel('Общая длина стены', { exact: true })).toHaveValue('3175,1');
+  const reloadedField = page.getByLabel('Общая длина стены', { exact: true });
+  await reloadedField.fill('3175.2');
+  await reloadedField.press('Enter');
+  await settle(page);
+  expect((await stored(page)).plan.draft.fieldInputs).toHaveProperty('chain:ac0:length', '3175.2');
+});
+
+test('geometry errors never display coordinate pairs from a server response', async ({ page }) => {
+  await openGraph(page, graphRectangle());
+  await canvasPick(page, 'segment', 'as0');
+  await page.locator('[data-wall-handle="end"]').click();
+  await page.route('**/api/plan/command', route => route.fulfill({
+    status: 422, contentType: 'application/json',
+    body: JSON.stringify({ detail: 'Пересечение стены в точке (100, 200)' }),
+  }));
+  await page.getByRole('button', { name: 'Сдвинуть точку стены → на 1 мм' }).click();
+  await expect(page.getByRole('alert')).toContainText('Геометрия недопустима');
+  await expect(page.getByRole('alert')).not.toContainText('(100, 200)');
+});
+
+test.describe('layout room touch', () => {
+test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
+test('layout rooms are selected on canvas and missing results are announced in yellow', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await openGraph(page, graphTwoRooms());
+  await page.getByRole('button', { name: 'Режим: План' }).click();
+  await page.getByRole('menuitem', { name: 'Раскладка' }).click();
+  const faces = page.locator('.room-face');
+  await expect(faces).toHaveCount(2);
+  await expect(page.getByRole('combobox', { name: 'Помещение', exact: true })).toHaveCount(0);
+  await expect(page.locator('.room-face.missing-layout')).toHaveCount(2);
+  await expect(faces.first()).toHaveAttribute('aria-label', /нет актуальной раскладки/);
+  const firstKey = await faces.first().getAttribute('data-target');
+  const firstPoint = await screenPoint(page, 2000, 1500);
+  const touch = await touchSession(page);
+  await touch.dispatch('touchStart', [{ id: 1901, x: firstPoint.x, y: firstPoint.y }]);
+  await touch.dispatch('touchEnd', []);
+  await expect(page.getByLabel('Название помещения')).toBeVisible();
+  await expect.poll(async () => (await stored(page)).selectedRoomId).not.toBeNull();
+  const firstRoom = (await stored(page)).selectedRoomId;
+  await page.getByRole('button', { name: 'Подобрать раскладку', exact: true }).click();
+  await expect(page.locator(`[data-target="${firstKey}"]`)).not.toHaveClass(/missing-layout/);
+  const secondKey = await faces.nth(1).getAttribute('data-target');
+  await canvasPick(page, 'room', secondKey!.slice('room:'.length));
+  await expect(page.locator(`[data-target="${secondKey}"]`)).toHaveClass(/missing-layout/);
+  await canvasPick(page, 'room', firstKey!.slice('room:'.length));
+  await expect.poll(async () => (await stored(page)).selectedRoomId).toBe(firstRoom);
+  await expect(page.getByRole('button', { name: 'План с размерами · SVG' })).toBeEnabled();
+  await page.reload(); await settle(page);
+  await expect(page.locator('.room-face.missing-layout')).toHaveCount(2);
+  await touch.close();
+});
+});
+
+for (const width of [320, 375, 430])
+test(`three rooms show only missing layouts at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 812 });
+  const third = graphRectangle(2000, 2000, 'c');
+  third.vertices.forEach(vertex => { vertex.x += 8000; });
+  const two = graphTwoRooms();
+  const graph = {
+    ...two,
+    vertices: [...two.vertices, ...third.vertices],
+    segments: [...two.segments, ...third.segments],
+    chains: [...two.chains, ...third.chains],
+  };
+  await openGraph(page, graph, { centerX: 5000, centerY: 1800, zoom: 0.6 });
+  await page.getByRole('button', { name: '2. Раскладка', exact: true }).click();
+  await expect(page.locator('.room-face.missing-layout')).toHaveCount(3);
+  const first = page.locator('.room-face').first();
+  await first.focus(); await first.press('Enter');
+  await page.getByRole('button', { name: 'Подобрать раскладку', exact: true }).click();
+  await expect(page.locator('.room-face.missing-layout')).toHaveCount(2);
+  await expect(first).not.toHaveClass(/missing-layout/);
 });

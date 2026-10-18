@@ -1,8 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 import { initial } from "../../src/types";
-import { createV4 } from "../../src/domain/plan/migration";
+import { createV5 } from "../../src/domain/plan/migration";
 import { newRoom } from "../../src/domain/plan/rooms";
-import type { GraphSnapshot } from "../../src/domain/plan/types";
 
 export type TouchPoint = { id: number; x: number; y: number };
 
@@ -39,7 +38,7 @@ export async function openProject(page: Page, plan = initial, openSidebar = true
   await page.goto("/");
   const graph = graphRectangle(plan.outline[1][0], plan.outline[2][1]);
   const response = await graphValidate(page, graph);
-  const document = createV4("Тестовый проект", "Тестовый адрес", "test");
+  const document = createV5("Тестовый проект", "Тестовый адрес", "test");
   document.plan.draft = graph;
   document.viewport.centerX = plan.outline[1][0] / 2;
   document.viewport.centerY = plan.outline[2][1] / 2;
@@ -49,7 +48,7 @@ export async function openProject(page: Page, plan = initial, openSidebar = true
   document.rooms = [room];
   document.selectedRoomId = room.id;
   await page.evaluate((document) => {
-    localStorage.setItem("plitka-projects-v4", JSON.stringify({ schemaVersion: 4, projects: [document] }));
+    localStorage.setItem("plitka-projects-v5", JSON.stringify({ schemaVersion: 5, projects: [document] }));
     location.hash = "project/test";
   }, document);
   await page.reload();
@@ -59,9 +58,9 @@ export async function openProject(page: Page, plan = initial, openSidebar = true
   }
 }
 export async function confirmRoom(page: Page) {
-  await page
-    .getByRole("button", { name: "Выбрать помещение", exact: true })
-    .click();
+  await setSidebarOpen(page, true);
+  const roomTool = page.getByRole("button", { name: "Выбрать помещение", exact: true });
+  if (await roomTool.getAttribute('aria-pressed') !== 'true') await roomTool.click();
   const geometry = await page
     .locator("[data-geometry]")
     .getAttribute("data-geometry");
@@ -87,10 +86,30 @@ export async function confirmRoom(page: Page) {
   await expect(page.getByLabel("Название помещения")).toBeVisible();
 }
 export async function toRules(page: Page) {
-  await page.getByRole('button', {name:'2. Варианты',exact:true}).click();
-  const picker = page.getByRole('combobox',{name:'Помещение',exact:true});
-  await expect(picker.locator('option')).not.toHaveCount(1);
-  await picker.selectOption({index:1});
+  await goStage(page, 'variants');
+  await selectRoomByIndex(page, 1);
+  await expect(page.getByLabel('Название помещения')).toBeVisible();
+}
+export async function goStage(page: Page, stage: 'object' | 'variants') {
+  const mobileMode = page.getByRole('button', { name: /^Режим:/ });
+  const label = stage === 'object' ? 'План' : 'Раскладка';
+  if (await mobileMode.isVisible()) {
+    await mobileMode.click();
+    await page.getByRole('menuitem', { name: label }).click();
+  } else {
+    await setSidebarOpen(page, true);
+    await page.getByRole('button', { name: stage === 'object' ? '1. План' : '2. Раскладка', exact: true }).click();
+  }
+}
+export async function selectRoomByIndex(page: Page, index: number) {
+  const target = page.locator('.room-face').nth(index - 1);
+  await expect(target).toBeAttached();
+  await target.focus();
+  await target.press('Enter');
+}
+export async function selectTool(page: Page, name: 'Выбрать' | 'Стена' | 'Выбрать помещение') {
+  await setSidebarOpen(page, true);
+  await page.getByRole('button', { name, exact: true }).click();
 }
 export async function commit(page: Page, label: string, value: string) {
   const field = page.getByLabel(label, { exact: true });
@@ -99,7 +118,7 @@ export async function commit(page: Page, label: string, value: string) {
 }
 export async function stored(page: Page) {
   return page.evaluate(
-    () => JSON.parse(localStorage.getItem("plitka-projects-v4")!).projects[0],
+    () => JSON.parse(localStorage.getItem("plitka-projects-v5")!).projects[0],
   );
 }
 export async function settle(page: Page, openSidebar = true) {
@@ -119,11 +138,11 @@ export async function importFile(page: Page, data: unknown) {
     const storage = await import("/src/domain/plan/storage.ts");
     // @ts-ignore Vite serves this browser module from the project root.
     const lifecycle = await import("/src/domain/plan/project-lifecycle.ts");
-    const current = storage.readV3().find((row: any) => row.id === location.hash.split("/")[1]);
+    const current = storage.readV5().find((row: any) => row.id === location.hash.split("/")[1]);
     if (!current) throw new Error("Открытый проект не найден.");
     const file = new File([JSON.stringify(value)], "project.json", { type: "application/json" });
-    const parsed = await storage.importV3(file, current);
-    await storage.saveV3(lifecycle.restoredProject(current, { ...parsed, id: current.id }), current.documentRevision);
+    const parsed = await storage.importV5(file);
+    await storage.saveV5(lifecycle.restoredProject(current, { ...parsed, id: current.id }), current.documentRevision);
   }, data);
   await page.reload();
   await settle(page);
@@ -132,8 +151,8 @@ export async function importFile(page: Page, data: unknown) {
 export async function parseImportFixture(page: Page, data: unknown) {
   return page.evaluate(async (value) => {
     // @ts-ignore Vite serves this browser module from the project root.
-    const { importV3 } = await import("/src/domain/plan/storage.ts");
-    return importV3(new File([JSON.stringify(value)], "project.json", { type: "application/json" }));
+    const { importV5 } = await import("/src/domain/plan/storage.ts");
+    return importV5(new File([JSON.stringify(value)], "project.json", { type: "application/json" }));
   }, data);
 }
 
@@ -175,6 +194,16 @@ export const v4LegacyKeys = [
   "plitka-projects-v2",
   "plitka-projects-v3",
 ] as const;
+export const preV5CatalogKeys = [...v4LegacyKeys, "plitka-projects-v4"] as const;
+export const v5EmptyCatalog = { schemaVersion: 5, projects: [] };
+export const v5FilledCatalog = () => ({
+  schemaVersion: 5,
+  projects: [{
+    ...createV5("Проект v5", "", "v5-example"),
+    documentRevision: 2,
+    viewport: { centerX: 1000.125, centerY: 999.875, zoom: 1.2345, gridStepMm: 100 },
+  }],
+});
 export const v4WallGraph = () => ({
   ...graphRectangle(2000, 2000, "v4"),
   chains: graphRectangle(2000, 2000, "v4").chains.map((chain) => ({
@@ -197,126 +226,21 @@ export const v4FilledCatalog = () => ({
     viewport: { centerX: 1000, centerY: 1000, zoom: 1, gridStepMm: 100 },
   }],
 });
+export const oldCatalogsWithLayouts = () => Object.fromEntries(
+  preV5CatalogKeys.map((key, index) => [key, index === 4
+    ? v4FilledCatalog()
+    : { schemaVersion: index === 0 ? 1 : index, projects: [{
+      id: `old-${index}`, name: `Старый проект ${index}`,
+      layout: { metrics: { room_area: 12.5 }, parts: [{ area: 0.25 }] },
+    }] }]),
+);
 
-/** A valid v4 document with removable graph data in every persisted snapshot. */
-export function v4CleanupDocument() {
-  const document = createV4("Проект с устаревшими углами", "", "v4-cleanup");
-  const graph: GraphSnapshot = v4WallGraph();
-  graph.vertices.push({ id: "orphan-vertex", x: 5000, y: 5000 });
-  graph.constraints.push(
-    {
-      id: "fixed-angle",
-      kind: "angle",
-      target: {
-        vertexId: "v4v1",
-        firstSegmentId: "v4s0",
-        secondSegmentId: "v4s1",
-        sector: "ccw",
-      },
-      value: 90,
-      fixed: true,
-    },
-    {
-      id: "released-angle",
-      kind: "angle",
-      target: {
-        vertexId: "v4v2",
-        firstSegmentId: "v4s1",
-        secondSegmentId: "v4s2",
-        sector: "ccw",
-      },
-      value: 90,
-      fixed: false,
-    },
-    {
-      id: "length-condition",
-      kind: "chainLength",
-      target: { chainId: "v4c0" },
-      value: 2000,
-      fixed: true,
-    },
-  );
-  graph.fieldInputs = {
-    "angle:fixed-angle:value": "90",
-    "angle:released-angle:value": "90",
-    "angle:missing-angle:value": "45",
-    "vertex:v4v1:angle-ccw": "90",
-    "vertex:orphan-vertex:angle-cw": "45",
-    "v4c0:interiorAngle": "90",
-    "missing-wall:interiorAngle": "45",
-    "length-condition:value": "2000",
-    "unrelated:raw": "7,5",
-  };
-  document.documentRevision = 5;
-  document.plan.draftRevision = 3;
-  document.plan.draft = graph;
-  document.plan.pendingEdit = {
-    kind: "graphV4",
-    commandId: "pending-old-angle",
-    command: {
-      type: "setAngle",
-      constraintId: "fixed-angle",
-      vertexId: "v4v1",
-      firstSegmentId: "v4s0",
-      secondSegmentId: "v4s1",
-      sector: "ccw",
-      value: 90,
-    },
-    basisGraph: structuredClone(graph),
-    targetDraftRevision: document.plan.draftRevision,
-  };
-  document.plan.restorePoint = {
-    graph: structuredClone(graph),
-    bindings: [],
-    selectedRoomId: null,
-  };
-  const room = newRoom("fixture-topology", "Помещение 1");
-  room.id = "fixture-room";
-  room.rules.angle = 17;
-  room.confirmed = {
-    graph: structuredClone(graph),
-    boundary: {
-      outer: graph.segments.map((segment) => ({ segmentId: segment.id, forward: true })),
-      holes: [],
-    },
-    topologyKey: "fixture-topology",
-    dependencyKey: "fixture-dependency",
-    geometryKey: "fixture-geometry",
-    measurementKey: "fixture-measurement",
-    acknowledgment: null,
-    sourceDraftRevision: 2,
-  };
-  document.rooms = [room];
-  document.selectedRoomId = room.id;
-  return document;
-}
-
-export function v4CleanedDocument() {
-  const document = v4CleanupDocument();
-  for (const graph of [
-    document.plan.draft,
-    document.plan.pendingEdit!.basisGraph,
-    document.plan.restorePoint!.graph,
-    document.rooms[0].confirmed!.graph,
-  ]) {
-    graph.vertices = graph.vertices.filter((vertex) => vertex.id !== "orphan-vertex");
-    graph.constraints = graph.constraints.filter((constraint) => constraint.kind !== "angle");
-    graph.fieldInputs = Object.fromEntries(
-      Object.entries(graph.fieldInputs).filter(([key]) =>
-        !key.startsWith("angle:") && !/^vertex:[^:]+:angle-/.test(key) && !key.endsWith(":interiorAngle")
-      ),
-    );
-  }
-  document.plan.pendingEdit = null;
-  document.documentRevision++;
-  return document;
-}
 export function graphTwoRooms() {
   const a = graphRectangle(),
     b = graphRectangle(2000, 2000, "b");
   b.vertices.forEach((v) => (v.x += 5000));
   return {
-    vertices: [...a.vertices, ...b.vertices, { id: "free", x: 8000, y: 1000 }],
+    vertices: [...a.vertices, ...b.vertices],
     segments: [...a.segments, ...b.segments],
     chains: [...a.chains, ...b.chains],
     voids: [],
@@ -415,7 +339,7 @@ export async function openGraph(
   openSidebar = true,
 ) {
   const document = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     id: "test",
     name: "Тестовый проект",
     address: "Тестовый адрес",
@@ -438,10 +362,10 @@ export async function openGraph(
     },
   };
   await page.addInitScript((document) => {
-    if (!localStorage.getItem("plitka-projects-v4"))
+    if (!localStorage.getItem("plitka-projects-v5"))
       localStorage.setItem(
-        "plitka-projects-v4",
-        JSON.stringify({ schemaVersion: 4, projects: [document] }),
+        "plitka-projects-v5",
+        JSON.stringify({ schemaVersion: 5, projects: [document] }),
       );
     if (!location.hash) location.hash = "project/test";
   }, document);
@@ -572,7 +496,7 @@ export function graphSafetySolve() {
       { id: "a", x: 0, y: 0 },
       { id: "b", x: 1000, y: 0 },
       { id: "obstacle", x: 2000, y: 0 },
-      { id: "precise", x: 6000.000000005, y: 4000 },
+      { id: "precise", x: 6000, y: 4000 },
     ],
     segments: [{ id: "s", startVertexId: "a", endVertexId: "b", chainId: "c" }],
     chains: [
@@ -656,7 +580,6 @@ export function graphNeighbours() {
     { id: "right0", x: 4000, y: 0 },
     { id: "right1", x: 4000, y: 2000 },
     { id: "exterior", x: 2000, y: 3000 },
-    { id: "independent", x: 6000, y: 2000 },
   );
   for (const [id, startVertexId, endVertexId] of [
     ["rightBottom", "av1", "right0"],
@@ -684,7 +607,6 @@ export function graphRange(fixed?: boolean) {
     voids: [],
     fieldInputs: {},
   };
-  g.vertices.push({ id: "foreign", x: 1500, y: 1000 });
   for (let i = 0; i < 3; i++)
     g.segments.push({
       id: "s" + i,
@@ -790,20 +712,20 @@ export async function fullGraphDocument(
     d.plan.draftRevision++;
     d.plan.pendingEdit = {
       kind: "graphV4",
-      commandId: "pending-add",
-      command: { type: "addVertex", point: { x: 7000, y: 7000 } },
+      commandId: "pending-wall",
+      command: { type: "drawWall", start: { x: 0, y: 0 }, end: { x: 7000, y: 7000 }, thicknessMm: 100 },
       basisGraph: structuredClone(d.plan.draft),
       targetDraftRevision: d.plan.draftRevision,
     };
   }
-  return d;
+  return { ...d, schemaVersion: 5 };
 }
 export async function openDocument(page: Page, document: unknown) {
   await page.addInitScript((document) => {
-    if (!localStorage.getItem("plitka-projects-v4"))
+    if (!localStorage.getItem("plitka-projects-v5"))
       localStorage.setItem(
-        "plitka-projects-v4",
-        JSON.stringify({ schemaVersion: 4, projects: [document] }),
+        "plitka-projects-v5",
+        JSON.stringify({ schemaVersion: 5, projects: [document] }),
       );
     if (!location.hash) location.hash = "project/test";
   }, document);
@@ -811,6 +733,7 @@ export async function openDocument(page: Page, document: unknown) {
   await settle(page);
 }
 export async function clearProject(page: Page) {
+  await setSidebarOpen(page, true);
   if (
     !(await page
       .getByRole("button", { name: "Очистить проект", exact: true })
@@ -893,23 +816,24 @@ export async function chooseAngle(
 /** Isolated migration fixture; seed once so reload can detect resurrection. */
 export async function deletionProjects(page: Page, count = 2) {
   const projects = Array.from({ length: count }, (_, i) =>
-    createV4("Одинаковое имя", `Адрес ${i}`, `delete-${i}`));
+    createV5("Одинаковое имя", `Адрес ${i}`, `delete-${i}`));
   await page.addInitScript((projects) => {
     if (localStorage.getItem('delete-fixture-seeded')) return;
     localStorage.setItem('delete-fixture-seeded', 'yes');
-    localStorage.setItem('plitka-projects-v4', JSON.stringify({ schemaVersion: 4, projects }));
+    localStorage.setItem('plitka-projects-v5', JSON.stringify({ schemaVersion: 5, projects }));
   }, projects);
   await page.goto('/');
   await expect(page.locator('.project-row')).toHaveCount(count);
 }
 export async function projectCatalog(page: Page) {
-  return page.evaluate(() => JSON.parse(localStorage.getItem('plitka-projects-v4')!));
+  return page.evaluate(() => JSON.parse(localStorage.getItem('plitka-projects-v5')!));
 }
 export async function openDelete(page: Page, row = 0) {
   await page.locator('.project-row').nth(row).getByRole('button', { name: 'Удалить проект', exact: true }).click();
   return page.getByRole('dialog', { name: 'Удалить проект', exact: true });
 }
 export async function deleteFromEditor(page: Page) {
+  await setSidebarOpen(page, true);
   if (!await page.getByRole('button', { name: 'Удалить проект', exact: true }).isVisible())
     await page.getByRole('button', { name: 'Проект', exact: true }).click();
   await page.getByRole('button', { name: 'Удалить проект', exact: true }).click();

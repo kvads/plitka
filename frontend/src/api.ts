@@ -1,5 +1,11 @@
 import { graphSchema } from "./domain/plan/schema";
+import { isTenth } from "./domain/plan/precision";
 import { geometry } from "./domain/project/schema";
+const includesCoordinatePair = (message: string) =>
+  /(?:\b[xy]\s*[:=]\s*-?\d|\(\s*-?\d+(?:[.,]\d+)?\s*[,;]\s*-?\d)/i.test(message);
+const publicGeometryMessage = (message: string) => includesCoordinatePair(message)
+  ? "Геометрия недопустима. Измените положение стены или размеры помещения."
+  : message;
 export async function api<T>(
   route: string,
   project: unknown,
@@ -43,8 +49,11 @@ export async function api<T>(
       typeof object.error === "object" &&
       typeof (object.error as { message?: unknown }).message === "string"
     )
-      throw new Error((object.error as { message: string }).message);
-    if (typeof object?.detail === "string") throw new Error(object.detail);
+      throw new Error(publicGeometryMessage((object.error as { message: string }).message));
+    if (typeof object?.detail === "string") {
+      const detail = object.detail;
+      throw new Error(publicGeometryMessage(detail));
+    }
     if (res.status === 422)
       throw new Error("Проверьте размеры, координаты и параметры плитки.");
     throw new Error(
@@ -65,6 +74,11 @@ export async function api<T>(
   const polygon = (v: unknown): boolean =>
     record(v) && Array.isArray(v.outline) && Array.isArray(v.holes) &&
     rings([v.outline, ...v.holes]);
+  const tenthPolygon = (v: unknown): boolean =>
+    polygon(v) && record(v) &&
+    [v.outline, ...(v.holes as unknown[])].every(ring =>
+      Array.isArray(ring) && ring.every(point =>
+        Array.isArray(point) && point.length === 2 && point.every(isTenth)));
   const layout = (v: unknown): boolean =>
     record(v) &&
     Array.isArray(v.parts) &&
@@ -95,6 +109,20 @@ export async function api<T>(
     ].every((k) => finite((v.metrics as Record<string, unknown>)[k])) &&
     (v.metrics.symmetry === null || finite(v.metrics.symmetry)) &&
     [v.angle, v.offset_x, v.offset_y].every(finite);
+  const v5Layout = (v: unknown): boolean => {
+    if (!layout(v) || !record(v)) return false;
+    const parts = v.parts as Record<string, unknown>[];
+    const metrics = v.metrics as Record<string, unknown>;
+    const numbers = [v.angle, v.offset_x, v.offset_y, ...parts.flatMap(p => [p.width, p.height, p.min_width, p.area]),
+      ...['min_width', 'room_area', 'laying_area', 'covered_area', 'grout_area', 'waste_area', 'waste_percent'].map(k => metrics[k])];
+    if (metrics.symmetry !== null) numbers.push(metrics.symmetry);
+    const points = (rings: unknown) => Array.isArray(rings) && rings.every((ring: unknown) => Array.isArray(ring) && ring.every((point: unknown) => Array.isArray(point) && point.length === 2 && point.every(isTenth)));
+    return numbers.every(n => typeof n === 'number' && isTenth(n)) &&
+      ['tiles', 'full', 'cut', 'fragments', 'warnings'].every(key =>
+        Number.isSafeInteger(metrics[key]) && (metrics[key] as number) >= 0) &&
+      parts.every(p => points(p.rings) && Array.isArray(p.center) && p.center.every(isTenth)) &&
+      Array.isArray(v.region) && v.region.every(points);
+  };
   let valid = false;
   if (object && route === "plan/deletion-preview") {
     const request = project as {
@@ -121,7 +149,7 @@ export async function api<T>(
         (i) =>
           record(i) &&
           typeof i.code === "string" &&
-          typeof i.message === "string" &&
+          typeof i.message === "string" && !includesCoordinatePair(i.message) &&
           strings(i.entityIds) &&
           strings(i.affectedRoomKeys) &&
           ["global", "component", "room"].includes(i.scope as string),
@@ -173,7 +201,7 @@ export async function api<T>(
       Array.isArray(object.measurements);
     if (valid) {
       try {
-        graphSchema(object.graph);
+        const graph = graphSchema(object.graph);
         valid =
           (object.faces as unknown[]).every(
             (f) =>
@@ -181,18 +209,22 @@ export async function api<T>(
               typeof f.topologyKey === "string" &&
               typeof f.dependencyKey === "string" &&
               typeof f.measurementKey === "string" &&
-              polygon(f.axisPolygon) &&
-              (f.polygon === null ? f.areaMm2 === null : polygon(f.polygon) && finite(f.areaMm2)) &&
+              tenthPolygon(f.axisPolygon) &&
+              (f.polygon === null ? f.areaMm2 === null : tenthPolygon(f.polygon) && isTenth(f.areaMm2 as number)) &&
               record(f.validation) &&
               typeof f.validation.valid === "boolean",
           ) &&
           (object.issues as unknown[]).every(
             (i) =>
               record(i) &&
-              typeof i.message === "string" &&
+              typeof i.message === "string" && !includesCoordinatePair(i.message) &&
               Array.isArray(i.entityIds) &&
               Array.isArray(i.affectedRoomKeys),
           );
+        if (valid) valid = (object.wallArea as unknown[]).every(tenthPolygon) &&
+          graph.vertices.every(v => isTenth(v.x) && isTenth(v.y)) &&
+          graph.chains.every(c => isTenth(c.thicknessMm)) &&
+          graph.constraints.every(c => isTenth(c.value));
       } catch {
         valid = false;
       }
@@ -211,7 +243,7 @@ export async function api<T>(
       const issue = (v: unknown): boolean =>
         record(v) &&
         typeof v.code === "string" &&
-        typeof v.message === "string" &&
+        typeof v.message === "string" && !includesCoordinatePair(v.message) &&
         strings(v.entityIds) &&
         strings(v.affectedRoomKeys) &&
         ["global", "component", "room"].includes(v.scope as string);
@@ -234,7 +266,7 @@ export async function api<T>(
             typeof m.key === "string" &&
             typeof m.kind === "string" &&
             record(m.target) &&
-            (m.value === null || finite(m.value)) &&
+            (m.value === null || isTenth(m.value as number)) &&
             ["entered", "derived"].includes(m.source as string),
         ) &&
         (object.issues as unknown[]).every(issue);
@@ -265,7 +297,7 @@ export async function api<T>(
       v.issues.every(
         (i) =>
           record(i) &&
-          typeof i.message === "string" &&
+          typeof i.message === "string" && !includesCoordinatePair(i.message) &&
           typeof i.code === "string" &&
           [i.wallIds, i.vertexIds, i.constraintIds].every(
             (a) => Array.isArray(a) && a.every((x) => typeof x === "string"),
@@ -291,9 +323,9 @@ export async function api<T>(
     }
   } else if (object) {
     valid =
-      route === "optimize"
-        ? Array.isArray(object.variants) && object.variants.every(layout)
-        : layout(object);
+      route === "optimize" || route === "v5/optimize"
+        ? Array.isArray(object.variants) && object.variants.every(route === "v5/optimize" ? v5Layout : layout)
+        : route === "v5/layout" ? v5Layout(object) : layout(object);
   }
   if (!valid) {
     throw new Error(

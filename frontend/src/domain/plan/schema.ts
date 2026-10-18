@@ -1,5 +1,6 @@
 import { normalizeRoomNames } from "./rooms";
-import type { GraphSnapshot, ProjectDocumentV4 } from "./types";
+import type { GraphSnapshot, ProjectDocumentV4, ProjectDocumentV5 } from "./types";
+import { requireTenth } from "./precision";
 const fail = (): never => {
   throw new Error(
     "Некорректный файл проекта: проверьте версию, поля и связи элементов.",
@@ -512,3 +513,46 @@ export function parseV4(value: unknown): ProjectDocumentV4 {
   return document;
 }
 export const parseV3 = parseV4;
+
+/** Validate persisted v5 measurements without quantizing revisions or viewport state. */
+export function parseV5(value: unknown): ProjectDocumentV5 {
+  const input = obj(value);
+  if (input.schemaVersion !== 5) fail();
+  const parsed = parseV4({ ...input, schemaVersion: 4 });
+  const tenth = (value: number | null | undefined) => {
+    if (value != null) requireTenth(value);
+  };
+  const graph = (snapshot: GraphSnapshot) => {
+    const connected = new Set(snapshot.segments.flatMap(s => [s.startVertexId, s.endVertexId]));
+    for (const vertex of snapshot.vertices) {
+      if (!connected.has(vertex.id)) fail();
+      tenth(vertex.x); tenth(vertex.y);
+    }
+    for (const chain of snapshot.chains) tenth(chain.thicknessMm);
+    for (const constraint of snapshot.constraints) {
+      if (constraint.kind === 'angle') fail();
+      tenth(constraint.value);
+    }
+  };
+  graph(parsed.plan.draft);
+  if (parsed.plan.pendingEdit) {
+    graph(parsed.plan.pendingEdit.basisGraph);
+    const command = parsed.plan.pendingEdit.command;
+    if (['addVertex', 'moveVertex', 'connect', 'setAngle'].includes(command.type)) fail();
+    const checkPoint = (point: {x: number; y: number}) => { tenth(point.x); tenth(point.y); };
+    if (command.type === 'drawWall') { checkPoint(command.start); checkPoint(command.end); tenth(command.thicknessMm); }
+    if (command.type === 'addTemplate') { checkPoint(command.origin); for (const n of [command.width, command.height, command.notchWidth, command.notchHeight, command.thicknessMm]) tenth(n); }
+    if (command.type === 'setWallThickness') tenth(command.thicknessMm);
+    if (command.type === 'setLength' || command.type === 'setOrientation') tenth(command.value);
+  }
+  if (parsed.plan.restorePoint) graph(parsed.plan.restorePoint.graph);
+  for (const room of parsed.rooms) {
+    for (const n of [room.material.tile, room.material.grout, room.rules.gap, room.rules.threshold, room.rules.angle]) tenth(n);
+    for (const entry of room.acknowledgment?.entries ?? []) tenth(entry.displayedValue);
+    if (room.confirmed) {
+      graph(room.confirmed.graph);
+      for (const entry of room.confirmed.acknowledgment?.entries ?? []) tenth(entry.displayedValue);
+    }
+  }
+  return { ...parsed, schemaVersion: 5 };
+}

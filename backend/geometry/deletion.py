@@ -125,4 +125,4 @@ def apply_deletion(basis, target, impact_key, command_id):
     impact = plan_deletion(basis, target)
     if impact['impactKey'] != impact_key:
         raise GeometryRejection([issue('deletion_preview_stale', 'План изменился. Откройте предварительный просмотр удаления заново.', [], 'global')])
-    return cascade(basis, impact['segmentIds'], impact['vertexIds'], command_id)[0]
+    return cascade(basis, impact['segmentIds'], impact['vertexIds'], command_id, True)[0]

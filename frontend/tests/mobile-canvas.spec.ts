@@ -3,7 +3,7 @@ import { canvasPick, graphRectangle, openGraph, openProject, screenPoint, setSid
 
 test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
 
-const toolNames = ["Выбрать", "Стена", "Переместить полотно", "Выбрать помещение"];
+const toolNames = ["Выбрать", "Стена", "Выбрать помещение"];
 
 test("mobile wall uses two taps and keeps the first point through a pan", async ({ page }) => {
   await openGraph(page, { vertices: [], segments: [], chains: [], voids: [], constraints: [], fieldInputs: {} },
@@ -90,7 +90,17 @@ test("perpendicular candidate from a slanted wall keeps a precise right angle", 
   const vertices = (await stored(page)).plan.draft.vertices;
   const newEnd = vertices.find((v: { id: string }) => v.id !== "a" && v.id !== "b");
   expect(Math.abs((newEnd.x - 1000) + (newEnd.y - 1000))).toBeLessThan(0.01);
+  const dx = newEnd.x - 1000, dy = newEnd.y - 1000;
+  const distance = Math.hypot(dx, dy);
+  const mark = Math.round(distance / 100) * 100;
+  const ideal = mark / Math.sqrt(2);
+  expect(Math.abs(Math.abs(dx) - ideal)).toBeLessThanOrEqual(0.08);
+  expect(Math.abs(Math.abs(dy) - ideal)).toBeLessThanOrEqual(0.08);
+  expect(Math.abs(distance - mark)).toBeLessThanOrEqual(0.1);
+  expect(Math.abs(Math.atan2(Math.abs(dx + dy), Math.abs(dx - dy)) * 180 / Math.PI)).toBeLessThanOrEqual(0.1);
   await touch.close();
+  await page.reload();
+  expect((await stored(page)).plan.draft.vertices.find((v: { id: string }) => v.id === newEnd.id)).toEqual(newEnd);
 });
 
 test("edge of a wall-end touch target uses the exact stored junction", async ({ page }) => {
@@ -166,9 +176,9 @@ test("mobile major-grid candidates thin out on zoom out and stay 44px apart", as
   await page.getByRole("button", { name: "Стена", exact: true }).click();
   const countFar = await page.locator('[data-candidate="majorGrid"]').count();
   await page.evaluate(() => {
-    const catalog = JSON.parse(localStorage.getItem("plitka-projects-v4")!);
+    const catalog = JSON.parse(localStorage.getItem("plitka-projects-v5")!);
     catalog.projects[0].viewport.zoom = 8;
-    localStorage.setItem("plitka-projects-v4", JSON.stringify(catalog));
+    localStorage.setItem("plitka-projects-v5", JSON.stringify(catalog));
   });
   await page.reload();
   await setSidebarOpen(page, true);
@@ -239,9 +249,13 @@ test("Escape, tool switch and explicit cancel discard an unfinished mobile wall"
   await tap(1201);
   await page.locator("svg[data-geometry]").press("Escape");
   await expect(page.getByRole("button", { name: "Отменить начало стены" })).toHaveCount(0);
+  await setSidebarOpen(page, true);
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
   await tap(1202);
+  await setSidebarOpen(page, true);
   await page.getByRole("button", { name: "Выбрать", exact: true }).click();
   await expect(page.getByRole("button", { name: "Отменить начало стены" })).toHaveCount(0);
+  await setSidebarOpen(page, true);
   await page.getByRole("button", { name: "Стена", exact: true }).click();
   await tap(1203);
   await page.getByRole("button", { name: "Отменить начало стены" }).click();
@@ -256,13 +270,14 @@ for (const width of [320, 375, 430]) {
     await openGraph(page, graphRectangle(), { zoom: 0.2 });
     const canvas = page.locator("svg[data-geometry]");
     const baseline = await canvas.getAttribute("data-geometry");
-    expect(await page.locator(".canvas-grid-major line").count()).toBeGreaterThan(0);
+    await expect(page.locator(".canvas-grid-major line")).toHaveCount(0);
     await expect(page.locator(".canvas-grid-minor line")).toHaveCount(0);
+    expect(await page.locator(".canvas-grid-thousand line").count()).toBeGreaterThan(0);
     const initialWidth = await canvas.evaluate((svg) => svg.getBoundingClientRect().width);
     await page.evaluate((canvasWidth) => {
-      const state = JSON.parse(localStorage.getItem("plitka-projects-v4")!);
+      const state = JSON.parse(localStorage.getItem("plitka-projects-v5")!);
       state.projects[0].viewport.zoom = Math.max(8, 5400 / canvasWidth);
-      localStorage.setItem("plitka-projects-v4", JSON.stringify(state));
+      localStorage.setItem("plitka-projects-v5", JSON.stringify(state));
     }, initialWidth);
     await page.reload();
     await expect.poll(() => page.locator(".canvas-grid-minor line").count()).toBeGreaterThan(0);
@@ -292,7 +307,7 @@ test("resizing the open canvas clamps zoom to its new measured width", async ({ 
 
 test("pointer cancellation restores the last committed viewport", async ({ page }) => {
   await openGraph(page, graphRectangle());
-  await page.getByRole("button", { name: "Переместить полотно", exact: true }).click();
+
   const canvas = page.locator("svg[data-geometry]");
   const before = await canvas.getAttribute("viewBox");
   const beforeViewport = (await stored(page)).viewport;
@@ -307,7 +322,7 @@ test("pointer cancellation restores the last committed viewport", async ({ page 
 
 test("single touch pan follows the finger before release", async ({ page }) => {
   await openGraph(page, graphRectangle());
-  await page.getByRole("button", { name: "Переместить полотно", exact: true }).click();
+
   const canvas = page.locator("svg[data-geometry]");
   const geometry = await canvas.getAttribute("data-geometry");
   const initial = await canvas.getAttribute("viewBox");
@@ -322,11 +337,32 @@ test("single touch pan follows the finger before release", async ({ page }) => {
   await touch.close();
 });
 
+test('selected wall angle labels do not block a one-finger pan', async ({ page }) => {
+  await openGraph(page, graphRectangle());
+  await canvasPick(page, 'segment', 'as0');
+  const angle = page.locator('[data-angle-label]').first();
+  await expect(angle).toBeVisible();
+  const rect = await angle.boundingBox();
+  const x = rect!.x + rect!.width / 2, y = rect!.y + rect!.height / 2;
+  const intercepted = await page.evaluate(({ x, y }) =>
+    !!document.elementFromPoint(x, y)?.closest('.selected-wall-angles'), { x, y });
+  expect(intercepted).toBe(false);
+  await page.locator('svg[data-geometry]').press('Escape');
+  const canvas = page.locator('svg[data-geometry]');
+  const initial = await canvas.getAttribute('viewBox');
+  const touch = await touchSession(page);
+  await touch.dispatch('touchStart', [{ id: 905, x, y }]);
+  await touch.dispatch('touchMove', [{ id: 905, x: x + 40, y: y + 20 }]);
+  await expect.poll(() => canvas.getAttribute('viewBox')).not.toBe(initial);
+  await touch.dispatch('touchEnd', []);
+  await touch.close();
+});
+
 for (const width of [320, 375, 430]) {
   test(`ten single-finger pans track the pointer at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 812 });
     await openGraph(page, graphRectangle());
-    await page.getByRole("button", { name: "Переместить полотно", exact: true }).click();
+
     const canvas = page.locator("svg[data-geometry]");
     const geometry = await canvas.getAttribute("data-geometry");
     const touch = await touchSession(page);
@@ -520,6 +556,7 @@ for (const width of [320, 375, 430]) {
     const baseline = await touch.snapshot();
     const initialDraft = (await stored(page)).plan.draft;
     for (const name of toolNames) {
+      await setSidebarOpen(page, true);
       await page.getByRole("button", { name, exact: true }).click();
       for (let index = 0; index < 10; index++) {
         const first = { id: index * 2 + 1, x: width / 2 - 25, y: 420 };
@@ -551,7 +588,7 @@ for (const width of [320, 375, 430]) {
 
 test("pinch keeps the world point under the moving midpoint with an open panel", async ({ page }) => {
   await openGraph(page, graphRectangle());
-  await page.getByRole("button", { name: "Переместить полотно", exact: true }).click();
+
   const canvas = page.locator("svg[data-geometry]");
   const anchor = await canvas.evaluate((svg) => {
     const p = new DOMPoint(190, 420).matrixTransform((svg as SVGSVGElement).getScreenCTM()!.inverse());
@@ -616,9 +653,9 @@ test("pinch clamps at both zoom limits without changing the grid", async ({ page
   const maxZoom = Math.max(8, 5400 / (await canvas.evaluate((svg) => svg.getBoundingClientRect().width)));
   await expect.poll(async () => (await stored(page)).viewport.zoom).toBeCloseTo(maxZoom, 3);
   await page.evaluate(() => {
-    const state = JSON.parse(localStorage.getItem("plitka-projects-v4")!);
+    const state = JSON.parse(localStorage.getItem("plitka-projects-v5")!);
     state.projects[0].viewport.zoom = 0.25;
-    localStorage.setItem("plitka-projects-v4", JSON.stringify(state));
+    localStorage.setItem("plitka-projects-v5", JSON.stringify(state));
   });
   await page.reload();
   await settle(page);
@@ -641,3 +678,93 @@ for (const width of [320, 430]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
   });
 }
+
+for (const width of [320, 375, 430, 1440]) {
+  test(`three world aligned grid levels at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 812 });
+    await openGraph(page, graphRectangle(), { centerX: 2000, centerY: 2000, zoom: 0.2 });
+    const fine = page.locator('.canvas-grid-minor line');
+    const medium = page.locator('.canvas-grid-major line');
+    const thousand = page.locator('.canvas-grid-thousand line');
+    await expect(fine).toHaveCount(0);
+    await expect(medium).toHaveCount(0);
+    expect(await thousand.count()).toBeGreaterThan(0);
+    const gridStep = (await stored(page)).viewport.gridStepMm;
+    await page.getByRole('button', { name: 'Стена', exact: true }).click();
+    await expect(page.locator('[data-candidate="majorGrid"]').first()).toBeAttached();
+    await page.evaluate(() => {
+      const catalog = JSON.parse(localStorage.getItem('plitka-projects-v5')!);
+      catalog.projects[0].viewport.zoom = 8;
+      localStorage.setItem('plitka-projects-v5', JSON.stringify(catalog));
+    });
+    await page.reload(); await settle(page);
+    expect(await medium.count()).toBeGreaterThan(0);
+    const canvasWidth = await page.locator('svg[data-geometry]').evaluate(svg => svg.getBoundingClientRect().width);
+    if (canvasWidth * 8 / 9000 * 10 >= 6) expect(await fine.count()).toBeGreaterThan(0);
+    else await expect(fine).toHaveCount(0);
+    const values = await page.locator('.canvas-grid line').evaluateAll(nodes => nodes.map(node => ({
+      level: node.parentElement!.classList[1], x1: Number(node.getAttribute('x1')), x2: Number(node.getAttribute('x2')),
+      y1: Number(node.getAttribute('y1')), y2: Number(node.getAttribute('y2')),
+    })));
+    const keys = values.map(item => item.x1 === item.x2 ? `x:${item.x1}` : `y:${item.y1}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect((await stored(page)).viewport.gridStepMm).toBe(gridStep);
+    const tones = await page.locator('.canvas-grid').evaluateAll(nodes => nodes.map(node => {
+      const line = node.querySelector('line'); return line ? getComputedStyle(line).stroke : null;
+    }));
+    expect(new Set(tones.filter(Boolean)).size).toBeGreaterThanOrEqual(2);
+  });
+}
+
+for (const width of [320, 375, 430, 1440])
+test(`selected wall footprint covers a T junction at ${width}px without capturing clicks`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 812 });
+  const graph = {
+    vertices: [{ id: 'a', x: 0, y: 0 }, { id: 'm', x: 1000, y: 0 }, { id: 'b', x: 2000, y: 0 }, { id: 'branchEnd', x: 1000, y: 1000 }],
+    segments: [{ id: 's0', startVertexId: 'a', endVertexId: 'm', chainId: 'main' },
+      { id: 's1', startVertexId: 'm', endVertexId: 'b', chainId: 'main' },
+      { id: 'branch', startVertexId: 'm', endVertexId: 'branchEnd', chainId: 'side' }],
+    chains: [{ id: 'main', startVertexId: 'a', endVertexId: 'b', segmentIds: ['s0', 's1'], thicknessMm: 100 },
+      { id: 'side', startVertexId: 'm', endVertexId: 'branchEnd', segmentIds: ['branch'], thicknessMm: 100 }],
+    voids: [], constraints: [], fieldInputs: {},
+  };
+  await openGraph(page, graph, { centerX: 1000, centerY: 500, zoom: 4 });
+  await canvasPick(page, 'segment', 's0');
+  const strip = page.locator('[data-selected-wall-footprint="main"]');
+  await expect(strip).toHaveCount(1);
+  expect(await strip.evaluate(node => { const box = (node as SVGPathElement).getBBox(); return [box.x, box.y, box.width, box.height]; }))
+    .toEqual([0, -50, 2000, 100]);
+  await expect(strip).toHaveAttribute('pointer-events', 'none');
+  await expect(page.locator('.graph-wall.selected')).toHaveCount(0);
+  await expect(page.locator('[data-wall-handle]')).toHaveCount(3);
+  await canvasPick(page, 'segment', 'branch');
+  const side = page.locator('[data-selected-wall-footprint="side"]');
+  await expect(side).toHaveCount(1);
+  expect(await side.evaluate(node => { const box = (node as SVGPathElement).getBBox(); return [box.x, box.y, box.width, box.height]; }))
+    .toEqual([950, 0, 100, 1000]);
+  await canvasPick(page, 'segment', 's0');
+  await expect(strip).toHaveCount(1);
+  await page.locator('svg[data-geometry]').press('Escape');
+  await expect(strip).toHaveCount(0);
+});
+
+test('selected L junction paints each wall strip only to its own end', async ({ page }) => {
+  const graph = {
+    vertices: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 2000, y: 0 }, { id: 'c', x: 2000, y: 1000 }],
+    segments: [{ id: 'horizontal', startVertexId: 'a', endVertexId: 'b', chainId: 'h' },
+      { id: 'vertical', startVertexId: 'b', endVertexId: 'c', chainId: 'v' }],
+    chains: [{ id: 'h', startVertexId: 'a', endVertexId: 'b', segmentIds: ['horizontal'], thicknessMm: 100 },
+      { id: 'v', startVertexId: 'b', endVertexId: 'c', segmentIds: ['vertical'], thicknessMm: 100 }],
+    voids: [], constraints: [], fieldInputs: {},
+  };
+  await openGraph(page, graph, { centerX: 1000, centerY: 500, zoom: 4 });
+  await canvasPick(page, 'segment', 'horizontal');
+  const h = page.locator('[data-selected-wall-footprint="h"]');
+  expect(await h.evaluate(node => { const b = (node as SVGPathElement).getBBox(); return [b.x,b.y,b.width,b.height]; }))
+    .toEqual([0,-50,2000,100]);
+  await canvasPick(page, 'segment', 'vertical');
+  const v = page.locator('[data-selected-wall-footprint="v"]');
+  expect(await v.evaluate(node => { const b = (node as SVGPathElement).getBBox(); return [b.x,b.y,b.width,b.height]; }))
+    .toEqual([1950,0,100,1000]);
+  await expect(h).toHaveCount(0);
+});

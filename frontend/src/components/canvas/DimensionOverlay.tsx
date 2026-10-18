@@ -68,7 +68,7 @@ export default function DimensionOverlay({
         <path
           d={geometry.path}
           fill="none"
-          stroke="#9c4f25"
+          stroke="#555"
           strokeWidth={2 / scale}
         />
         {anglePair && (
@@ -88,13 +88,13 @@ export default function DimensionOverlay({
           strokeWidth={3 / scale}
           paintOrder="stroke"
         >
-          {geometry.value.toFixed(1)}°
+          {geometry.value.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}°
         </text>
       </g>
     );
   });
   return (
-    <g pointerEvents="none" fill="#354c42">
+    <g pointerEvents="none" fill="#333">
       {graph.segments.map((s) => {
         const a = vertices.get(s.startVertexId)!,
           b = vertices.get(s.endVertexId)!,
@@ -120,7 +120,7 @@ export default function DimensionOverlay({
                 d={`M ${x - 10 / scale} ${y - 5 / scale} L ${x} ${y} L ${x - 10 / scale} ${y + 5 / scale}`}
                 transform={`rotate(${(Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI} ${x} ${y})`}
                 fill="none"
-                stroke="#9c4f25"
+                stroke="#555"
                 strokeWidth={2 / scale}
               />
             )}

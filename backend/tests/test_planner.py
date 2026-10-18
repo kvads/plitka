@@ -1,7 +1,7 @@
 import math
 import pytest
 from fastapi.testclient import TestClient
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, MultiPolygon, box
 from shapely.ops import unary_union
 from backend.main import app, Project
 from backend.planner import prepare, calculate, optimize, dominates
@@ -124,3 +124,108 @@ def test_api_contract():
     r=client.post('/api/optimize',json=project().model_dump())
     assert r.status_code==200
     assert r.json()['variants'][0]['parts']
+    assert r.json()['variants'][0]['metrics']['room_area'] == 1.44
+
+
+def test_v5_layout_units_and_legacy_comparison():
+    payload = project().model_dump()
+    old = client.post('/api/layout', json=payload)
+    new = client.post('/api/v5/layout', json=payload)
+    assert old.status_code == new.status_code == 200
+    a = old.json()['metrics']['room_area'] * 1_000_000
+    b = new.json()['metrics']['room_area']
+    assert abs(a-b) <= max(100, a * 0.001)
+    assert b == 1_440_000
+    assert new.json()['parts'][0]['area'] > 1
+    body = new.json()
+    pieces = [Polygon(part['rings'][0], part['rings'][1:]) for part in body['parts']]
+    assert body['metrics']['fragments'] == len(pieces)
+    assert body['metrics']['tiles'] == body['metrics']['full'] + body['metrics']['cut']
+    assert body['metrics']['covered_area'] == round(unary_union(pieces).area, 1)
+    assert all(part['area'] == round(piece.area, 1) for part, piece in zip(body['parts'], pieces))
+    assert all(value * 10 == round(value * 10) for value in [
+        body['metrics'][key] for key in ('room_area', 'laying_area', 'covered_area', 'grout_area', 'waste_area', 'waste_percent')])
+
+
+def test_v5_rejects_input_outside_tenth_step():
+    payload = project().model_dump()
+    payload['outline'][1] = [1200.01, 0]
+    assert client.post('/api/v5/layout', json=payload).status_code == 422
+    assert client.post('/api/v5/optimize', json=payload).status_code == 422
+    assert client.post('/api/layout', json=payload).status_code == 200
+
+
+def test_v5_optimizer_counts_unique_valid_offsets():
+    from backend.planner_v5 import offset_ticks
+    assert offset_ticks(0, 602) == offset_ticks(602, 602)
+    assert offset_ticks(-602, 602) == offset_ticks(0, 602)
+    response = client.post('/api/v5/optimize', json=project().model_dump())
+    assert response.status_code == 200
+    result = response.json()
+    assert result['evaluated'] >= result['pareto_count'] >= 1
+    assert result['variants']
+    for variant in result['variants']:
+        assert variant['metrics']['room_area'] == 1_440_000
+        assert variant['metrics']['tiles'] == variant['metrics']['full'] + variant['metrics']['cut']
+        assert all(part['area'] >= 0.1 for part in variant['parts'])
+        assert all(part['area'] * 10 == round(part['area'] * 10) for part in variant['parts'])
+
+
+def test_v5_small_positive_fragment_is_checked_before_area_filtering():
+    from backend.planner_v5 import _polys, _area
+    tiny = Polygon([(0, 0), (0.1, 0), (0, 0.1)])
+    assert 0 < tiny.area < 0.05
+    assert len(_polys(tiny)) == 1
+    assert _area(0.1, 'Фрагмент плитки') == 0.1
+    with pytest.raises(ValueError, match='положительная площадь'):
+        _area(tiny.area, 'Фрагмент плитки')
+
+
+def test_v5_offset_rounding_uses_symmetric_tenths_and_one_periodic_key():
+    from backend.planner_v5 import offset_ticks
+    assert offset_ticks(0.05, 602) == 1
+    assert offset_ticks(-0.05, 602) == 6019
+    assert offset_ticks(0, 602) == offset_ticks(602, 602) == offset_ticks(-602, 602)
+
+
+def test_v5_rejects_rounded_fragment_outside_region_without_partial_layout():
+    payload = project(outline=[(0, 0), (1200.1, 0), (0, 1200.1)]).model_dump()
+    for route in ('/api/v5/layout', '/api/v5/optimize'):
+        response = client.post(route, json=payload)
+        assert response.status_code == 422
+        body = response.json()
+        assert list(body) == ['detail']
+        assert 'фрагмент' in body['detail'].lower()
+        assert '(' not in body['detail']
+
+
+def test_v5_rejects_self_intersection_and_colliding_fragments_after_rounding():
+    from backend.planner_v5 import _snap_geometry
+    simple_before_snap = Polygon([(0, 0), (1, 0), (1, 1), (0.04, 0.04), (0, 1)])
+    separated_before_snap = MultiPolygon([box(0, 0, 1, 1), box(1.04, 0, 2.04, 1)])
+    assert simple_before_snap.is_valid and separated_before_snap.is_valid
+    with pytest.raises(ValueError, match='контур'):
+        _snap_geometry(simple_before_snap)
+    with pytest.raises(ValueError, match='перекрылась'):
+        _snap_geometry(separated_before_snap)
+
+
+def test_v5_optimizer_skips_invalid_best_candidate_before_ranking(monkeypatch):
+    from backend import planner_v5
+    evaluated = []
+    def candidate(_project, dx, dy, *, detail=True):
+        key = (planner_v5.offset_ticks(dx, 600), planner_v5.offset_ticks(dy, 600))
+        if not detail:
+            evaluated.append(key)
+        if key == (0, 0):
+            raise ValueError('Непригодный контур плитки.')
+        return {'offset_x': key[0] / 10, 'offset_y': key[1] / 10,
+                'metrics': {'warnings': 0, 'min_width': 100, 'cut': 1,
+                            'tiles': 4, 'symmetry': 0}}
+    monkeypatch.setattr(planner_v5, 'calculate_v5', candidate)
+    result = planner_v5.optimize_v5(project())
+    assert len(evaluated) == len(set(evaluated))
+    assert result['evaluated'] == len(evaluated) - 1
+    assert result['pareto_count'] >= 1
+    assert all((variant['offset_x'], variant['offset_y']) != (0, 0)
+               for variant in result['variants'])

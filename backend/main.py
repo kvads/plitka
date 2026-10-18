@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from .planner import calculate, optimize, prepare
+from .planner_v5 import calculate_v5, optimize_v5
 from .database import check_database
 from psycopg import Error as DatabaseError
 
@@ -50,6 +51,22 @@ def layout(project: Project):
 def search(project: Project):
     try:
         return optimize(project)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/v5/layout")
+def layout_v5(project: Project):
+    try:
+        return calculate_v5(project, project.offset_x, project.offset_y)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/v5/optimize")
+def search_v5(project: Project):
+    try:
+        return optimize_v5(project)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 

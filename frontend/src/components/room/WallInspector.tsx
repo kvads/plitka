@@ -91,15 +91,11 @@ export default function WallInspector({
         >
           {c.walls.map((w, n) => (
             <option key={w.id} value={w.id}>
-              Стена {n + 1}: {n + 1} → {((n + 1) % c.vertices.length) + 1}
+              Стена {n + 1}
             </option>
           ))}
         </select>
       </label>
-      <p>
-        Начало ({a.x.toFixed(1)}; {a.y.toFixed(1)}) → конец ({b.x.toFixed(1)};{" "}
-        {b.y.toFixed(1)})
-      </p>
       {field(
         "length",
         "Длина стены",

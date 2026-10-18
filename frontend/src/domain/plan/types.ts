@@ -212,6 +212,7 @@ export type ProjectDocumentV4 = {
     gridStepMm: number;
   };
 };
+export type ProjectDocumentV5 = Omit<ProjectDocumentV4, "schemaVersion"> & { schemaVersion: 5 };
 export type ProjectDocumentV3 = ProjectDocumentV4;
 export const emptyGraph = (): GraphSnapshot => ({
   vertices: [],
@@ -282,6 +283,6 @@ export interface DeleteProjectIntent {
   requestId: string;
 }
 export type DeleteProjectOutcome =
-  | { status: 'deleted' | 'alreadyMissing'; projectId: string; projects: ProjectDocumentV3[] }
-  | { status: 'conflict'; projectId: string; projects: ProjectDocumentV3[]; current: ProjectDocumentV3 };
+  | { status: 'deleted' | 'alreadyMissing'; projectId: string; projects: ProjectDocumentV5[] }
+  | { status: 'conflict'; projectId: string; projects: ProjectDocumentV5[]; current: ProjectDocumentV5 };
 export type ProjectDeletionState = 'idle' | 'confirming' | 'deleting' | 'deleted' | 'failed' | 'conflict';

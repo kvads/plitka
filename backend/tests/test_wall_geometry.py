@@ -43,6 +43,47 @@ def test_v4_requires_positive_wall_thickness():
         assert client.post("/api/plan/validate", json=request(bad)).status_code == 422
 
 
+def test_v4_graph_precision_and_user_issue_text():
+    precise = square()
+    precise['vertices'][0]['x'] = 0.01
+    assert client.post('/api/plan/validate', json=request(precise)).status_code == 422
+    duplicate = square()
+    duplicate['vertices'][1]['x'] = 0
+    result = client.post('/api/plan/validate', json=request(duplicate))
+    assert result.status_code == 200
+    issues = result.json()['issues']
+    collisions = [item for item in issues if item['code'] == 'coincident_vertices']
+    assert collisions
+    assert all('(' not in item['message'] and 'вершины v' not in item['message'].lower() for item in collisions)
+    assert all(item['entityIds'] for item in collisions)
+
+
+def test_diagonal_t_junction_uses_one_tenth_grid_vertex_and_rejects_overlap_atomically():
+    empty = {'vertices': [], 'segments': [], 'chains': [], 'voids': [],
+             'constraints': [], 'fieldInputs': {}}
+    first_command = {'type': 'drawWall', 'start': {'x': -1000.1, 'y': -1000.1},
+                     'end': {'x': 1000.1, 'y': 1000.1}, 'thicknessMm': 100.1}
+    first = command(empty, first_command, 'diagonal').json()
+    assert first['status'] == 'applied'
+    branch_command = {'type': 'drawWall', 'start': {'x': 500.1, 'y': 900.1},
+                      'end': {'x': 500.1, 'y': 100.1}, 'thicknessMm': 100.1}
+    branch = command(first['graph'], branch_command, 'branch').json()
+    assert branch['status'] == 'applied'
+    graph = branch['graph']
+    joint = [v for v in graph['vertices'] if v['x'] == v['y'] == 500.1]
+    assert len(joint) == 1
+    assert sum(joint[0]['id'] in (s['startVertexId'], s['endVertexId'])
+               for s in graph['segments']) == 3
+    assert all(round(v[axis] * 10) == v[axis] * 10 for v in graph['vertices'] for axis in ('x', 'y'))
+    replay = command(first['graph'], branch_command, 'branch').json()
+    assert replay['graph'] == graph
+    assert replay['faces'] == branch['faces']
+    overlap = command(graph, {'type': 'drawWall', 'start': {'x': 100, 'y': 100},
+                              'end': {'x': 900, 'y': 900}, 'thicknessMm': 100}, 'overlap').json()
+    assert overlap['status'] == 'invalid' and overlap['graph'] == graph
+    assert overlap['issues'] and all('(' not in issue['message'] for issue in overlap['issues'])
+
+
 def test_square_wall_area_and_usable_room():
     response = client.post("/api/plan/validate", json=request(square()))
     assert response.status_code == 200

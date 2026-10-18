@@ -1,4 +1,4 @@
-import { addPoint, canvasPick } from "./fixtures/projects";
+import { addPoint, canvasPick, goStage, setSidebarOpen } from "./fixtures/projects";
 import { test, expect } from "@playwright/test";
 import {
   openProject,
@@ -16,9 +16,16 @@ async function calculate(page: import("@playwright/test").Page) {
 test("optimize inspect shift lock and export", async ({ page }) => {
   await openProject(page);
   await toRules(page);
+  const optimizeResponse = page.waitForResponse('**/api/v5/optimize');
   await calculate(page);
+  const optimized = await (await optimizeResponse).json();
+  expect(optimized.variants[0].metrics.room_area).toBeGreaterThan(1_000_000);
+  expect(optimized.variants[0].metrics.room_area * 10).toBe(Math.round(optimized.variants[0].metrics.room_area * 10));
+  await expect(page.getByText(/Плиток: .*отходы: .*%/)).toBeVisible();
   await page.getByLabel("Деталь", { exact: true }).selectOption({ index: 1 });
+  const layoutResponse = page.waitForResponse('**/api/v5/layout');
   await commit(page, "Сдвиг X", "125");
+  const acceptedLayout = await (await layoutResponse).json();
   await expect(
     page.getByRole("button", { name: "План с размерами · SVG" }),
   ).toBeEnabled();
@@ -31,12 +38,25 @@ test("optimize inspect shift lock and export", async ({ page }) => {
   ]) {
     const wait = page.waitForEvent("download");
     await page.getByRole("button", { name, exact: true }).click();
-    expect(await (await wait).failure()).toBeNull();
+    const download = await wait;
+    expect(await download.failure()).toBeNull();
+    if (name.endsWith('SVG')) {
+      const { readFile } = await import('node:fs/promises');
+      const svg = await readFile(await download.path(), 'utf8');
+      expect(svg).toContain('размеры в мм');
+      expect(svg).not.toContain('м²');
+    } else if (name.endsWith('CSV')) {
+      const { readFile } = await import('node:fs/promises');
+      const csv = await readFile(await download.path(), 'utf8');
+      expect(csv).toContain('Площадь мм²');
+      const firstArea = Number(csv.split('\n')[1].split(';')[3].replace(/\s/g, '').replace(',', '.'));
+      expect(firstArea).toBe(acceptedLayout.parts[0].area);
+    }
   }
   await settle(page);
   await page.reload();
   await expect(
-    page.getByRole("heading", { name: "Варианты", exact: true }),
+    page.getByRole("heading", { name: "Раскладка", exact: true }),
   ).toBeVisible();
   await expect(page.locator(".variant-list button")).toHaveCount(0);
 });
@@ -59,12 +79,12 @@ for (const response of [
   test("recovery " + response.name, async ({ page }) => {
     await openProject(page);
     await toRules(page);
-    await page.route("**/api/optimize", (r) =>
+    await page.route("**/api/v5/optimize", (r) =>
       r.fulfill({ status: response.status, body: response.body }),
     );
     await page.getByRole("button", { name: "Подобрать раскладку" }).click();
     await expect(page.getByRole("alert")).toContainText(response.message);
-    await page.unroute("**/api/optimize");
+    await page.unroute("**/api/v5/optimize");
     await calculate(page);
   });
 test("late optimize cannot reopen results after navigating back", async ({
@@ -76,7 +96,7 @@ test("late optimize cannot reopen results after navigating back", async ({
   const gate = new Promise<void>((r) => (release = r));
   let entered!: () => void;
   const hit = new Promise<void>((r) => (entered = r));
-  await page.route("**/api/optimize", async (route) => {
+  await page.route("**/api/v5/optimize", async (route) => {
     const res = await route.fetch();
     entered();
     await gate;
@@ -86,16 +106,15 @@ test("late optimize cannot reopen results after navigating back", async ({
   await hit;
   await page.getByRole("button", { name: "Назад", exact: true }).click();
   release();
-  await expect(
-    page.getByRole("button", { name: "1. План", exact: true }),
-  ).toHaveAttribute("aria-current", "step");
+  await setSidebarOpen(page, true);
+  await expect(page.getByRole("button", { name: "1. План", exact: true })).toHaveAttribute("aria-current", "step");
   await expect(page.locator(".variant-list button")).toHaveCount(0);
 });
 test("failed shift blocks export until cancelled", async ({ page }) => {
   await openProject(page);
   await toRules(page);
   await calculate(page);
-  await page.route("**/api/layout", (r) =>
+  await page.route("**/api/v5/layout", (r) =>
     r.fulfill({ status: 500, body: "" }),
   );
   await commit(page, "Сдвиг X", "125");
@@ -136,10 +155,10 @@ test("editing inputs invalidates variants while navigation retains them", async 
   await toRules(page);
   await calculate(page);
   await page.getByRole("button", { name: "Назад", exact: true }).click();
-  await page.getByRole("button", { name: /Варианты/ }).click();
+  await goStage(page, "variants");
   await expect(page.locator(".variant-list button").first()).toBeVisible();
   await page.getByRole("button", { name: "Назад", exact: true }).click();
-  await page.getByRole("button", { name: "2. Варианты", exact: true }).click();
+  await goStage(page, "variants");
   await commit(page, "Угол укладки", "45");
   await expect(page.getByRole("button", { name: "План с размерами · SVG", exact: true })).toBeDisabled();
   await settle(page);
@@ -157,7 +176,7 @@ test("late layout response cannot replace a cancelled shift", async ({
   let release!: () => void, entered!: () => void;
   const gate = new Promise<void>((r) => (release = r)),
     hit = new Promise<void>((r) => (entered = r));
-  await page.route("**/api/layout", async (route) => {
+  await page.route("**/api/v5/layout", async (route) => {
     const response = await route.fetch();
     entered();
     await gate;
@@ -177,13 +196,14 @@ test("release fixed and undo cannot revive old results", async ({ page }) => {
   await openGraph(page, graphMeasured());
   await toRules(page);
   await calculate(page);
-  await page.getByRole("button", { name: "1. План", exact: true }).click();
+  await goStage(page, "object");
   await canvasPick(page, "constraint", "length4000");
   await page
     .getByRole("button", { name: "Снять фиксацию", exact: true })
     .click();
   await settle(page);
   await confirmRoom(page);
+  await setSidebarOpen(page, true);
   await page
     .getByRole("button", { name: "Отменить правку", exact: true })
     .click();
@@ -205,7 +225,7 @@ test("deletion condition without coordinate change invalidates results through U
   await toRules(page);
   await calculate(page);
   const before = (await stored(page)).plan.draft.vertices;
-  await page.getByRole("button", { name: "1. План", exact: true }).click();
+  await goStage(page, "object");
   await canvasPick(page, "constraint", "length4000");
   await page
     .getByRole("button", { name: "Удалить условие", exact: true })
@@ -233,7 +253,7 @@ test("context alternative clears failed manual shift and exports accepted varian
   await openGraph(page, graphMeasured());
   await toRules(page);
   await calculate(page);
-  await page.route("**/api/layout", (r) =>
+  await page.route("**/api/v5/layout", (r) =>
     r.fulfill({ status: 500, body: "" }),
   );
   await commit(page, "Сдвиг X", "25");
@@ -257,7 +277,8 @@ test("deletion shared room makes neighbour unready and Undo requires a new calcu
   await canvasPick(page, "room", 1);
   await toRules(page);
   await calculate(page);
-  await page.getByRole("button", { name: "1. План", exact: true }).click();
+  await goStage(page, "object");
+  await setSidebarOpen(page, true);
   await page
     .getByRole("button", { name: "Выбрать помещение", exact: true })
     .click();
@@ -272,9 +293,10 @@ test("deletion shared room makes neighbour unready and Undo requires a new calcu
   const after = await stored(page);
   expect(after.rooms).toHaveLength(1);
   expect(after.rooms[0].binding).toBe("detached");
-  await page.getByRole("button", { name: "2. Варианты", exact: true }).click();
+  await goStage(page, "variants");
   await expect(page.getByText("Выберите замкнутое помещение для подбора.", { exact: false })).toBeVisible();
-  await page.getByRole("button", { name: "1. План", exact: true }).click();
+  await goStage(page, "object");
+  await setSidebarOpen(page, true);
   await page
     .getByRole("button", { name: "Отменить правку", exact: true })
     .click();
@@ -294,6 +316,7 @@ test("context metadata edits retain accepted result and export", async ({
   await openProject(page);
   await toRules(page);
   await calculate(page);
+  await setSidebarOpen(page, true);
   await page.getByRole("button", { name: "Проект", exact: true }).click();
   await page
     .getByLabel("Название проекта", { exact: true })

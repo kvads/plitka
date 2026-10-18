@@ -6,6 +6,7 @@ from .faces import inspect
 from .graph_solver import solve
 from .deletion import cascade, apply_deletion, remove_condition_raw
 from .wall_geometry import disconnected_wall_overlaps
+from .precision import canonical_graph
 DIMENSION={'setLength','setAngle','setOrientation','releaseConstraint','reconcile'}
 
 def nudge_wall_handle(g,c):
@@ -44,7 +45,7 @@ def apply_condition(g,c):
 
 
 def delete_elements(g,c,command_id):
-    result, impact = cascade(g, c['segmentIds'], c['vertexIds'], command_id)
+    result, impact = cascade(g, c['segmentIds'], c['vertexIds'], command_id, True)
     if not set(impact['constraintIds']) <= set(c['acknowledgedConstraintIds']):
         raise ValueError('Подтвердите удаление всех связанных размерных условий')
     g.clear()
@@ -98,6 +99,7 @@ def execute(basis,c,command_id):
                 points=[(x,y),(x+w,y),(x+w,y+h-nh),(x+w-nw,y+h-nh),(x+w-nw,y+h),(x,y+h)]
             ids=[add_vertex(g,dict(x=p[0],y=p[1]),command_id,'template:'+str(i)) for i,p in enumerate(points)]
             for i,a in enumerate(ids):split.update(connect(g,a,{'vertexId':ids[(i+1)%len(ids)]},command_id+':'+str(i),c['thicknessMm']))
+        canonical_graph(g)
         GraphSnapshot.model_validate(g)
         collisions=collision_issues(basis,g)
         if collisions:raise GeometryRejection(collisions)

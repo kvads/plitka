@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import CanvasDialog from './CanvasDialog';
-import { deleteV3 } from '../../domain/plan/storage';
+import { deleteV5 } from '../../domain/plan/storage';
 import type { DeleteProjectIntent, DeleteProjectOutcome, ProjectDeletionState } from '../../domain/plan/types';
-export default function DeleteProjectDialog({ intent: initial, onCancel, onDone, refreshIntent, onConfirm = (intent) => deleteV3(intent.projectId, intent.expectedRevision) }: {
+export default function DeleteProjectDialog({ intent: initial, onCancel, onDone, refreshIntent, onConfirm = (intent) => deleteV5(intent.projectId, intent.expectedRevision) }: {
   intent: DeleteProjectIntent;
   onCancel: () => void;
   onDone: (outcome: DeleteProjectOutcome) => void;

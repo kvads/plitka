@@ -2,6 +2,7 @@ import copy,math
 import numpy as np
 from scipy.optimize import least_squares
 from .graph_validation import maps,xy,measure,validate,issue,constraint_ids,collision_issues
+from .precision import canonical_graph
 
 
 def solve(g,command,basis):
@@ -68,10 +69,7 @@ def solve(g,command,basis):
             set_coords(fit.x)
         except (ValueError,FloatingPointError):return g,False
     else:set_coords([])
-    # Remove insignificant floating noise without relaxing entered dimensions.
-    for id in free:
-        v=vs[id]
-        for k in ['x','y']:
-            if abs(v[k]-round(v[k]))<1e-8:v[k]=float(round(v[k]))
+    # Validate the same one-decimal geometry that the command will persist.
+    canonical_graph(g)
     errors=[e for e in validate(g) if e["scope"]=="global" or set(e["entityIds"]) & seed]
     return g,not errors and not collision_issues(basis,g)

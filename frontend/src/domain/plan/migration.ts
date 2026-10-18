@@ -11,7 +11,7 @@ import type {
 } from "./types";
 import { newRoom } from "./rooms";
 import { parseV3 } from "./schema";
-import { emptyGraph, type ProjectDocumentV4 } from "./types";
+import { emptyGraph, type ProjectDocumentV4, type ProjectDocumentV5 } from "./types";
 export function convertGraph(
   g: GeometrySnapshot,
   projectId: string,
@@ -318,4 +318,8 @@ export function createV4(name: string, address = "", id = crypto.randomUUID()): 
     workflow: { requestedStage: "object" },
     viewport: { centerX: 0, centerY: 0, zoom: 1, gridStepMm: 100 },
   };
+}
+
+export function createV5(name: string, address = "", id = crypto.randomUUID()): ProjectDocumentV5 {
+  return { ...createV4(name, address, id), schemaVersion: 5 };
 }

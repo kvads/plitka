@@ -310,7 +310,7 @@ export default function ProjectWorkflow({
     setError("");
     try {
       const r = await api<{ variants: Layout[] }>(
-        "optimize",
+        "v5/optimize",
         layoutRequest(d),
         token.signal,
       );
@@ -347,7 +347,7 @@ export default function ProjectWorkflow({
     setError("");
     try {
       const l = await api<Layout>(
-        "layout",
+        "v5/layout",
         layoutRequest(current.current, x, y),
         token.signal,
       );

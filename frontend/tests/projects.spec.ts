@@ -17,7 +17,7 @@ test("editor has no file or grid controls and a collapsed save error opens the s
     const original = Storage.prototype.setItem;
     (window as any).restoreStorage = () => { Storage.prototype.setItem = original; };
     Storage.prototype.setItem = function (key, value) {
-      if (key === "plitka-projects-v4") throw new Error("Нет места для сохранения");
+      if (key === "plitka-projects-v5") throw new Error("Нет места для сохранения");
       return original.call(this, key, value);
     };
   });
@@ -135,7 +135,7 @@ test('delete project serialized copy imports with a new ID', async ({ page }) =>
   await expect(page.locator('.project-row')).toHaveCount(0);
   await page.locator('input[type=file]').setInputFiles({
     name: 'project.json', mimeType: 'application/json',
-    buffer: Buffer.from(JSON.stringify({ format: 'plitka-project', version: 4, project: original })),
+    buffer: Buffer.from(JSON.stringify({ format: 'plitka-project', version: 5, project: original })),
   });
   await page.getByRole('button', { name: 'Создать из файла', exact: true }).click();
   await settle(page);

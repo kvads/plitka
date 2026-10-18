@@ -17,7 +17,7 @@ import ToolPalette from "./ToolPalette";
 import ProjectCanvas, { type Tool } from "./ProjectCanvas";
 import NumberField from "../workflow/NumberField";
 import type {
-  ProjectDocumentV4,
+  ProjectDocumentV5,
   GraphCommand,
   FaceCandidate,
   DiagnosticSelection,
@@ -37,15 +37,20 @@ import { api } from "../../api";
 import { format as f, type Layout, type LayoutRequest } from "../../types";
 import "./canvas.css";
 const stages = ["object", "variants"] as const;
-const names = ["План", "Варианты"];
+const names = ["План", "Раскладка"];
+type SessionResult = {
+  epoch: number; graphKey: string; roomId: string; key: string;
+  variants: Layout[]; accepted: Layout; selected: number; stale: boolean;
+  locked: boolean; pending: { x: number; y: number } | null;
+};
 export default function GraphWorkflow({
   initial,
   onSaved,
   onBack,
   onRemoved,
 }: {
-  initial: ProjectDocumentV4;
-  onSaved: (d: ProjectDocumentV4) => void;
+  initial: ProjectDocumentV5;
+  onSaved: (d: ProjectDocumentV5) => void;
   onBack: () => void;
   onRemoved: (outcome: DeleteProjectOutcome) => void;
 }) {
@@ -53,6 +58,10 @@ export default function GraphWorkflow({
     { doc, response, busy } = h,
     room = doc.rooms.find((r) => r.id === doc.selectedRoomId),
     face = response?.faces.find((f) => f.topologyKey === room?.topologyKey);
+  const currentKey = JSON.stringify([
+    doc.id, room?.id, face?.dependencyKey, face?.geometryKey, face?.measurementKey,
+    room?.material, room?.rules,
+  ]);
   const [editor, dispatchEditor] = useReducer(
     editorReducer,
     undefined,
@@ -66,8 +75,9 @@ export default function GraphWorkflow({
   const [sidebarOpen, setSidebarOpen] = useState(
     () => !window.matchMedia("(hover: none) and (pointer: coarse)").matches,
   );
+  const [modeMenu, setModeMenu] = useState(false);
   const sidebarToggle = useRef<HTMLButtonElement>(null);
-  const [tool, setTool] = useState<Tool>("select"),
+  const [tool, setTool] = useState<Tool>("pan"),
     [wallThickness, setWallThickness] = useState(100),
     [wallThicknessError, setWallThicknessError] = useState(""),
     [vertex, setVertex] = useState(""),
@@ -76,21 +86,23 @@ export default function GraphWorkflow({
     [diagnostic, setDiagnostic] = useState<DiagnosticSelection | null>(null),
     [panel, setPanel] = useState(initial.workflow.requestedStage !== "object"),
     [restore, setRestore] = useState(false);
-  const [results, setResults] = useState<{
-      epoch: number;
-      graphKey: string;
-      roomId: string;
-      key: string;
-      variants: Layout[];
-      accepted: Layout;
-      selected: number;
-      stale: boolean;
-      locked: boolean;
-      pending: { x: number; y: number } | null;
-    } | null>(null),
+  const [resultCache, setResultCache] = useState<Record<string, SessionResult>>({}),
     [loading, setLoading] = useState(false),
     [resultError, setResultError] = useState(""),
     [part, setPart] = useState("");
+  const cached = room ? resultCache[room.id] : undefined;
+  const results = cached ? { ...cached, stale: cached.stale || cached.key !== currentKey } : null;
+  const setResults = (change: SessionResult | null | ((result: SessionResult | null) => SessionResult | null)) => {
+    const roomId = room?.id;
+    if (!roomId) return;
+    setResultCache((cache) => {
+      const previous = cache[roomId] ?? null;
+      const next = typeof change === "function" ? change(previous) : change;
+      if (next === previous) return cache;
+      if (!next) { const copy = { ...cache }; delete copy[roomId]; return copy; }
+      return { ...cache, [roomId]: next };
+    });
+  };
   const modalOrigin = useRef<HTMLElement | null>(null);
   const closeModal = () => {
     setRestore(false);
@@ -118,10 +130,10 @@ export default function GraphWorkflow({
     if (reset) {
       setVertex("");
       setSegment("");
-      setTool("select");
+      setTool("pan");
       setRestore(false);
       setProjectMenu(false);
-      setResults(null);
+      setResultCache({});
       setLoading(false);
       setResultError("");
       setPart("");
@@ -149,13 +161,7 @@ export default function GraphWorkflow({
         );
     }
   }, [editor.context, editor.interaction]);
-  const currentKey = JSON.stringify([
-      doc.id, room?.id,
-      face?.dependencyKey, face?.geometryKey, face?.measurementKey,
-      room?.material,
-      room?.rules,
-    ]),
-    canRoom = ready(room, face) && !busy && JSON.stringify(response?.graph) === JSON.stringify(doc.plan.draft) && !pendingAffectsRoom(doc, face),
+  const canRoom = ready(room, face) && !busy && JSON.stringify(response?.graph) === JSON.stringify(doc.plan.draft) && !pendingAffectsRoom(doc, face),
     canTile = canRoom && materialReady(room),
     canRules = canTile && rulesReady(room);
   const stage = doc.workflow.requestedStage === "object" ? "object" : "variants",
@@ -170,8 +176,6 @@ export default function GraphWorkflow({
   useEffect(() => {
     resultGeneration.current++;
     setLoading(false);
-    if (results && (results.key !== currentKey || results.roomId !== room?.id))
-      setResults((r) => (r ? { ...r, stale: true } : r));
   }, [currentKey, room?.id, JSON.stringify(room?.fieldInputs)]);
   useEffect(() => {
     if (
@@ -192,6 +196,8 @@ export default function GraphWorkflow({
     h.cancelDeletion();
     h.update((d) => ({ ...d, workflow: { requestedStage: target } }));
     setProjectMenu(false);
+    setModeMenu(false);
+    setSidebarOpen(false);
     dispatchEditor({ type: "cancel" });
     setVertex("");
     setSegment("");
@@ -207,8 +213,9 @@ export default function GraphWorkflow({
     if (r) {
       if (r.id !== doc.selectedRoomId) {
         resultGeneration.current++;
-        setResults(null);
         setLoading(false);
+        setResultError("");
+        setPart("");
       }
       dispatchEditor({
         type: "context",
@@ -348,7 +355,7 @@ export default function GraphWorkflow({
     setLoading(true);
     setResultError("");
     try {
-      const r = await api<{ variants: Layout[] }>("optimize", request());
+      const r = await api<{ variants: Layout[] }>("v5/optimize", request());
       if (
         token !== resultGeneration.current ||
         !alive.current ||
@@ -393,7 +400,7 @@ export default function GraphWorkflow({
     setLoading(true);
     setResultError("");
     try {
-      const r = await api<Layout>("layout", {
+      const r = await api<Layout>("v5/layout", {
         ...request(),
         offset_x: x,
         offset_y: y,
@@ -449,7 +456,6 @@ export default function GraphWorkflow({
       !results ||
       !face ||
       blockedExport ||
-      !h.current(results.epoch) ||
       results.key !== liveKey ||
       !materialReady(liveRoom) ||
       !rulesReady(liveRoom) ||
@@ -542,11 +548,26 @@ export default function GraphWorkflow({
         dispatchEditor({ type: "cancel" });
         setPanel(false);
       }}
+      onDeactivate={() => {
+        setTool("pan");
+        setVertex("");
+        setSegment("");
+        setWallHandle(null);
+        dispatchEditor({ type: "cancel" });
+        setPanel(false);
+      }}
       faces={response?.faces || []}
       roomNames={Object.fromEntries(doc.rooms.filter(r => r.binding === "attached").map(r => [r.topologyKey!, r.name]))}
       selectedKey={room?.topologyKey}
       viewport={doc.viewport}
-      tool={stage === "object" ? tool : "pan"}
+      tool={stage === "object" ? tool : "selectRoom"}
+      roomMissing={Object.fromEntries((response?.faces ?? []).map((candidate) => {
+        const candidateRoom = doc.rooms.find((item) => item.binding === "attached" && item.topologyKey === candidate.topologyKey);
+        const candidateKey = JSON.stringify([doc.id, candidateRoom?.id, candidate.dependencyKey,
+          candidate.geometryKey, candidate.measurementKey, candidateRoom?.material, candidateRoom?.rules]);
+        const saved = candidateRoom ? resultCache[candidateRoom.id] : undefined;
+        return [candidate.topologyKey, stage === "variants" && !!candidateRoom && (!saved || saved.stale || saved.key !== candidateKey)];
+      }))}
       wallThickness={wallThicknessError ? 0 : wallThickness}
       onDrawWall={(start, end) => {
         if (wallThicknessError || !Number.isFinite(wallThickness) || wallThickness < 0.001 || wallThickness > 100000) {
@@ -625,16 +646,18 @@ export default function GraphWorkflow({
           </div>
           {stage === "object" && <ToolPalette
           selected={tool}
-          onSelect={(tool) => {
+          onSelect={(selectedTool) => {
             h.cancelDeletion();
-            setTool(tool);
+            const next = selectedTool === tool ? "pan" : selectedTool;
+            setTool(next);
             setWallThicknessError("");
             setVertex("");
             setSegment("");
             setWallHandle(null);
             setProjectMenu(false);
-            dispatchEditor({ type: "context", context: { kind: "tool", tool } });
-            setPanel(tool === "pan" || tool === "wall");
+            dispatchEditor(next === "pan" ? { type: "cancel" } : { type: "context", context: { kind: "tool", tool: next } });
+            setPanel(next === "wall");
+            setSidebarOpen(false);
             requestAnimationFrame(() =>
               document.querySelector<SVGSVGElement>("[data-geometry]")?.focus(),
             );
@@ -658,6 +681,24 @@ export default function GraphWorkflow({
           {h.saved === "Не сохранено" && <SidebarIconButton icon={Save} label="Повторить сохранение" onClick={h.retrySave} />}
           {doc.plan.pendingEdit && <SidebarIconButton icon={Redo2} label="Повторить действие" onClick={() => void h.retry()} />}
         </aside>}
+      </div>
+      <div className="mobile-mode-control" data-overlay onPointerDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && modeMenu) {
+            event.stopPropagation();
+            setModeMenu(false);
+            (event.currentTarget.querySelector(':scope > button') as HTMLButtonElement | null)?.focus();
+          }
+        }}>
+        <button type="button" aria-label={`Режим: ${names[index]}`} aria-expanded={modeMenu}
+          aria-controls="mobile-mode-menu" onClick={() => setModeMenu((open) => !open)}>
+          {names[index]} ▾
+        </button>
+        {modeMenu && <div id="mobile-mode-menu" role="menu">
+          {stages.map((target, position) => <button key={target} type="button" role="menuitem"
+            aria-current={stage === target ? "page" : undefined}
+            onClick={() => navigate(target)}>{names[position]}</button>)}
+        </div>}
       </div>
       {!sidebarOpen && h.saved === "Не сохранено" && (
         <button className="sidebar-save-alert" aria-live="assertive" onClick={() => {
@@ -814,7 +855,7 @@ export default function GraphWorkflow({
                 {editor.context.kind === "room" && face && (
                   <>
                     <div className="room-area">
-                      {face.areaMm2 === null ? "Площадь недоступна" : `${f(face.areaMm2 / 1e6, 6)} м²`}
+                      {face.areaMm2 === null ? "Площадь недоступна" : `${f(face.areaMm2, 1)} мм²`}
                     </div>
                     <button className="danger" onClick={deleteObject}>
                       Удалить помещение
@@ -935,11 +976,7 @@ export default function GraphWorkflow({
             </>
           )}
           {stage === "variants" && <>
-            <label>Помещение<select aria-label="Помещение" value={room?.id || ''} onChange={e => {
-              const target = doc.rooms.find(r => r.id === e.target.value);
-              const candidate = response?.faces.find(f => f.topologyKey === target?.topologyKey);
-              if (candidate) selectRoom(candidate);
-            }}><option value="">Выберите помещение</option>{doc.rooms.filter(r => r.binding === 'attached').map(r => <option key={r.id} value={r.id}>{r.name}</option>)}</select></label>
+            <p>Выберите помещение на полотне.</p>
             {!room && <p>Выберите замкнутое помещение для подбора. Создать или исправить его можно на странице «План».</p>}
             {room && !canRoom && <p role="status">{busy ? 'Проверяем геометрию…' : face?.validation.issues[0]?.message || 'Исправьте геометрию или незавершённую правку помещения на плане.'}</p>}
           </>}
@@ -1085,13 +1122,6 @@ export default function GraphWorkflow({
             {index > 0 && (
               <button onClick={() => navigate(stages[index - 1])}>Назад</button>
             )}
-            {index === 0 && (
-              <button
-                onClick={() => navigate(stages[index + 1])}
-              >
-                Далее
-              </button>
-            )}
           </div>
         </aside>
       )}
@@ -1157,7 +1187,7 @@ export default function GraphWorkflow({
               onClick={() => {
                   const saved = doc.plan.restorePoint;
                   invalidate();
-                  const next: ProjectDocumentV4 = {
+                  const next: ProjectDocumentV5 = {
                     ...doc,
                     plan: {
                       ...doc.plan,

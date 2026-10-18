@@ -9,7 +9,7 @@ import type { DeletionTarget, DeletionPreviewResponse } from "./types";
 import { useState, useRef, useEffect } from "react";
 import { api } from "../../api";
 import type {
-  ProjectDocumentV4,
+  ProjectDocumentV5,
   GraphResponse,
   GraphCommand,
   GraphSnapshot,
@@ -17,7 +17,8 @@ import type {
 } from "./types";
 import { dimensionCommand } from "./types";
 import { bindRooms } from "./rooms";
-import { saveV4, deleteV4, KEY, readV4 } from "./storage";
+import { saveV5, deleteV5, KEY, readV5 } from "./storage";
+import { canonicalCommand } from "./precision";
 export function applyCondition(
   g: GraphSnapshot,
   c: GraphCommand,
@@ -73,8 +74,8 @@ export function applyCondition(
   return next;
 }
 export function useGraphProject(
-  initial: ProjectDocumentV4,
-  onSaved: (d: ProjectDocumentV4) => void,
+  initial: ProjectDocumentV5,
+  onSaved: (d: ProjectDocumentV5) => void,
   onRemoved: (outcome: DeleteProjectOutcome) => void,
 ) {
   const [doc, setDoc] = useState(initial),
@@ -105,7 +106,7 @@ export function useGraphProject(
     removed = useRef(false),
     removalCallback = useRef(onRemoved);
   removalCallback.current = onRemoved;
-  const install = (d: ProjectDocumentV4) => {
+  const install = (d: ProjectDocumentV5) => {
     ref.current = d;
     setDoc(d);
   };
@@ -124,7 +125,7 @@ export function useGraphProject(
     setDeletion(null);
     setBusy(false);
   };
-  const persist = (d: ProjectDocumentV4) => {
+  const persist = (d: ProjectDocumentV5) => {
     if (removing.current || removed.current) return;
     const ticket = ++writeEpoch.current;
     writes.current++;
@@ -141,7 +142,7 @@ export function useGraphProject(
           }
           return;
         }
-        const result = await saveV4(
+        const result = await saveV5(
           { ...d, documentRevision: revision.current },
           revision.current,
           () => ticket === writeEpoch.current && !conflict.current && !removing.current && !removed.current,
@@ -165,7 +166,7 @@ export function useGraphProject(
     });
   };
   const update = (
-    fn: (d: ProjectDocumentV4) => ProjectDocumentV4,
+    fn: (d: ProjectDocumentV5) => ProjectDocumentV5,
     undo: boolean | "clearProject" = false,
   ) => {
     if (removing.current || removed.current) return ref.current;
@@ -184,7 +185,7 @@ export function useGraphProject(
     persist(next);
     return next;
   };
-  const accept = async (r: GraphResponse, d: ProjectDocumentV4) => bindRooms(d, r.faces);
+  const accept = async (r: GraphResponse, d: ProjectDocumentV5) => bindRooms(d, r.faces);
   const validate = async (d = ref.current) => {
     if (removing.current || removed.current) return;
     const token = ++generation.current,
@@ -229,8 +230,8 @@ export function useGraphProject(
     const storage = (e: StorageEvent) => {
       if (e.key === KEY) {
         try {
-          const d = readV4().find((x) => x.id === ref.current.id);
-          if (!d) { finishRemoval({ status: "alreadyMissing", projectId: ref.current.id, projects: readV4() }); return; }
+          const d = readV5().find((x) => x.id === ref.current.id);
+          if (!d) { finishRemoval({ status: "alreadyMissing", projectId: ref.current.id, projects: readV5() }); return; }
           if (d && d.documentRevision !== revision.current) {
             conflict.current = true;
             setError(
@@ -257,6 +258,7 @@ export function useGraphProject(
     raw?: { key: string; text: string },
     retry = false,
   ) => {
+    command = canonicalCommand(command);
     if (removing.current || removed.current) return;
     const current = ref.current,
       previous = current.plan.pendingEdit;
@@ -436,7 +438,7 @@ export function useGraphProject(
     generation.current++;
     const p = ref.current.plan.pendingEdit;
     const old = p?.basisGraph ?? null;
-    let next: ProjectDocumentV4 | undefined;
+    let next: ProjectDocumentV5 | undefined;
     if (
       old &&
       history.current.at(-1)?.kind === "edit" &&
@@ -530,7 +532,7 @@ export function useGraphProject(
           },
     );
   };
-  const replaceDocument = (next: ProjectDocumentV4, reason = "import") => {
+  const replaceDocument = (next: ProjectDocumentV5, reason = "import") => {
     if (removing.current || removed.current) return ref.current;
     resetLifecycle();
     const result = update(
@@ -567,11 +569,11 @@ export function useGraphProject(
   const deleteProject = async (intent: DeleteProjectIntent): Promise<DeleteProjectOutcome> => {
     if (removed.current || removing.current) throw new Error('Удаление уже выполняется.');
     if (intent.localRevision !== undefined && intent.localRevision !== localRevision.current)
-      return { status: 'conflict', projectId: ref.current.id, projects: readV4(),
+      return { status: 'conflict', projectId: ref.current.id, projects: readV5(),
         current: { ...ref.current, documentRevision: revision.current } };
     removing.current = true; writeEpoch.current++; resetLifecycle(); notify("deleteAttempt");
     try {
-      const outcome = await deleteV4(intent.projectId, intent.expectedRevision);
+      const outcome = await deleteV5(intent.projectId, intent.expectedRevision);
       if (outcome.status === 'conflict') { conflict.current = true; return outcome; }
       finishRemoval(outcome); return outcome;
     } finally { removing.current = false; }
