@@ -1,5 +1,7 @@
-import { canvasPick, graphConflict, graphRectangle, openGraph, touchSession, v4FilledCatalog, v4WallGraph, preV5CatalogKeys, oldCatalogsWithLayouts, v5EmptyCatalog, v5FilledCatalog } from "./fixtures/projects";
-import { cleanV4Graph } from "../src/domain/plan/schema";
+import { canvasPick, graphConflict, graphRectangle, openGraph, touchSession, v4FilledCatalog, v4WallGraph, preV5CatalogKeys, oldCatalogsWithLayouts, v5EmptyCatalog, v5FilledCatalog, v6PhysicalDocument, v6SavedWallGraph, v6DiagonalWallGraph, v6JoinedWallGraph } from "./fixtures/projects";
+import { cleanV4Graph, parseV6 } from "../src/domain/plan/schema";
+import { createV6, parseV6Import } from "../src/domain/plan/migration";
+import { KEY_V6, initializeV6, readV6, saveV6, deleteV6 } from "../src/domain/plan/storage";
 import { test, expect } from "@playwright/test";
 import {
   openProject,
@@ -14,6 +16,77 @@ const envelope = async (page: any) => ({
   format: "plitka-project",
   version: 5,
   project: await stored(page),
+});
+
+test("v6 raw physical fixtures validate every stored graph snapshot", () => {
+  const source = v6PhysicalDocument();
+  expect(parseV6(source)).toEqual(source);
+  expect(parseV6(createV6("Новый проект", "", "fresh"))).toMatchObject({
+    schemaVersion: 6, plan: { draft: { walls: [], junctions: [] } },
+  });
+  expect(parseV6Import({ format: "plitka-project", version: 6, project: source })).toEqual(source);
+  expect(() => parseV6Import({ format: "plitka-project", version: 5, project: source })).toThrow();
+  for (const graph of [v6SavedWallGraph(), v6DiagonalWallGraph(), v6JoinedWallGraph()])
+    expect(() => parseV6({ ...source, plan: { ...source.plan, draft: graph } })).not.toThrow();
+  const oldAxis = structuredClone(source) as any;
+  oldAxis.plan.draft.vertices = [];
+  expect(() => parseV6(oldAxis)).toThrow();
+  const overPrecise = structuredClone(source);
+  overPrecise.rooms[0].material.tile = 600.01;
+  expect(() => parseV6(overPrecise)).toThrow();
+  const nested = structuredClone(source);
+  nested.plan.restorePoint!.graph.walls[0].corners[2].y = 100.01;
+  expect(() => parseV6(nested)).toThrow();
+  const sessionResult = { ...source, results: { "fixture-room": { areaMm2: 1 } } };
+  expect(() => parseV6(sessionResult)).toThrow();
+});
+
+test("v6 catalog is verified before resumable old-project cleanup and keeps CAS", async () => {
+  const originalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const items = new Map<string, string>([["plitka-projects-v5", JSON.stringify(v5FilledCatalog())]]);
+  let failFirstV6Write = true;
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      if (key === KEY_V6 && failFirstV6Write) { failFirstV6Write = false; throw new Error("storage full"); }
+      items.set(key, value);
+    },
+    removeItem: (key: string) => { items.delete(key); },
+  }});
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {
+    locks: { request: async (_name: string, action: () => unknown) => action() },
+  }});
+  try {
+    await expect(initializeV6()).rejects.toThrow("storage full");
+    expect(items.has("plitka-projects-v5")).toBe(true);
+    expect(items.has(KEY_V6)).toBe(false);
+    expect(await initializeV6()).toEqual([]);
+    expect(items.has("plitka-projects-v5")).toBe(false);
+    const document = createV6("Новый проект", "", "new-project");
+    const saved = await saveV6(document, null);
+    expect(saved.documentRevision).toBe(0);
+    await expect(saveV6(document, null)).rejects.toThrow("Конфликт");
+    items.set("plitka-projects-v4", "interrupted cleanup");
+    expect(await initializeV6()).toEqual([saved]);
+    expect(items.has("plitka-projects-v4")).toBe(false);
+    expect(readV6()).toEqual([saved]);
+    const validCatalog = items.get(KEY_V6)!;
+    items.set(KEY_V6, "{broken-json");
+    items.set("plitka-projects-v5", "old project");
+    await expect(initializeV6()).rejects.toThrow();
+    expect(items.get("plitka-projects-v5")).toBe("old project");
+    items.set(KEY_V6, validCatalog);
+    expect(await initializeV6()).toEqual([saved]);
+    expect(items.has("plitka-projects-v5")).toBe(false);
+    expect((await deleteV6(saved.id, saved.documentRevision)).status).toBe("deleted");
+    expect(readV6()).toEqual([]);
+  } finally {
+    if (originalStorage) Object.defineProperty(globalThis, "localStorage", originalStorage);
+    else delete (globalThis as any).localStorage;
+    if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
+    else delete (globalThis as any).navigator;
+  }
 });
 
 test("old project catalog is removed when the v5 editor opens", async ({ page }) => {

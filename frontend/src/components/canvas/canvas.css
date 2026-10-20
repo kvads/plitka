@@ -294,6 +294,88 @@
 .project-menu {
   z-index: 4;
 }
+.physical-mode-switch {
+  display: none;
+}
+.physical-handle-controls, .physical-nudge-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.physical-cancel-wall-start {
+  position: absolute;
+  z-index: 4;
+  top: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  min-height: 44px;
+  white-space: nowrap;
+  background: #fff;
+  border: 1px solid #777;
+  border-radius: 9px;
+  padding: 6px 10px;
+}
+.physical-handle-controls button, .physical-nudge-controls button {
+  min-height: 44px;
+  min-width: 44px;
+}
+.physical-handle-controls button[aria-pressed="true"] {
+  background: #333;
+  color: #fff;
+}
+.physical-editor [data-wall-id]:focus-visible,
+.physical-editor [data-wall-handle]:focus-visible {
+  outline: 3px solid #333;
+  outline-offset: 3px;
+}
+@media (max-width: 600px) {
+  .physical-mode-switch {
+    position: absolute;
+    z-index: 5;
+    top: max(12px, env(safe-area-inset-top, 0px));
+    right: 12px;
+    display: flex;
+    align-items: flex-start;
+    flex-direction: row-reverse;
+    gap: 8px;
+  }
+  .physical-mode-options {
+    display: flex;
+    gap: 4px;
+    padding: 6px;
+    border: 1px solid #bbb;
+    border-radius: 9px;
+    background: white;
+    box-shadow: 0 4px 16px #0002;
+  }
+  .physical-mode-options button { min-width: 44px; min-height: 44px; }
+  .physical-editor > .canvas-panel {
+    top: auto !important;
+    bottom: max(12px, env(safe-area-inset-bottom, 0px)) !important;
+    left: 84px !important;
+    right: 12px !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: min(240px, 42dvh) !important;
+    background: #fff;
+  }
+  .physical-editor:has(.canvas-sidebar) > .canvas-panel {
+    left: 96px !important;
+  }
+  .physical-editor > .canvas-panel fieldset {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding: 5px 8px;
+  }
+  .physical-editor > .canvas-panel fieldset label {
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+    min-height: 36px;
+  }
+  .physical-editor > .canvas-panel fieldset input { width: auto; min-height: 0; }
+}
 .canvas-modal section {
   max-height: 85dvh;
   overflow-y: auto;

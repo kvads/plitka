@@ -196,6 +196,101 @@ export const v4LegacyKeys = [
 ] as const;
 export const preV5CatalogKeys = [...v4LegacyKeys, "plitka-projects-v4"] as const;
 export const v5EmptyCatalog = { schemaVersion: 5, projects: [] };
+
+// Literal v6 fixtures deliberately do not import the implementation's future types.
+export const v6SavedWallGraph = () => ({
+  walls: [{
+    id: "wall-horizontal",
+    drawnEdge: [{ x: 0, y: 0 }, { x: 1000, y: 0 }],
+    side: "left" as const,
+    thicknessMm: 100,
+    corners: [
+      { x: 0, y: 0 }, { x: 1000, y: 0 },
+      { x: 1000, y: 100 }, { x: 0, y: 100 },
+    ],
+  }],
+  junctions: [],
+});
+
+export const v6DiagonalWallGraph = () => ({
+  walls: [{
+    id: "wall-diagonal",
+    drawnEdge: [{ x: 2000, y: 0 }, { x: 3000, y: 1000 }],
+    side: "left" as const,
+    thicknessMm: 100,
+    corners: [
+      { x: 2000, y: 0 }, { x: 3000, y: 1000 },
+      { x: 2929.3, y: 1070.7 }, { x: 1929.3, y: 70.7 },
+    ],
+  }],
+  junctions: [],
+});
+
+export const v6JoinedWallGraph = () => ({
+  walls: [
+    ...v6SavedWallGraph().walls,
+    {
+      id: "wall-branch",
+      drawnEdge: [{ x: 500, y: 100 }, { x: 500, y: 600 }],
+      side: "right" as const,
+      thicknessMm: 100,
+      corners: [
+        { x: 500, y: 100 }, { x: 500, y: 600 },
+        { x: 600, y: 600 }, { x: 600, y: 100 },
+      ],
+    },
+  ],
+  junctions: [{
+    id: "junction-t",
+    participants: [
+      { wallId: "wall-horizontal", edge: "opposite" as const, point: { x: 500, y: 100 }, attachment: "interior" as const },
+      { wallId: "wall-branch", edge: "startCap" as const, point: { x: 500, y: 100 }, attachment: "end" as const },
+    ],
+  }],
+});
+
+export const v6PhysicalDocument = () => {
+  const graph = v6SavedWallGraph();
+  return {
+    schemaVersion: 6 as const,
+    id: "physical-v6-fixture",
+    name: "Физическая стена",
+    address: "",
+    documentRevision: 2,
+    plan: {
+      draft: graph,
+      draftRevision: 2,
+      pendingEdit: {
+        kind: "graphV5",
+        commandId: "pending-wall",
+        command: { type: "setWallThickness", wallId: "wall-horizontal", thicknessMm: 150 },
+        basisGraph: structuredClone(graph),
+        targetDraftRevision: 2,
+      },
+      restorePoint: {
+        graph: structuredClone(graph),
+        bindings: [{ roomId: "fixture-room", topologyKey: "fixture-face" }],
+        selectedRoomId: "fixture-room",
+      },
+    },
+    rooms: [{
+      id: "fixture-room", topologyKey: "fixture-face", binding: "attached",
+      name: "Помещение 1", material: { tile: 600, grout: 2 },
+      rules: { gap: 10, threshold: 100, angle: 0 }, fieldInputs: {},
+      acknowledgment: null, boundaryMemory: null,
+      confirmed: {
+        graph: structuredClone(graph), topologyKey: "fixture-face",
+        geometryKey: "fixture-geometry", dependencyKey: "fixture-dependency",
+        measurementKey: "fixture-measurement", acknowledgment: null,
+        sourceDraftRevision: 2,
+      },
+    }],
+    selectedRoomId: "fixture-room",
+    workflow: { requestedStage: "object" as const },
+    viewport: { centerX: 500.125, centerY: 50.875, zoom: 1.2345, gridStepMm: 100 },
+  };
+};
+
 export const v5FilledCatalog = () => ({
   schemaVersion: 5,
   projects: [{

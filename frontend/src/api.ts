@@ -1,4 +1,4 @@
-import { graphSchema } from "./domain/plan/schema";
+import { graphSchema, physicalGraphSchema } from "./domain/plan/schema";
 import { isTenth } from "./domain/plan/precision";
 import { geometry } from "./domain/project/schema";
 const includesCoordinatePair = (message: string) =>
@@ -6,6 +6,10 @@ const includesCoordinatePair = (message: string) =>
 const publicGeometryMessage = (message: string) => includesCoordinatePair(message)
   ? "Геометрия недопустима. Измените положение стены или размеры помещения."
   : message;
+const canonicalJson = (value: unknown): string => JSON.stringify(value, (_, item) =>
+  item && typeof item === "object" && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)))
+    : item);
 export async function api<T>(
   route: string,
   project: unknown,
@@ -124,7 +128,69 @@ export async function api<T>(
       Array.isArray(v.region) && v.region.every(points);
   };
   let valid = false;
-  if (object && route === "plan/deletion-preview") {
+  if (object && route.startsWith("v5/plan/")) {
+    const request = project as {
+      requestId?: string;
+      commandId?: string;
+      draftRevision: number;
+      basisKey: string;
+    };
+    const strings = (v: unknown): v is string[] =>
+      Array.isArray(v) && v.every(x => typeof x === "string");
+    const point = (v: unknown): boolean =>
+      record(v) && isTenth(v.x as number) && isTenth(v.y as number);
+    const issue = (v: unknown): boolean =>
+      record(v) && typeof v.code === "string" &&
+      typeof v.message === "string" && !includesCoordinatePair(v.message) &&
+      strings(v.entityIds) && strings(v.affectedRoomKeys) &&
+      ["global", "component", "room"].includes(v.scope as string);
+    valid = object.schemaVersion === 5 &&
+      object.requestId === request.requestId &&
+      object.commandId === request.commandId &&
+      object.draftRevision === request.draftRevision &&
+      object.basisKey === request.basisKey &&
+      (route === "v5/plan/deletion-preview"
+        ? ["ready", "invalid"].includes(object.status as string)
+        : ["valid", "invalid", "applied"].includes(object.status as string)) &&
+      strings(object.affectedWallIds) &&
+      Array.isArray(object.wallArea) && object.wallArea.every(tenthPolygon) &&
+      Array.isArray(object.faces) &&
+      object.faces.every(face => record(face) &&
+        typeof face.topologyKey === "string" &&
+        typeof face.geometryKey === "string" &&
+        (face.polygon === null
+          ? face.areaMm2 === null
+          : tenthPolygon(face.polygon) && isTenth(face.areaMm2 as number)) &&
+        record(face.validation) && typeof face.validation.valid === "boolean" &&
+        Array.isArray(face.validation.issues) && face.validation.issues.every(issue) &&
+        Array.isArray(face.innerAngles) && face.innerAngles.every(angle =>
+          record(angle) && isTenth(angle.valueDeg as number) && point(angle.anchor)) &&
+        Array.isArray(face.freeDimensions) && face.freeDimensions.every(dimension =>
+          record(dimension) && isTenth(dimension.valueMm as number) &&
+          point(dimension.from) && point(dimension.to) && point(dimension.anchor))) &&
+      Array.isArray(object.openJointAngles) &&
+      object.openJointAngles.every(angle => record(angle) &&
+        [angle.junctionId, angle.wallId, angle.adjacentWallId].every(v => typeof v === "string") &&
+        angle.label === "Угол стыка" && isTenth(angle.valueDeg as number) &&
+        (angle.valueDeg as number) >= 0 && (angle.valueDeg as number) <= 180 && point(angle.anchor)) &&
+      Array.isArray(object.issues) && object.issues.every(issue);
+    if (valid) {
+      try {
+        physicalGraphSchema(object.graph);
+        if (object.status === "invalid")
+          valid = canonicalJson(object.graph) === canonicalJson((project as { graph: unknown }).graph);
+      } catch {
+        valid = false;
+      }
+    }
+    if (route === "v5/plan/deletion-preview") {
+      valid = valid && record(object.target) &&
+        ((object.status === "invalid" && object.impact === null) ||
+          (object.status === "ready" && record(object.impact) &&
+            ["wallIds", "junctionIds", "affectedRoomKeys", "disappearedRoomKeys"]
+              .every(key => strings((object.impact as Record<string, unknown>)[key]))));
+    }
+  } else if (object && route === "plan/deletion-preview") {
     const request = project as {
       requestId: string;
       draftRevision: number;

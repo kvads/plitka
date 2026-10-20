@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import CanvasDialog from './CanvasDialog';
 import { deleteV5 } from '../../domain/plan/storage';
-import type { DeleteProjectIntent, DeleteProjectOutcome, ProjectDeletionState } from '../../domain/plan/types';
-export default function DeleteProjectDialog({ intent: initial, onCancel, onDone, refreshIntent, onConfirm = (intent) => deleteV5(intent.projectId, intent.expectedRevision) }: {
+import type { DeleteProjectIntent, DeleteProjectOutcomeFor, ProjectDeletionState, ProjectDocumentV5, ProjectDocumentV6 } from '../../domain/plan/types';
+export default function DeleteProjectDialog<D extends ProjectDocumentV5 | ProjectDocumentV6 = ProjectDocumentV5>({ intent: initial, onCancel, onDone, refreshIntent, onConfirm = (intent) => deleteV5(intent.projectId, intent.expectedRevision) as Promise<DeleteProjectOutcomeFor<D>> }: {
   intent: DeleteProjectIntent;
   onCancel: () => void;
-  onDone: (outcome: DeleteProjectOutcome) => void;
+  onDone: (outcome: DeleteProjectOutcomeFor<D>) => void;
   refreshIntent?: () => DeleteProjectIntent;
-  onConfirm?: (intent: DeleteProjectIntent) => Promise<DeleteProjectOutcome>;
+  onConfirm?: (intent: DeleteProjectIntent) => Promise<DeleteProjectOutcomeFor<D>>;
 }) {
   const [intent, setIntent] = useState(initial);
   const [state, setState] = useState<ProjectDeletionState>('confirming');

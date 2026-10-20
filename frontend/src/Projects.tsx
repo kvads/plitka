@@ -1,16 +1,17 @@
 import DeleteProjectDialog from "./components/canvas/DeleteProjectDialog";
-import type { DeleteProjectIntent, DeleteProjectOutcome } from "./domain/plan/types";
+import type { DeleteProjectIntent, DeleteProjectOutcomeFor } from "./domain/plan/types";
 import { useEffect, useRef, useState } from "react";
-import App from "./components/canvas/GraphWorkflow";
+import App from "./components/canvas/PhysicalWorkflow";
 import {
-  KEY,
-  readV5 as readProjects,
-  saveV5 as saveDocument,
-  initializeV5,
-  importV5 as importDocument,
+  KEY_V6 as KEY,
+  readV6 as readProjects,
+  saveV6 as saveDocument,
+  initializeV6,
+  importV6 as importDocument,
+  deleteV6,
 } from "./domain/plan/storage";
-import { createV5 as createDocument } from "./domain/plan/migration";
-import type { ProjectDocumentV5 as ProjectDocument } from "./domain/plan/types";
+import { createV6 as createDocument } from "./domain/plan/migration";
+import type { ProjectDocumentV6 as ProjectDocument } from "./domain/plan/types";
 const routeId = () =>
   location.hash.startsWith("#project/") ? location.hash.slice(9) : "";
 export default function Projects() {
@@ -21,7 +22,7 @@ export default function Projects() {
   });
   useEffect(() => {
     let active = true;
-    initializeV5()
+    initializeV6()
       .then((rows) => {
         if (active) {
           setLoaded({ rows, error: "", ready: true });
@@ -49,7 +50,7 @@ export default function Projects() {
   const [deleteIntent, setDeleteIntent] = useState<DeleteProjectIntent | null>(null);
   const [notice, setNotice] = useState('');
   const heading = useRef<HTMLHeadingElement>(null);
-  function removed(outcome: DeleteProjectOutcome) {
+  function removed(outcome: DeleteProjectOutcomeFor<ProjectDocument>) {
     if (outcome.status === 'conflict') return;
     setRows(outcome.projects); setDeleteIntent(null); setEditing(null); setPreview(null);
     setNotice(outcome.status === 'alreadyMissing' ? 'Проект уже удалён' : 'Проект удалён');
@@ -166,7 +167,8 @@ export default function Projects() {
           />
         </div>
         {notice && <p role="status">{notice}</p>}
-        {deleteIntent && <DeleteProjectDialog key={deleteIntent.requestId} intent={deleteIntent} onCancel={() => setDeleteIntent(null)} onDone={removed} />}
+        {deleteIntent && <DeleteProjectDialog<ProjectDocument> key={deleteIntent.requestId} intent={deleteIntent} onCancel={() => setDeleteIntent(null)} onDone={removed}
+          onConfirm={intent => deleteV6(intent.projectId, intent.expectedRevision)} />}
         {error && (
           <div className="error" role="alert">
             {error}

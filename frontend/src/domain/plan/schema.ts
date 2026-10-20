@@ -1,5 +1,5 @@
 import { normalizeRoomNames } from "./rooms";
-import type { GraphSnapshot, ProjectDocumentV4, ProjectDocumentV5 } from "./types";
+import type { GraphSnapshot, PhysicalGraphV5, ProjectDocumentV4, ProjectDocumentV5, ProjectDocumentV6 } from "./types";
 import { requireTenth } from "./precision";
 const fail = (): never => {
   throw new Error(
@@ -555,4 +555,185 @@ export function parseV5(value: unknown): ProjectDocumentV5 {
     }
   }
   return { ...parsed, schemaVersion: 5 };
+}
+
+const pointV6 = (value: unknown) => {
+  const point = obj(value);
+  exact(point, ["x", "y"]);
+  requireTenth(num(point.x));
+  requireTenth(num(point.y));
+  return point as { x: number; y: number };
+};
+
+/** Strict stored physical graph, independent of the retired axial schema. */
+export function physicalGraphSchema(value: unknown): PhysicalGraphV5 {
+  const graph = obj(value);
+  exact(graph, ["walls", "junctions"]);
+  const ids = new Set<string>(), walls = new Map<string, Obj>();
+  for (const raw of arr(graph.walls, 6300)) {
+    const wall = obj(raw);
+    exact(wall, ["id", "drawnEdge", "side", "thicknessMm", "corners"]);
+    const id = str(wall.id, 1, 100);
+    if (ids.has(id)) fail();
+    ids.add(id);
+    walls.set(id, wall);
+    choice(wall.side, ["left", "right"]);
+    if (requireTenth(num(wall.thicknessMm)) < 0.1 || num(wall.thicknessMm) > 100000) fail();
+    const drawn = arr(wall.drawnEdge, 2), corners = arr(wall.corners, 4);
+    if (drawn.length !== 2 || corners.length !== 4) fail();
+    const edge = drawn.map(pointV6), points = corners.map(pointV6);
+    if (edge.some((p, index) => p.x !== points[index].x || p.y !== points[index].y)) fail();
+    const [a, b, c, d] = points;
+    const dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
+    if (length < 0.1) fail();
+    const widths = [[c, b], [d, a]].map(([p, q]) => (dx * (p.y - q.y) - dy * (p.x - q.x)) / length);
+    const expected = (wall.side === "left" ? 1 : -1) * (wall.thicknessMm as number);
+    if (widths.some(width => Math.abs(width - expected) > 0.1000001)) fail();
+    if (Math.abs((c.x - d.x) * dy - (c.y - d.y) * dx) / length > 0.1000001) fail();
+  }
+  const edgePoints = (wall: Obj, name: string) => {
+    const [a, b, c, d] = (wall.corners as unknown[]).map(pointV6);
+    return ({ drawn: [a, b], opposite: [d, c], startCap: [a, d], endCap: [b, c] } as Record<string, typeof a[]>)[name];
+  };
+  for (const raw of arr(graph.junctions)) {
+    const joint = obj(raw);
+    exact(joint, ["id", "participants"]);
+    const id = str(joint.id, 1, 100);
+    if (ids.has(id)) fail();
+    ids.add(id);
+    const parts = arr(joint.participants, 6300);
+    if (parts.length < 2) fail();
+    const seen = new Set<string>(), positions: {x:number;y:number}[] = [];
+    for (const rawPart of parts) {
+      const part = obj(rawPart);
+      exact(part, ["wallId", "edge", "point", "attachment"]);
+      const wallId = str(part.wallId, 1, 100), wall = walls.get(wallId) ?? fail();
+      if (seen.has(wallId)) fail();
+      seen.add(wallId);
+      choice(part.edge, ["drawn", "opposite", "startCap", "endCap"]);
+      choice(part.attachment, ["end", "interior"]);
+      const p = pointV6(part.point), [a, b] = edgePoints(wall, part.edge as string);
+      const vx = b.x - a.x, vy = b.y - a.y;
+      const ratio = ((p.x - a.x) * vx + (p.y - a.y) * vy) / (vx * vx + vy * vy);
+      const foot = {x: a.x + Math.max(0, Math.min(1, ratio)) * vx,
+                    y: a.y + Math.max(0, Math.min(1, ratio)) * vy};
+      if (Math.hypot(p.x - foot.x, p.y - foot.y) > 0.1000001) fail();
+      const cap = part.edge === "startCap" || part.edge === "endCap";
+      const atEnd = Math.min(Math.hypot(p.x-a.x,p.y-a.y), Math.hypot(p.x-b.x,p.y-b.y)) <= 0.1000001;
+      if (part.attachment === "interior" ? cap || atEnd : !cap && !atEnd) fail();
+      positions.push(p);
+    }
+    if (positions.slice(1).some(p => Math.hypot(p.x-positions[0].x,p.y-positions[0].y) > 0.1000001)) fail();
+  }
+  return structuredClone(value) as PhysicalGraphV5;
+}
+
+/** Validate all persisted v6 graph snapshots and subject values. */
+export function parseV6(value: unknown): ProjectDocumentV6 {
+  const doc = obj(value);
+  exact(doc, ["schemaVersion", "id", "name", "address", "documentRevision", "plan", "rooms", "selectedRoomId", "workflow", "viewport"]);
+  if (doc.schemaVersion !== 6) fail();
+  str(doc.id, 1); str(doc.name, 1, 120); str(doc.address, 0, 300);
+  integer(doc.documentRevision);
+  const plan = obj(doc.plan);
+  exact(plan, ["draft", "draftRevision", "pendingEdit", "restorePoint"]);
+  physicalGraphSchema(plan.draft);
+  integer(plan.draftRevision);
+  const roomIds = new Set<string>();
+  const acknowledgment = (value: unknown) => {
+    if (value === null) return;
+    const ack = obj(value);
+    exact(ack, ["measurementKey", "entries"]);
+    str(ack.measurementKey, 1, 100000);
+    for (const raw of arr(ack.entries)) {
+      const entry = obj(raw);
+      exact(entry, ["key", "kind", "displayedValue"]);
+      str(entry.key, 1, 100000); str(entry.kind, 1);
+      requireTenth(num(entry.displayedValue));
+    }
+  };
+  for (const raw of arr(doc.rooms)) {
+    const room = obj(raw);
+    exact(room, ["id", "topologyKey", "binding", "name", "material", "rules", "fieldInputs", "acknowledgment", "confirmed", "boundaryMemory"]);
+    const id = str(room.id, 1);
+    if (roomIds.has(id)) fail();
+    roomIds.add(id);
+    if (room.topologyKey !== null) str(room.topologyKey, 1, 100000);
+    choice(room.binding, ["attached", "detached"]);
+    str(room.name, 1, 120);
+    fields(room.fieldInputs);
+    acknowledgment(room.acknowledgment);
+    if (room.boundaryMemory !== null) {
+      const memory = obj(room.boundaryMemory);
+      exact(memory, ["topologyKey", "geometryKey"]);
+      str(memory.topologyKey, 1, 100000); str(memory.geometryKey, 1, 100000);
+    }
+    const material = obj(room.material), rules = obj(room.rules);
+    exact(material, ["tile", "grout"]); exact(rules, ["gap", "threshold", "angle"]);
+    for (const subject of [material.tile, material.grout, rules.gap, rules.threshold, rules.angle])
+      requireTenth(num(subject));
+    if (room.confirmed !== null) {
+      const confirmed = obj(room.confirmed);
+      exact(confirmed, ["graph", "topologyKey", "geometryKey", "dependencyKey", "measurementKey", "acknowledgment", "sourceDraftRevision"]);
+      physicalGraphSchema(confirmed.graph);
+      for (const key of ["topologyKey", "geometryKey", "dependencyKey", "measurementKey"])
+        str(confirmed[key], 1, 100000);
+      acknowledgment(confirmed.acknowledgment);
+      integer(confirmed.sourceDraftRevision);
+    }
+  }
+  if (doc.selectedRoomId !== null && !roomIds.has(str(doc.selectedRoomId))) fail();
+  if (plan.pendingEdit !== null) {
+    const pending = obj(plan.pendingEdit);
+    exact(pending, ["kind", "commandId", "command", "basisGraph", "targetDraftRevision"]);
+    if (pending.kind !== "graphV5") fail();
+    str(pending.commandId, 1);
+    integer(pending.targetDraftRevision);
+    if (pending.targetDraftRevision !== plan.draftRevision) fail();
+    const graph = physicalGraphSchema(pending.basisGraph), command = obj(pending.command);
+    const type = str(command.type);
+    if (type === "drawWall") {
+      exact(command, ["type", "drawnEdge", "side", "thicknessMm"]);
+      const edge = arr(command.drawnEdge, 2);
+      if (edge.length !== 2) fail();
+      edge.forEach(pointV6);
+      choice(command.side, ["left", "right"]);
+      if (command.thicknessMm !== undefined) requireTenth(num(command.thicknessMm));
+    } else if (type === "setWallThickness") {
+      exact(command, ["type", "wallId", "thicknessMm"]);
+      if (!graph.walls.some(w => w.id === str(command.wallId, 1))) fail();
+      requireTenth(num(command.thicknessMm));
+    } else if (type === "nudgeWallHandle") {
+      exact(command, ["type", "wallId", "handle", "axis", "direction"]);
+      if (!graph.walls.some(w => w.id === str(command.wallId, 1))) fail();
+      choice(command.handle, ["start", "center", "end"]);
+      choice(command.axis, ["x", "y"]);
+      if (command.direction !== -1 && command.direction !== 1) fail();
+    } else if (type === "deleteWall") {
+      exact(command, ["type", "wallId"]);
+      if (!graph.walls.some(w => w.id === str(command.wallId, 1))) fail();
+    } else fail();
+  }
+  if (plan.restorePoint !== null) {
+    const restore = obj(plan.restorePoint);
+    exact(restore, ["graph", "bindings", "selectedRoomId"]);
+    physicalGraphSchema(restore.graph);
+    if (restore.selectedRoomId !== null && !roomIds.has(str(restore.selectedRoomId))) fail();
+    for (const raw of arr(restore.bindings)) {
+      const binding = obj(raw);
+      exact(binding, ["roomId", "topologyKey"]);
+      if (!roomIds.has(str(binding.roomId))) fail();
+      if (binding.topologyKey !== null) str(binding.topologyKey, 1, 100000);
+    }
+  }
+  const workflow = obj(doc.workflow);
+  exact(workflow, ["requestedStage"]);
+  choice(workflow.requestedStage, ["object", "tile", "rules", "variants"]);
+  const viewport = obj(doc.viewport);
+  exact(viewport, ["centerX", "centerY", "zoom", "gridStepMm"]);
+  num(viewport.centerX); num(viewport.centerY);
+  if (num(viewport.zoom) <= 0 || num(viewport.gridStepMm) <= 0) fail();
+  if (new TextEncoder().encode(JSON.stringify(doc)).length > 2 * 1024 * 1024)
+    throw new Error("Файл больше 2 МиБ.");
+  return structuredClone(value) as ProjectDocumentV6;
 }

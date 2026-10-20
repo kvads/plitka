@@ -74,6 +74,96 @@ export type FaceCandidate = {
   validation: { valid: boolean; issues: Issue[] };
 };
 export type Point = { x: number; y: number };
+export type PhysicalWallV5 = {
+  id: string;
+  drawnEdge: [Point, Point];
+  side: "left" | "right";
+  thicknessMm: number;
+  corners: [Point, Point, Point, Point];
+};
+export type WallJunctionV5 = {
+  id: string;
+  participants: {
+    wallId: string;
+    edge: "drawn" | "opposite" | "startCap" | "endCap";
+    point: Point;
+    attachment: "end" | "interior";
+  }[];
+};
+export type PhysicalGraphV5 = {
+  walls: PhysicalWallV5[];
+  junctions: WallJunctionV5[];
+};
+export type PhysicalCommandV5 =
+  | { type: "drawWall"; drawnEdge: [Point, Point]; side: "left" | "right"; thicknessMm?: number }
+  | { type: "setWallThickness"; wallId: string; thicknessMm: number }
+  | { type: "nudgeWallHandle"; wallId: string; handle: "start" | "center" | "end"; axis: "x" | "y"; direction: -1 | 1 }
+  | { type: "deleteWall"; wallId: string };
+export type PhysicalPolygonV5 = { outline: number[][]; holes: number[][][] };
+export type PhysicalRoomV5 = {
+  topologyKey: string;
+  geometryKey: string;
+  polygon: PhysicalPolygonV5 | null;
+  areaMm2: number | null;
+  validation: { valid: boolean; issues: Issue[] };
+  innerAngles: { valueDeg: number; anchor: Point }[];
+  freeDimensions: { valueMm: number; from: Point; to: Point; anchor: Point }[];
+};
+export type OpenJointAngleV5 = {
+  junctionId: string;
+  wallId: string;
+  adjacentWallId: string;
+  valueDeg: number;
+  label: "Угол стыка";
+  anchor: Point;
+};
+export type PhysicalGraphResponseV5 = {
+  schemaVersion: 5;
+  requestId?: string;
+  commandId?: string;
+  draftRevision: number;
+  basisKey: string;
+  status: "valid" | "invalid" | "applied";
+  graph: PhysicalGraphV5;
+  affectedWallIds: string[];
+  wallArea: PhysicalPolygonV5[];
+  faces: PhysicalRoomV5[];
+  openJointAngles: OpenJointAngleV5[];
+  issues: Issue[];
+};
+export type GraphPendingV5 = {
+  kind: "graphV5";
+  commandId: string;
+  command: PhysicalCommandV5;
+  basisGraph: PhysicalGraphV5;
+  targetDraftRevision: number;
+};
+export type ConfirmedPhysicalRoomV5 = {
+  graph: PhysicalGraphV5;
+  topologyKey: string;
+  geometryKey: string;
+  dependencyKey: string;
+  measurementKey: string;
+  acknowledgment: Acknowledgment | null;
+  sourceDraftRevision: number;
+};
+export type PhysicalRoomRecordV6 = Omit<RoomRecord, "confirmed"> & {
+  confirmed: ConfirmedPhysicalRoomV5 | null;
+};
+export type ProjectDocumentV6 = Omit<ProjectDocumentV5, "schemaVersion" | "plan" | "rooms"> & {
+  schemaVersion: 6;
+  plan: {
+    draft: PhysicalGraphV5;
+    draftRevision: number;
+    pendingEdit: GraphPendingV5 | null;
+    restorePoint: {
+      graph: PhysicalGraphV5;
+      bindings: { roomId: string; topologyKey: string | null }[];
+      selectedRoomId: string | null;
+    } | null;
+  };
+  rooms: PhysicalRoomRecordV6[];
+};
 export type GraphCommand =
   | { type: "addVertex"; point: Point }
   | {
@@ -282,7 +372,8 @@ export interface DeleteProjectIntent {
   origin: 'list' | 'editor';
   requestId: string;
 }
-export type DeleteProjectOutcome =
-  | { status: 'deleted' | 'alreadyMissing'; projectId: string; projects: ProjectDocumentV5[] }
-  | { status: 'conflict'; projectId: string; projects: ProjectDocumentV5[]; current: ProjectDocumentV5 };
+export type DeleteProjectOutcomeFor<D extends ProjectDocumentV5 | ProjectDocumentV6> =
+  | { status: 'deleted' | 'alreadyMissing'; projectId: string; projects: D[] }
+  | { status: 'conflict'; projectId: string; projects: D[]; current: D };
+export type DeleteProjectOutcome = DeleteProjectOutcomeFor<ProjectDocumentV5>;
 export type ProjectDeletionState = 'idle' | 'confirming' | 'deleting' | 'deleted' | 'failed' | 'conflict';

@@ -96,6 +96,35 @@ def test_square_wall_area_and_usable_room():
     assert wall_area(square()).area == 800_000
 
 
+def test_v4_routes_keep_the_axis_contract_for_an_open_old_tab():
+    graph = square()
+    validated = client.post("/api/plan/validate", json=request(graph))
+    assert validated.status_code == 200
+    old = validated.json()
+    assert old["schemaVersion"] == 4
+    assert old["graph"] == graph
+    assert old["faces"][0]["axisPolygon"]
+    assert old["faces"][0]["areaMm2"] == 1900 * 1900
+
+    edited = client.post("/api/plan/command", json={
+        "schemaVersion": 4, "commandId": "old-tab-wall", "draftRevision": 0,
+        "basisKey": "", "graph": graph,
+        "command": {"type": "setWallThickness", "chainId": "c0", "thicknessMm": 150},
+    })
+    assert edited.status_code == 200
+    assert edited.json()["schemaVersion"] == 4
+    assert edited.json()["graph"]["chains"][0]["thicknessMm"] == 150
+
+    deleted = client.post("/api/plan/deletion-preview", json={
+        "schemaVersion": 4, "requestId": "old-tab-delete", "draftRevision": 0,
+        "basisKey": "", "graph": graph,
+        "target": {"kind": "room", "topologyKey": old["faces"][0]["topologyKey"]},
+    })
+    assert deleted.status_code == 200
+    assert deleted.json()["schemaVersion"] == 4
+    assert deleted.json()["status"] == "ready"
+
+
 def test_thickness_change_can_save_invalid_room():
     graph = square()
     command = {"schemaVersion": 4, "commandId": "thick", "draftRevision": 0,

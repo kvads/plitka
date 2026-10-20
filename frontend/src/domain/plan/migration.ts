@@ -11,7 +11,8 @@ import type {
 } from "./types";
 import { newRoom } from "./rooms";
 import { parseV3 } from "./schema";
-import { emptyGraph, type ProjectDocumentV4, type ProjectDocumentV5 } from "./types";
+import { emptyGraph, type ProjectDocumentV4, type ProjectDocumentV5, type ProjectDocumentV6 } from "./types";
+import { parseV6 } from "./schema";
 export function convertGraph(
   g: GeometrySnapshot,
   projectId: string,
@@ -322,4 +323,28 @@ export function createV4(name: string, address = "", id = crypto.randomUUID()): 
 
 export function createV5(name: string, address = "", id = crypto.randomUUID()): ProjectDocumentV5 {
   return { ...createV4(name, address, id), schemaVersion: 5 };
+}
+
+export function createV6(name: string, address = "", id = crypto.randomUUID()): ProjectDocumentV6 {
+  return {
+    schemaVersion: 6,
+    id,
+    name,
+    address,
+    documentRevision: 0,
+    plan: { draft: { walls: [], junctions: [] }, draftRevision: 0, pendingEdit: null, restorePoint: null },
+    rooms: [],
+    selectedRoomId: null,
+    workflow: { requestedStage: "object" },
+    viewport: { centerX: 0, centerY: 0, zoom: 1, gridStepMm: 100 },
+  };
+}
+
+export function parseV6Import(value: unknown): ProjectDocumentV6 {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Некорректный файл проекта.");
+  const exported = value as Record<string, unknown>;
+  if (exported.format !== "plitka-project" || exported.version !== 6)
+    throw new Error("Файлы прежних версий не импортируются.");
+  return parseV6(exported.project);
 }

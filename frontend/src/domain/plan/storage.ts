@@ -1,5 +1,6 @@
-import { cleanV4Document, parseV4, parseV5 } from "./schema";
-import type { ProjectDocumentV4, ProjectDocumentV5 } from "./types";
+import { cleanV4Document, parseV4, parseV5, parseV6 } from "./schema";
+import { parseV6Import } from "./migration";
+import type { ProjectDocumentV4, ProjectDocumentV5, ProjectDocumentV6 } from "./types";
 const OLD_KEY = "plitka-projects-v4";
 export const KEY = "plitka-projects-v5";
 const OLD_KEYS = ["plitka-project-v1", "plitka-projects-v1", "plitka-projects-v2", "plitka-projects-v3"];
@@ -182,4 +183,73 @@ export async function deleteV5(projectId: string, expectedRevision: number): Pro
     localStorage.setItem(KEY, JSON.stringify({ schemaVersion: 5, projects: remaining }));
     return { status: 'deleted', projectId, projects: remaining };
   });
+}
+
+export const KEY_V6 = "plitka-projects-v6";
+const V6_OLD_KEYS = [...V5_OLD_KEYS, KEY];
+
+export function readV6(): ProjectDocumentV6[] {
+  const raw = localStorage.getItem(KEY_V6);
+  if (raw === null) return [];
+  const value = JSON.parse(raw) as Record<string, unknown>;
+  if (value.schemaVersion !== 6 || !Array.isArray(value.projects) ||
+      Object.keys(value).some(key => key !== "schemaVersion" && key !== "projects"))
+    throw new Error("Повреждённый каталог v6. Данные не изменены.");
+  const rows = value.projects.map(parseV6);
+  if (new Set(rows.map(row => row.id)).size !== rows.length)
+    throw new Error("Повтор проекта.");
+  return rows;
+}
+
+export async function initializeV6(): Promise<ProjectDocumentV6[]> {
+  return lock(() => {
+    if (localStorage.getItem(KEY_V6) === null) {
+      localStorage.setItem(KEY_V6, JSON.stringify({ schemaVersion: 6, projects: [] }));
+      if (localStorage.getItem(KEY_V6) === null)
+        throw new Error("Новый каталог не сохранён. Прежние проекты не удалены.");
+    }
+    const rows = readV6();
+    // Each launch resumes a partially interrupted cleanup after validating v6.
+    for (const key of V6_OLD_KEYS) localStorage.removeItem(key);
+    return rows;
+  });
+}
+
+export function saveV6(doc: ProjectDocumentV6, expected: number | null): Promise<ProjectDocumentV6>;
+export function saveV6(doc: ProjectDocumentV6, expected: number | null,
+                       isCurrent: () => boolean): Promise<{status:"saved";document:ProjectDocumentV6}|{status:"skipped"}>;
+export async function saveV6(doc: ProjectDocumentV6, expected: number | null, isCurrent?: () => boolean) {
+  if (isCurrent && !isCurrent()) return { status: "skipped" as const };
+  return lock(() => {
+    if (isCurrent && !isCurrent()) return { status: "skipped" as const };
+    const rows = readV6(), old = rows.find(row => row.id === doc.id);
+    if ((old?.documentRevision ?? null) !== expected)
+      throw new Error("Конфликт: проект изменён в другой вкладке. Загрузите сохранённую версию.");
+    const next = parseV6({ ...doc, documentRevision: expected === null ? 0 : expected + 1 });
+    localStorage.setItem(KEY_V6, JSON.stringify({ schemaVersion: 6,
+      projects: old ? rows.map(row => row.id === doc.id ? next : row) : [...rows, next] }));
+    return isCurrent ? { status: "saved" as const, document: next } : next;
+  });
+}
+
+export async function deleteV6(projectId: string, expectedRevision: number): Promise<
+  | { status: 'deleted' | 'alreadyMissing'; projectId: string; projects: ProjectDocumentV6[] }
+  | { status: 'conflict'; projectId: string; projects: ProjectDocumentV6[]; current: ProjectDocumentV6 }
+> {
+  if (!projectId.trim() || !Number.isInteger(expectedRevision) || expectedRevision < 0)
+    throw new Error("Некорректное подтверждение удаления проекта.");
+  return lock(() => {
+    const projects = readV6(), current = projects.find(row => row.id === projectId);
+    if (!current) return { status: "alreadyMissing", projectId, projects };
+    if (current.documentRevision !== expectedRevision)
+      return { status: "conflict", projectId, projects, current };
+    const remaining = projects.filter(row => row.id !== projectId);
+    localStorage.setItem(KEY_V6, JSON.stringify({ schemaVersion: 6, projects: remaining }));
+    return { status: "deleted", projectId, projects: remaining };
+  });
+}
+
+export async function importV6(file: File): Promise<ProjectDocumentV6> {
+  if (file.size > 2 * 1024 * 1024) throw new Error("Файл больше 2 МиБ.");
+  return parseV6Import(JSON.parse(await file.text()));
 }

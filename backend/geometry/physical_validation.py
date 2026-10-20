@@ -1,0 +1,99 @@
+"""Validation and stable identity for the physical wall graph."""
+
+import hashlib
+import json
+import math
+
+from shapely.geometry import Polygon, Point as ShapelyPoint, LineString
+
+from .physical_models import PhysicalGraphV5, PhysicalPoint, PhysicalWallV5
+from .precision import is_tenth
+
+
+TOLERANCE_MM = 0.1
+
+
+def _pair(point: PhysicalPoint) -> tuple[float, float]:
+    return point.x, point.y
+
+
+def _near(a: PhysicalPoint, b: PhysicalPoint) -> bool:
+    return math.dist(_pair(a), _pair(b)) <= TOLERANCE_MM + 1e-9
+
+
+def _edge(wall: PhysicalWallV5, name: str) -> tuple[PhysicalPoint, PhysicalPoint]:
+    a, b, c, d = wall.corners
+    return {
+        "drawn": (a, b), "opposite": (d, c),
+        "startCap": (a, d), "endCap": (b, c),
+    }[name]
+
+
+def validate_physical_graph(graph: PhysicalGraphV5) -> None:
+    """Reject stored walls that disagree with their canonical physical edge."""
+    walls = {wall.id: wall for wall in graph.walls}
+    for wall in graph.walls:
+        points = (*wall.drawnEdge, *wall.corners)
+        if not all(is_tenth(value) for point in points for value in _pair(point)) or not is_tenth(wall.thicknessMm):
+            raise ValueError("Допустим не более одного знака после запятой.")
+        if wall.corners[:2] != wall.drawnEdge:
+            raise ValueError("Сохранённый край стены не совпадает с её углами.")
+        a, b, c, d = wall.corners
+        ux, uy = b.x - a.x, b.y - a.y
+        length = math.hypot(ux, uy)
+        if length < TOLERANCE_MM:
+            raise ValueError("Длина стены должна быть положительной.")
+        signed_widths = [
+            (ux * (p.y - q.y) - uy * (p.x - q.x)) / length
+            for p, q in ((c, b), (d, a))
+        ]
+        expected = wall.thicknessMm if wall.side == "left" else -wall.thicknessMm
+        if any(abs(width - expected) > TOLERANCE_MM + 1e-7 for width in signed_widths):
+            raise ValueError("Физическая ширина стены не соответствует толщине.")
+        if any(abs((p.x - q.x) * ux + (p.y - q.y) * uy) / length > TOLERANCE_MM + 1e-7
+               for p, q in ((c, b), (d, a))):
+            raise ValueError("Торцы стены должны быть перпендикулярны выбранному краю.")
+        if abs((c.x - d.x) * uy - (c.y - d.y) * ux) / length > TOLERANCE_MM + 1e-7:
+            raise ValueError("Продольные грани стены должны быть параллельны.")
+        polygon = Polygon([_pair(p) for p in wall.corners])
+        if not polygon.is_valid or polygon.area <= 0:
+            raise ValueError("Физический контур стены недопустим.")
+
+    for joint in graph.junctions:
+        positions = []
+        for part in joint.participants:
+            wall = walls[part.wallId]
+            if not is_tenth(part.point.x) or not is_tenth(part.point.y):
+                raise ValueError("Точка стыка должна иметь шаг 0,1 мм.")
+            first, last = _edge(wall, part.edge)
+            line = LineString((_pair(first), _pair(last)))
+            if line.distance(ShapelyPoint(_pair(part.point))) > TOLERANCE_MM + 1e-7:
+                raise ValueError("Точка стыка не лежит на указанной грани.")
+            at_end = _near(part.point, first) or _near(part.point, last)
+            if part.attachment == "interior" and (part.edge.endswith("Cap") or at_end):
+                raise ValueError("Неверный вид примыкания к стене.")
+            if part.attachment == "end" and not (part.edge.endswith("Cap") or at_end):
+                raise ValueError("Конец стены не совпадает со стыком.")
+            positions.append(part.point)
+        if any(not _near(positions[0], position) for position in positions[1:]):
+            raise ValueError("Участники стыка не имеют общей точки контакта.")
+
+
+def canonical_basis_key(graph: PhysicalGraphV5) -> str:
+    wall_data = [wall.model_dump(mode="json") for wall in sorted(graph.walls, key=lambda wall: wall.id)]
+    joint_data = []
+    for joint in sorted(graph.junctions, key=lambda joint: joint.id):
+        row = joint.model_dump(mode="json")
+        row["participants"].sort(key=lambda part: part["wallId"])
+        joint_data.append(row)
+    def tenths(value):
+        if isinstance(value, dict):
+            return {key: tenths(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [tenths(item) for item in value]
+        if isinstance(value, (float, int)) and not isinstance(value, bool):
+            return round(value * 10)
+        return value
+    encoded = json.dumps(tenths({"walls": wall_data, "junctions": joint_data}), sort_keys=True,
+                         ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return "physical-v5:" + hashlib.sha256(encoded).hexdigest()

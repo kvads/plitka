@@ -76,6 +76,8 @@ from .geometry.routes import router as geometry_router
 app.include_router(geometry_router)
 from .geometry.graph_routes import router as graph_router
 app.include_router(graph_router)
+from .geometry.physical_routes import router as physical_graph_router
+app.include_router(physical_graph_router)
 
 DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if DIST.exists():

@@ -1,0 +1,459 @@
+import { expect, test } from "@playwright/test";
+import { touchSession, v6DiagonalWallGraph, v6PhysicalDocument, v6SavedWallGraph } from "./fixtures/projects";
+import type { ProjectDocumentV6 } from "../src/domain/plan/types";
+import { physicalBasisKey } from "../src/domain/plan/physical-basis";
+import { parseV6Import } from "../src/domain/plan/migration";
+import { readFile } from "node:fs/promises";
+
+test("physical v6 replays a saved pending wall command", async ({ page }) => {
+  const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
+  document.plan.pendingEdit = {
+    kind: "graphV5", commandId: "resume-wall",
+    basisGraph: document.plan.draft,
+    targetDraftRevision: document.plan.draftRevision,
+    command: { type: "drawWall", drawnEdge: [{ x: 0, y: 0 }, { x: 1000, y: 0 }],
+      side: "left", thicknessMm: 100 },
+  };
+  await page.goto("/");
+  await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
+    JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
+  await page.goto("/#project/physical-v6-fixture");
+  await expect.poll(() => page.evaluate(() => {
+    const plan = JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan;
+    return [plan.draft.walls.length, plan.pendingEdit];
+  })).toEqual([1, null]);
+  await page.reload();
+  await expect(page.locator("[data-wall-id]")).toHaveCount(1);
+});
+
+test("physical v6 keeps a failed network command for retry after reload", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Новый проект" }).click();
+  await page.getByRole("textbox", { name: "Название проекта" }).fill("Повтор команды");
+  await page.getByRole("button", { name: "Создать проект" }).click();
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  await page.route("**/api/v5/plan/command", route => route.abort());
+  const canvas = page.locator("[data-physical-canvas]");
+  const box = (await canvas.boundingBox())!;
+  await canvas.click({ position: { x: box.width / 2 - 100, y: box.height / 2 } });
+  await canvas.click({ position: { x: box.width / 2 + 100, y: box.height / 2 } });
+  await expect.poll(() => page.evaluate(() => {
+    const plan = JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan;
+    return [plan.draft.walls.length, plan.pendingEdit?.kind];
+  })).toEqual([0, "graphV5"]);
+  await page.unroute("**/api/v5/plan/command");
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => {
+    const plan = JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan;
+    return [plan.draft.walls.length, plan.pendingEdit];
+  })).toEqual([1, null]);
+});
+
+test("physical v6 mobile panel selects a wall point at low zoom", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 375, height: 740 },
+    hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  try {
+    const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
+    document.plan.draft = v6SavedWallGraph();
+    document.plan.pendingEdit = null;
+    document.plan.restorePoint = null;
+    document.viewport = { centerX: 500, centerY: 0, zoom: 1, gridStepMm: 100 };
+    await page.goto("/");
+    await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
+      JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
+    await page.goto("/#project/physical-v6-fixture");
+    await page.locator("[data-wall-id]").focus();
+    await page.keyboard.press("Enter");
+    await page.getByRole("button", { name: "Конец", exact: true }).click();
+    await page.getByRole("group", { name: "Сдвиг точки стены" })
+      .getByRole("button", { name: "Сдвинуть точку стены → на 1 мм" }).click();
+    await expect.poll(() => page.evaluate(() =>
+      JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls[0].drawnEdge[1].x))
+      .toBe(1001);
+  } finally { await context.close(); }
+});
+
+test("physical v6 project creates a wall and reopens it twice", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Новый проект" }).click();
+  await page.getByRole("textbox", { name: "Название проекта" }).fill("Физический план");
+  await page.getByRole("button", { name: "Создать проект" }).click();
+  await expect(page.locator("[data-physical-canvas]")).toBeVisible();
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const canvas = page.locator("[data-physical-canvas]");
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  await canvas.click({ position: { x: box!.width / 2 - 120, y: box!.height / 2 } });
+  await canvas.click({ position: { x: box!.width / 2 + 120, y: box!.height / 2 } });
+  await expect.poll(() => page.evaluate(() => {
+    const rows = JSON.parse(localStorage.getItem("plitka-projects-v6") ?? "{}");
+    return rows.projects?.[0]?.plan?.draft?.walls?.length;
+  })).toBe(1);
+  const document = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0]);
+  expect(document.schemaVersion).toBe(6);
+  expect(document.plan.draft.walls[0].corners).toHaveLength(4);
+  expect(await page.evaluate(() => localStorage.getItem("plitka-projects-v5"))).toBeNull();
+  await page.getByRole("button", { name: "Раскрыть меню" }).click();
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  await page.locator("[data-wall-id]").click();
+  await expect(page.locator("[data-wall-handle]")).toHaveCount(3);
+  await page.getByRole("button", { name: "Точка стены: середина" }).click();
+  const beforeNudge = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls[0].drawnEdge);
+  await page.getByRole("button", { name: "Сдвинуть стену → на 1 мм" }).click();
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls[0].drawnEdge[0].x)).toBe(beforeNudge[0].x + 1);
+  await page.getByRole("button", { name: "Раскрыть меню" }).click();
+  await page.getByRole("button", { name: "Отменить правку" }).click();
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls[0].drawnEdge[0].x)).toBe(beforeNudge[0].x);
+  for (let index = 0; index < 2; index++) {
+    await page.reload();
+    await expect(page.locator("[data-physical-canvas]")).toBeVisible();
+    await expect(page.locator("[data-wall-id]")).toHaveCount(1);
+  }
+  await page.getByRole("button", { name: "Проект", exact: true }).click();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Скачать проект" }).click();
+  const exported = await download;
+  expect(exported.suggestedFilename()).toBe("Физический план.json");
+  const imported = parseV6Import(JSON.parse(await readFile(await exported.path(), "utf8")));
+  expect(imported.plan.draft.walls).toHaveLength(1);
+  await page.getByRole("button", { name: "Удалить проект" }).first().click();
+  await page.getByRole("dialog", { name: "Удалить проект" }).getByRole("button", { name: "Удалить проект" }).click();
+  await expect(page.getByRole("heading", { name: "Проекты", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects)).toHaveLength(0);
+});
+
+test("physical v6 pan between wall taps keeps the first world point", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 740 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Новый проект" }).click();
+  await page.getByRole("textbox", { name: "Название проекта" }).fill("Жесты");
+  await page.getByRole("button", { name: "Создать проект" }).click();
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const canvas = page.locator("[data-physical-canvas]");
+  const box = (await canvas.boundingBox())!;
+  await canvas.click({ position: { x: box.width / 2 - 60, y: box.height / 2 } });
+  const first = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0]);
+  expect(first.plan.draft.walls).toHaveLength(0);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 50, box.y + box.height / 2 + 20, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].viewport.centerX)).not.toBe(0);
+  const afterPan = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0]);
+  expect(afterPan.plan.draft.walls).toHaveLength(0);
+  await page.getByRole("radio", { name: "Справа" }).check();
+  await page.getByRole("spinbutton", { name: "Толщина, мм" }).fill("150");
+  await canvas.click({ position: { x: box.width / 2 + 65, y: box.height / 2 } });
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls.length)).toBe(1);
+  const wall = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls[0]);
+  expect(wall.drawnEdge[0].x).toBeLessThan(0);
+  expect(wall.side).toBe("right");
+  expect(wall.thicknessMm).toBe(150);
+  await page.getByRole("button", { name: "Переключить режим" }).click();
+  const choices = page.getByRole("navigation", { name: "Режим проекта" });
+  await expect(choices).toBeVisible();
+  const bounds = (await choices.boundingBox())!;
+  expect(bounds.x).toBeGreaterThanOrEqual(0);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(375);
+  await choices.getByRole("button", { name: "Раскладка" }).click();
+  await expect(page.getByRole("heading", { name: "Раскладка" })).toBeVisible();
+});
+
+test("physical v6 cancels an unfinished wall by button or Escape", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Новый проект" }).click();
+  await page.getByRole("textbox", { name: "Название проекта" }).fill("Отмена стены");
+  await page.getByRole("button", { name: "Создать проект" }).click();
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const canvas = page.locator("[data-physical-canvas]");
+  const box = (await canvas.boundingBox())!;
+  const first = { x: box.width / 2 - 100, y: box.height / 2 };
+  await canvas.click({ position: first });
+  await page.getByRole("button", { name: "Отменить начало стены" }).click();
+  await expect(page.getByRole("button", { name: "Отменить начало стены" })).toHaveCount(0);
+  await canvas.click({ position: first });
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Отменить начало стены" })).toHaveCount(0);
+  expect(await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls)).toEqual([]);
+});
+
+test("physical v6 desktop wall cursor follows the mouse at 10 mm size", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Новый проект" }).click();
+  await page.getByRole("textbox", { name: "Название проекта" }).fill("Курсор стены");
+  await page.getByRole("button", { name: "Создать проект" }).click();
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const canvas = page.locator("[data-physical-canvas]");
+  const box = (await canvas.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const cursor = canvas.locator("[data-wall-cursor]");
+  await expect(cursor).toHaveAttribute("width", "10");
+  const first = Number(await cursor.getAttribute("x"));
+  await page.mouse.move(box.x + box.width / 2 + 12, box.y + box.height / 2);
+  const next = Number(await cursor.getAttribute("x"));
+  expect(next - first).toBeGreaterThan(50);
+  expect(next - first).toBeLessThan(150);
+});
+
+test("physical v6 selects a room from its usable floor", async ({ page, request }) => {
+  let graph: unknown = { walls: [], junctions: [] };
+  const walls: [number[][], "left" | "right"][] = [
+    [[[0, 0], [1000, 0]], "right"],
+    [[[1000, 0], [1000, 1000]], "left"],
+    [[[1000, 1000], [0, 1000]], "right"],
+    [[[0, 1000], [0, 0]], "left"],
+  ];
+  for (const [index, [edge, side]] of walls.entries()) {
+    const response = await request.post("/api/v5/plan/command", { data: {
+      schemaVersion: 5, commandId: `browser-room-${index}`, draftRevision: index,
+      basisKey: await physicalBasisKey(graph as ProjectDocumentV6["plan"]["draft"]), graph,
+      command: { type: "drawWall", drawnEdge: edge.map(([x, y]) => ({ x, y })),
+        side, thicknessMm: 100 },
+    } });
+    expect(response.ok()).toBeTruthy();
+    const body = await response.json();
+    expect(body.status).toBe("applied");
+    graph = body.graph;
+  }
+  const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
+  document.plan.draft = graph as ProjectDocumentV6["plan"]["draft"];
+  document.plan.pendingEdit = null;
+  document.plan.restorePoint = null;
+  document.rooms = [];
+  document.selectedRoomId = null;
+  document.viewport = { centerX: 500, centerY: 500, zoom: 4, gridStepMm: 100 };
+  await page.goto("/");
+  await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
+    JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
+  await page.goto("/#project/physical-v6-fixture");
+  await expect(page.locator("[data-room-key]")).toHaveCount(1);
+  await expect(page.locator("[data-room-key]")).toHaveAttribute("fill", "#fff");
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms.length)).toBe(1);
+  await page.getByRole("button", { name: "Раскладка", exact: true }).click();
+  await expect(page.locator("[data-room-key]")).toHaveAttribute("fill", "#fff4bb");
+  await page.locator("[data-room-key]").click();
+  await expect(page.getByRole("textbox", { name: "Название помещения" })).toHaveValue("Помещение 1");
+  await expect(page.getByText("800 000,0 мм²")).toBeVisible();
+  await expect(page.locator("[data-physical-canvas]").getByText("90,0°").first()).toBeVisible();
+  await expect(page.locator("[data-physical-canvas]").getByText("800,0 мм").first()).toBeVisible();
+  await page.getByRole("button", { name: "Подобрать раскладку" }).click();
+  await expect(page.getByText(/Плиток:/)).toBeVisible();
+  const csvDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Таблица деталей · CSV" }).click();
+  const csv = await csvDownload;
+  expect((await readFile(await csv.path(), "utf8"))).toContain("Площадь мм²");
+  await expect(page.locator("[data-room-key]")).toHaveAttribute("fill", "#fff");
+  await expect(page.locator("[data-room-key]")).toHaveCount(1);
+  const roomId = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].id);
+  await page.getByRole("button", { name: "Раскрыть меню" }).click();
+  await page.getByRole("button", { name: "Проект", exact: true }).click();
+  await page.getByRole("button", { name: "Очистить проект" }).first().click();
+  await page.getByRole("dialog", { name: "Очистить проект" }).getByRole("button", { name: "Очистить проект" }).click();
+  await expect(page.locator("[data-room-key]")).toHaveCount(0);
+  await page.getByRole("button", { name: "Вернуть план к сохранённому снимку" }).click();
+  await expect(page.locator("[data-room-key]")).toHaveCount(1);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].id)).toBe(roomId);
+});
+
+test("physical v6 shows separated touch targets and creates a wall with two taps", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 375, height: 740 },
+    hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  try {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Новый проект" }).click();
+    await page.getByRole("textbox", { name: "Название проекта" }).fill("Касания");
+    await page.getByRole("button", { name: "Создать проект" }).click();
+    await page.getByRole("button", { name: "Раскрыть меню" }).click();
+    await page.getByRole("button", { name: "Стена", exact: true }).click();
+    const targets = await page.locator("[data-mobile-target]").evaluateAll(nodes => nodes.map(node => {
+      const dot = node.querySelector("circle")!;
+      const x = Number(dot.getAttribute("cx")), y = Number(dot.getAttribute("cy"));
+      const matrix = (node as SVGGElement).getScreenCTM()!;
+      return { x: matrix.a * x + matrix.c * y + matrix.e,
+        y: matrix.b * x + matrix.d * y + matrix.f,
+        worldX: x, worldY: -y };
+    }));
+    expect(targets.length).toBeGreaterThan(5);
+    for (let index = 0; index < targets.length; index++)
+      for (const other of targets.slice(index + 1))
+        expect(Math.hypot(targets[index].x - other.x, targets[index].y - other.y)).toBeGreaterThanOrEqual(43.9);
+    const middle = targets.find(point => point.x > 120 && point.x < 230 && point.y > 250 && point.y < 450)!;
+    const second = targets.find(point => point.y === middle.y && point.x > middle.x + 44)!;
+    expect(middle).toBeTruthy();
+    expect(second).toBeTruthy();
+    await page.touchscreen.tap(middle.x, middle.y);
+    const guides = await page.locator("[data-guide-target]").evaluateAll(nodes => nodes.map(node => {
+      const circle = node.querySelector("circle")!;
+      return { x: Number(circle.getAttribute("cx")), y: -Number(circle.getAttribute("cy")) };
+    }));
+    expect(guides.length).toBeGreaterThan(0);
+    for (const guide of guides) {
+      expect(Number.isInteger(guide.x * 10)).toBeTruthy();
+      expect(Number.isInteger(guide.y * 10)).toBeTruthy();
+      expect(guide.x === middle.worldX || guide.y === middle.worldY).toBeTruthy();
+    }
+    await page.touchscreen.tap(second.x, second.y);
+    await expect.poll(() => page.evaluate(() =>
+      JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls.length)).toBe(1);
+  } finally { await context.close(); }
+});
+
+test("physical v6 previews and deletes a selected wall", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Новый проект" }).click();
+  await page.getByRole("textbox", { name: "Название проекта" }).fill("Удаление стены");
+  await page.getByRole("button", { name: "Создать проект" }).click();
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const canvas = page.locator("[data-physical-canvas]");
+  const box = (await canvas.boundingBox())!;
+  await canvas.click({ position: { x: box.width / 2 - 120, y: box.height / 2 } });
+  await canvas.click({ position: { x: box.width / 2 + 120, y: box.height / 2 } });
+  await expect(canvas.locator("[data-wall-id]")).toHaveCount(1);
+  await page.getByRole("button", { name: "Раскрыть меню" }).click();
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  await canvas.locator("[data-wall-id]").click();
+  await page.getByRole("button", { name: "Удалить стену" }).first().click();
+  await expect(page.getByRole("dialog", { name: "Удалить стену" })).toBeVisible();
+  await page.getByRole("dialog", { name: "Удалить стену" }).getByRole("button", { name: "Удалить стену" }).click();
+  await expect(canvas.locator("[data-wall-id]")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls.length)).toBe(0);
+});
+
+test("physical v6 pinch moves the view without creating a wall", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 740 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Новый проект" }).click();
+  await page.getByRole("textbox", { name: "Название проекта" }).fill("Масштаб");
+  await page.getByRole("button", { name: "Создать проект" }).click();
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const before = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].viewport.zoom);
+  const touch = await touchSession(page);
+  await touch.dispatch("touchStart", [{ id: 11, x: 145, y: 330 }, { id: 12, x: 225, y: 330 }]);
+  await touch.dispatch("touchMove", [{ id: 11, x: 115, y: 345 }, { id: 12, x: 255, y: 345 }]);
+  await touch.dispatch("touchEnd", []);
+  await touch.close();
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].viewport.zoom)).toBeGreaterThan(before);
+  const cancelled = await touchSession(page);
+  await cancelled.dispatch("touchStart", [{ id: 13, x: 170, y: 310 }]);
+  await cancelled.dispatch("touchCancel", []);
+  await cancelled.close();
+  await expect(page.getByRole("button", { name: "Отменить начало стены" })).toHaveCount(0);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls)).toHaveLength(0);
+});
+
+test("physical v6 wheel zoom stays anchored under the cursor", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Новый проект" }).click();
+  await page.getByRole("textbox", { name: "Название проекта" }).fill("Колесо");
+  await page.getByRole("button", { name: "Создать проект" }).click();
+  const canvas = page.locator("[data-physical-canvas]");
+  const box = (await canvas.boundingBox())!;
+  const client = { x: box.x + box.width * .7, y: box.y + box.height * .4 };
+  const world = await canvas.evaluate((svg, client) => {
+    const point = new DOMPoint(client.x, client.y).matrixTransform((svg as SVGSVGElement).getScreenCTM()!.inverse());
+    return { x: point.x, y: point.y };
+  }, client);
+  await page.mouse.move(client.x, client.y);
+  await page.mouse.wheel(0, -200);
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].viewport.zoom)).toBeGreaterThan(1);
+  const after = await canvas.evaluate((svg, world) => {
+    const point = new DOMPoint(world.x, world.y).matrixTransform((svg as SVGSVGElement).getScreenCTM()!);
+    return { x: point.x, y: point.y };
+  }, world);
+  expect(after.x).toBeCloseTo(client.x, 0);
+  expect(after.y).toBeCloseTo(client.y, 0);
+  await page.mouse.wheel(0, -100000);
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].viewport.zoom)).toBe(8);
+  await page.mouse.wheel(0, 100000);
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].viewport.zoom)).toBe(0.2);
+  expect(await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls)).toEqual([]);
+});
+
+test("physical v6 diagonal wall ruler offers a precise perpendicular target", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 375, height: 740 },
+    hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  try {
+    const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
+    document.plan.draft = v6DiagonalWallGraph();
+    document.plan.pendingEdit = null;
+    document.plan.restorePoint = null;
+    document.rooms = [];
+    document.selectedRoomId = null;
+    document.viewport = { centerX: 2000, centerY: 0, zoom: 14, gridStepMm: 100 };
+    await page.goto("/");
+    await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
+      JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
+    await page.goto("/#project/physical-v6-fixture");
+    await page.getByRole("button", { name: "Раскрыть меню" }).click();
+    await page.getByRole("button", { name: "Стена", exact: true }).click();
+    const canvas = page.locator("[data-physical-canvas]");
+    const start = await canvas.evaluate(svg => {
+      const point = new DOMPoint(2000, 0).matrixTransform((svg as SVGSVGElement).getScreenCTM()!);
+      return { x: point.x, y: point.y };
+    });
+    await page.touchscreen.tap(start.x, start.y);
+    const guides = await page.locator("[data-guide-target]").evaluateAll(nodes => nodes.map(node => {
+      const circle = node.querySelector("circle")!;
+      return { x: Number(circle.getAttribute("cx")), y: -Number(circle.getAttribute("cy")) };
+    }));
+    const perpendicular = guides.find(point => point.x > 2000 && point.y < 0);
+    expect(perpendicular).toBeTruthy();
+    const dx = perpendicular!.x - 2000, dy = perpendicular!.y;
+    expect(Math.abs(Math.hypot(dx, dy) - 100)).toBeLessThanOrEqual(.1);
+    expect(Math.abs(dx + dy)).toBeLessThanOrEqual(.1);
+    await expect(canvas.getByText("100,0 мм · 90,0°").first()).toBeVisible();
+  } finally { await context.close(); }
+});
+
+for (const width of [320, 430]) test(`physical v6 controls fit a ${width}px phone`, async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width, height: 740 },
+    hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  try {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Новый проект" }).click();
+    await page.getByRole("textbox", { name: "Название проекта" }).fill("Телефон");
+    await page.getByRole("button", { name: "Создать проект" }).click();
+    const switcher = page.getByRole("button", { name: "Переключить режим" });
+    await expect(switcher).toBeVisible();
+    await switcher.click();
+    const modes = page.getByRole("navigation", { name: "Режим проекта" });
+    await expect(modes).toBeVisible();
+    const bounds = (await modes.boundingBox())!;
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+    await modes.getByRole("button", { name: "План" }).click();
+    await page.getByRole("button", { name: "Раскрыть меню" }).click();
+    await page.getByRole("button", { name: "Стена", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Раскрыть меню" })).toBeVisible();
+    const thicknessField = page.getByRole("spinbutton", { name: "Толщина, мм" });
+    const rightSide = page.getByRole("radio", { name: "Справа" });
+    await expect(thicknessField).toBeVisible();
+    await thicknessField.focus();
+    await expect(thicknessField).toBeFocused();
+    await expect(rightSide).toBeVisible();
+    await rightSide.focus();
+    await expect(rightSide).toBeFocused();
+    await page.getByRole("button", { name: "Раскрыть меню" }).click();
+    const sidebarBounds = (await page.getByRole("complementary", { name: "Управление планом" }).boundingBox())!;
+    const panelBounds = (await page.getByRole("heading", { name: "Новая стена" }).locator("xpath=..").boundingBox())!;
+    expect(sidebarBounds.x + sidebarBounds.width).toBeLessThanOrEqual(panelBounds.x);
+    await expect(page.getByRole("button", { name: "Далее" })).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  } finally { await context.close(); }
+});
