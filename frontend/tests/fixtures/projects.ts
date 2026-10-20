@@ -253,6 +253,7 @@ export const v6PhysicalDocument = () => {
   const graph = v6SavedWallGraph();
   return {
     schemaVersion: 6 as const,
+    sharedGrid: null,
     id: "physical-v6-fixture",
     name: "Физическая стена",
     address: "",

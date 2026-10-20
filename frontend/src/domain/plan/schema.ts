@@ -631,7 +631,7 @@ export function physicalGraphSchema(value: unknown): PhysicalGraphV5 {
 /** Validate all persisted v6 graph snapshots and subject values. */
 export function parseV6(value: unknown): ProjectDocumentV6 {
   const doc = obj(value);
-  exact(doc, ["schemaVersion", "id", "name", "address", "documentRevision", "plan", "rooms", "selectedRoomId", "workflow", "viewport"]);
+  exact(doc, ["schemaVersion", "id", "name", "address", "documentRevision", "plan", "rooms", "selectedRoomId", "workflow", "viewport", "sharedGrid"]);
   if (doc.schemaVersion !== 6) fail();
   str(doc.id, 1); str(doc.name, 1, 120); str(doc.address, 0, 300);
   integer(doc.documentRevision);
@@ -683,6 +683,25 @@ export function parseV6(value: unknown): ProjectDocumentV6 {
     }
   }
   if (doc.selectedRoomId !== null && !roomIds.has(str(doc.selectedRoomId))) fail();
+  if (doc.sharedGrid !== undefined && doc.sharedGrid !== null) {
+    const grid = obj(doc.sharedGrid);
+    exact(grid, ["referenceRoomId", "referenceBasis", "tile", "grout", "angle", "offsetX", "offsetY", "linkedRoomIds"]);
+    const referenceRoomId = str(grid.referenceRoomId, 1);
+    if (!roomIds.has(referenceRoomId)) fail();
+    str(grid.referenceBasis, 1, 100000);
+    for (const value of [grid.tile, grid.grout, grid.angle, grid.offsetX, grid.offsetY])
+      requireTenth(num(value));
+    if (num(grid.tile) < 50 || num(grid.tile) > 2000 ||
+        num(grid.grout) < 0 || num(grid.grout) > 20 ||
+        num(grid.angle) < 0 || num(grid.angle) >= 90 ||
+        Math.abs(num(grid.offsetX)) > 100000 || Math.abs(num(grid.offsetY)) > 100000) fail();
+    const linked = new Set<string>();
+    for (const raw of arr(grid.linkedRoomIds)) {
+      const id = str(raw, 1);
+      if (!roomIds.has(id) || id === referenceRoomId || linked.has(id)) fail();
+      linked.add(id);
+    }
+  }
   if (plan.pendingEdit !== null) {
     const pending = obj(plan.pendingEdit);
     exact(pending, ["kind", "commandId", "command", "basisGraph", "targetDraftRevision"]);
@@ -735,5 +754,7 @@ export function parseV6(value: unknown): ProjectDocumentV6 {
   if (num(viewport.zoom) <= 0 || num(viewport.gridStepMm) <= 0) fail();
   if (new TextEncoder().encode(JSON.stringify(doc)).length > 2 * 1024 * 1024)
     throw new Error("Файл больше 2 МиБ.");
-  return structuredClone(value) as ProjectDocumentV6;
+  const parsed = structuredClone(value) as ProjectDocumentV6;
+  parsed.sharedGrid ??= null;
+  return parsed;
 }

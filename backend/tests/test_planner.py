@@ -5,9 +5,34 @@ from shapely.geometry import Polygon, MultiPolygon, box
 from shapely.ops import unary_union
 from backend.main import app, Project
 from backend.planner import prepare, calculate, optimize, dominates
+from backend.planner_v5 import calculate_v5
 from backend.geometry.faces import inspect
 
 client = TestClient(app)
+
+
+def test_three_rooms_share_world_grid_phase_across_wall_width():
+    tile, grout, offset_x, offset_y = 200, 2, 73.2, 41.6
+    layouts = []
+    for left in (0, 1100, 2200):
+        room = Project(outline=[(left, 0), (left + 1000, 0),
+                                (left + 1000, 1000), (left, 1000)],
+                       tile=tile, grout=grout, gap=0, threshold=50, angle=0)
+        layouts.append(calculate_v5(room, offset_x, offset_y))
+    for layout in layouts:
+        assert layout["offset_x"] == offset_x
+        assert layout["offset_y"] == offset_y
+        assert layout["parts"]
+        for part in layout["parts"]:
+            polygon = Polygon(part["rings"][0], part["rings"][1:])
+            assert not polygon.intersects(box(1000.1, 0.1, 1099.9, 999.9))
+            assert not polygon.intersects(box(2100.1, 0.1, 2199.9, 999.9))
+            if part["full"]:
+                first_x = min(x for x, _ in part["rings"][0])
+                first_y = min(y for _, y in part["rings"][0])
+                for coordinate, offset in ((first_x, offset_x), (first_y, offset_y)):
+                    phase_error = (coordinate - offset) % (tile + grout)
+                    assert min(phase_error, tile + grout - phase_error) < .01
 
 
 def test_physical_wall_room_uses_1900mm_inner_polygon_for_planner():

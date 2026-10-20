@@ -22,7 +22,7 @@ type Props = {
   highlightRooms?: boolean;
   roomMissing?: Record<string, boolean>;
   roomNames?: Record<string, string>;
-  layout?: Layout | null;
+  layouts?: { roomId: string; layout: Layout }[];
   viewport: Viewport;
   onViewport: (viewport: Viewport) => void;
   selectedWallId: string | null;
@@ -53,7 +53,7 @@ const precisePoint = (point: Point): Point =>
 
 export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces = [], openJointAngles = [],
   selectedRoomKey, onSelectRoom,
-  highlightRooms = false, roomMissing = {}, roomNames = {}, layout, viewport, onViewport,
+  highlightRooms = false, roomMissing = {}, roomNames = {}, layouts = [], viewport, onViewport,
   selectedWallId, onSelectWall, selectedHandle, onSelectHandle, onNudge,
   wallTool, side, thicknessMm, onDrawWall }: Props) {
   const svg = useRef<SVGSVGElement>(null);
@@ -232,6 +232,23 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       Math.hypot(corner.x - nearest.point.x, corner.y - nearest.point.y) * pixelScale < targetSpacingPx).length > 1)
       return precisePoint(point);
     if (nearest) return nearest.point;
+    // Attach to the visible long face, including its middle. Corners keep
+    // priority, while the attraction radius stays usable at every zoom.
+    let faceTarget: Point | null = null;
+    let faceDistance = radius;
+    for (const wall of graph.walls) for (const [a, b] of [
+      [wall.corners[0], wall.corners[1]], [wall.corners[3], wall.corners[2]],
+    ]) {
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const lengthSq = dx * dx + dy * dy;
+      if (lengthSq < .01) continue;
+      const ratio = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSq;
+      if (ratio < 0 || ratio > 1) continue;
+      const projected = { x: a.x + ratio * dx, y: a.y + ratio * dy };
+      const distance = Math.hypot(point.x - projected.x, point.y - projected.y);
+      if (distance < faceDistance) { faceDistance = distance; faceTarget = projected; }
+    }
+    if (faceTarget) return precisePoint(faceTarget);
     if (start) {
       let aligned: Point | null = null;
       let bestDistance = (mobile ? 18 : 12) / Math.max(pixelScale, .01);
@@ -298,8 +315,9 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       }
     } else if (wallTool && event.pointerType === "mouse") {
       const point = world(event.clientX, event.clientY);
-      setCursor(point);
-      setHover(point ? target(point) : null);
+      const snapped = point ? target(point) : null;
+      setCursor(snapped);
+      setHover(snapped);
     }
   };
   const finish = (event: React.PointerEvent<SVGSVGElement>, cancelled = false) => {
@@ -356,6 +374,9 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   })() : null;
   const acceptedPreview = serverPreview?.key === previewKey && serverPreview.response.status === "valid"
     ? serverPreview.response : null;
+  const previewWallId = acceptedPreview?.affectedWallIds[0];
+  const previewAngles = previewWallId ? acceptedPreview!.openJointAngles.filter(angle =>
+    angle.wallId === previewWallId) : [];
   const splitDimensions = splitWallDimensions(
     acceptedPreview?.graph ?? graph, acceptedPreview?.wallArea ?? wallArea, 17 / pixelScale);
   const otherFaceDimensions = selectedRoomKey ? faces.find(face => face.topologyKey === selectedRoomKey)
@@ -434,11 +455,12 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       fill={highlightRooms && roomMissing[face.topologyKey] ? "#fff4bb" : "#fff"}
       stroke={face.topologyKey === selectedRoomKey ? "#444" : "none"}
       strokeWidth={2 / pixelScale} />)}
-    {layout?.parts.map(part => <path key={part.id} pointerEvents="none"
+    {layouts.flatMap(({ roomId, layout }) => layout.parts.map(part => <path key={`${roomId}:${part.id}`}
+      data-layout-room-id={roomId} pointerEvents="none"
       d={part.rings.map(ring => ring.map(([x, y], index) =>
         `${index ? "L" : "M"}${x} ${-y}`).join(" ") + " Z").join(" ")}
       fill={part.full ? "#eee" : "#ccc"} fillRule="evenodd"
-      stroke="#777" strokeWidth={Math.max(0.7 / pixelScale, 0.15)} />)}
+      stroke="#777" strokeWidth={Math.max(0.7 / pixelScale, 0.15)} />))}
     <g pointerEvents="none">
       {(acceptedPreview?.wallArea ?? wallArea).map((shape, index) => <path key={index} d={svgPath(shape)} fill="#aaa" fillRule="evenodd"
         stroke="#292929" strokeWidth={2 / pixelScale} />)}
@@ -447,8 +469,11 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       {acceptedPreview?.proposedWall && <path d={wallPath(acceptedPreview.proposedWall.corners)}
         fill="#77777780" stroke="#333" strokeWidth={2 / pixelScale} />}
       {start && <circle cx={start.x} cy={-start.y} r={8 / pixelScale} fill="#333" />}
-      {wallTool && !start && cursor && <rect data-wall-cursor x={cursor.x - 5} y={-cursor.y - 5}
-        width={10} height={10} fill="url(#physical-wall-cursor-hatch)"
+      {wallTool && !start && cursor && <rect data-wall-cursor
+        x={cursor.x - Math.max(10, 18 / pixelScale) / 2}
+        y={-cursor.y - Math.max(10, 18 / pixelScale) / 2}
+        width={Math.max(10, 18 / pixelScale)} height={Math.max(10, 18 / pixelScale)}
+        fill="url(#physical-wall-cursor-hatch)"
         stroke="#333" strokeWidth={1 / pixelScale} />}
       {previewLength >= .1 && start && hover && <text data-wall-preview-length
         x={(start.x + hover.x) / 2} y={-(start.y + hover.y) / 2 - 18 / pixelScale}
@@ -456,6 +481,12 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         fill="#222" stroke="#fff" strokeWidth={3 / pixelScale} paintOrder="stroke">
         {displayTenth(previewLength)} мм
       </text>}
+      {previewAngles.map(angle => <text key={angle.junctionId} data-wall-preview-angle
+        x={angle.anchor.x} y={-angle.anchor.y}
+        textAnchor="middle" fontSize={13 / pixelScale} fontWeight={600}
+        fill="#222" stroke="#fff" strokeWidth={3 / pixelScale} paintOrder="stroke">
+        {displayTenth(angle.valueDeg)}°
+      </text>)}
     </g>
     {graph.walls.map(wall => <path key={wall.id} data-wall-id={wall.id}
       tabIndex={wallTool ? -1 : 0} role="button" aria-label="Выбрать стену"

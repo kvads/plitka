@@ -334,6 +334,7 @@ export function createV6(name: string, address = "", id = crypto.randomUUID()): 
     documentRevision: 0,
     plan: { draft: { walls: [], junctions: [] }, draftRevision: 0, pendingEdit: null, restorePoint: null },
     rooms: [],
+    sharedGrid: null,
     selectedRoomId: null,
     workflow: { requestedStage: "object" },
     viewport: { centerX: 0, centerY: 0, zoom: 1, gridStepMm: 100 },

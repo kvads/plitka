@@ -12,6 +12,7 @@ import { api } from "../../api";
 import type { Layout, LayoutRequest } from "../../types";
 import { physicalDeletionPreview, type PhysicalDeletionImpact } from "../../domain/plan/deletion-api";
 import { exportResult } from "../../domain/project/result-export";
+import { activeSharedGrid, roomLayoutBasis, roomLayoutKey, roomLayoutRequest } from "../../domain/plan/shared-grid";
 import "./canvas.css";
 
 const displayTenth = (value: number) => value.toLocaleString("ru-RU", {
@@ -51,7 +52,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const [layoutCache, setLayoutCache] = useState<Record<string, { key: string; variants: Layout[]; selected: number }>>({});
   const [layoutLoading, setLayoutLoading] = useState(false);
   const [layoutError, setLayoutError] = useState("");
+  const [sharedLoading, setSharedLoading] = useState(false);
   const layoutGeneration = useRef(0);
+  const failedAutomaticLayouts = useRef(new Set<string>());
   const thickness = Number(thicknessInput.replace(",", "."));
   const thicknessValid = isTenth(thickness) && thickness >= 0.1 && thickness <= 100000;
   const selected = doc.plan.draft.walls.find(wall => wall.id === selectedWallId);
@@ -60,9 +63,18 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   } }, [selectedWallId, selected]);
   const room = doc.rooms.find(item => item.id === doc.selectedRoomId);
   const selectedFace = response?.faces.find(face => face.topologyKey === room?.topologyKey);
-  const layoutKey = JSON.stringify([doc.id, room?.id, selectedFace?.geometryKey, room?.material, room?.rules]);
+  const sharedGrid = activeSharedGrid(doc, response?.faces ?? []);
+  const referenceRoom = doc.rooms.find(item => item.id === doc.sharedGrid?.referenceRoomId);
+  const linked = !!room && !!doc.sharedGrid?.linkedRoomIds.includes(room.id);
+  const layoutKey = room ? roomLayoutKey(doc, room, selectedFace, sharedGrid) : "";
   const cachedLayout = room ? layoutCache[room.id] : undefined;
   const activeLayout = cachedLayout?.key === layoutKey ? cachedLayout.variants[cachedLayout.selected] : null;
+  const visibleLayouts = doc.rooms.flatMap(candidate => {
+    const face = response?.faces.find(item => item.topologyKey === candidate.topologyKey);
+    const cached = layoutCache[candidate.id];
+    return face?.polygon && cached?.key === roomLayoutKey(doc, candidate, face, sharedGrid)
+      ? [{ roomId: candidate.id, layout: cached.variants[cached.selected] }] : [];
+  });
   const selectedThickness = Number(selectedThicknessInput.replace(",", "."));
   const selectedThicknessValid = isTenth(selectedThickness) && selectedThickness >= 0.1 && selectedThickness <= 100000;
   const chooseWall = (wallId: string | null) => {
@@ -80,35 +92,78 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   }, [doc.plan.draftRevision, selectedWallId]);
   const roomMissing = Object.fromEntries((response?.faces ?? []).map(face => {
     const candidate = doc.rooms.find(item => item.topologyKey === face.topologyKey);
-    const key = JSON.stringify([doc.id, candidate?.id, face.geometryKey,
-      candidate?.material, candidate?.rules]);
-    return [face.topologyKey, !candidate || layoutCache[candidate.id]?.key !== key];
+    return [face.topologyKey, !candidate || layoutCache[candidate.id]?.key !==
+      roomLayoutKey(doc, candidate, face, sharedGrid)];
   }));
   useEffect(() => { layoutGeneration.current++; setLayoutLoading(false); }, [layoutKey]);
   const optimize = async () => {
     if (!room || !selectedFace?.polygon) return;
-    const request: LayoutRequest = {
-      outline: selectedFace.polygon.outline as [number, number][],
-      holes: selectedFace.polygon.holes as [number, number][][],
-      ...room.material, ...room.rules, offset_x: 0, offset_y: 0,
-    };
+    if (linked && !sharedGrid) {
+      setLayoutError("Сначала пересчитайте раскладку опорного помещения.");
+      return;
+    }
+    const request: LayoutRequest = roomLayoutRequest(room, selectedFace, linked ? sharedGrid : null);
     const generation = ++layoutGeneration.current;
     const capturedKey = layoutKey;
     setLayoutLoading(true);
     setLayoutError("");
     try {
-      const result = await api<{ variants: Layout[] }>("v5/optimize", request);
+      const variants = linked
+        ? [await api<Layout>("v5/layout", request)]
+        : (await api<{ variants: Layout[] }>("v5/optimize", request)).variants;
       if (generation !== layoutGeneration.current) return;
-      if (!result.variants.length) throw new Error("Варианты раскладки не найдены.");
+      if (!variants.length) throw new Error("Варианты раскладки не найдены.");
       setLayoutCache(cache => ({ ...cache, [room.id]: {
-        key: capturedKey, variants: result.variants, selected: 0,
+        key: capturedKey, variants, selected: 0,
       } }));
+      failedAutomaticLayouts.current.delete(`${room.id}:${capturedKey}`);
+      if (doc.sharedGrid?.referenceRoomId === room.id && !linked)
+        update(current => current.sharedGrid?.referenceRoomId === room.id ? ({ ...current,
+          sharedGrid: { ...current.sharedGrid, referenceBasis: roomLayoutBasis(room, selectedFace),
+            tile: room.material.tile, grout: room.material.grout, angle: variants[0].angle,
+            offsetX: variants[0].offset_x, offsetY: variants[0].offset_y } }) : current);
     } catch (cause) {
       if (generation === layoutGeneration.current) setLayoutError((cause as Error).message);
     } finally {
       if (generation === layoutGeneration.current) setLayoutLoading(false);
     }
   };
+  useEffect(() => {
+    if (!layoutMode || !sharedGrid || !response || response.status === "invalid" ||
+        JSON.stringify(response.graph) !== JSON.stringify(doc.plan.draft)) return;
+    const pending = [sharedGrid.referenceRoomId, ...sharedGrid.linkedRoomIds].flatMap(id => {
+      const candidate = doc.rooms.find(item => item.id === id);
+      const face = response.faces.find(item => item.topologyKey === candidate?.topologyKey);
+      if (!candidate || candidate.binding !== "attached" || !face?.polygon || !face.validation.valid) return [];
+      const key = roomLayoutKey(doc, candidate, face, sharedGrid);
+      return layoutCache[id]?.key === key || failedAutomaticLayouts.current.has(`${id}:${key}`)
+        ? [] : [{ id, key, candidate, face }];
+    });
+    if (!pending.length) { setSharedLoading(false); return; }
+    const controller = new AbortController();
+    setSharedLoading(true);
+    Promise.allSettled(pending.map(item => api<Layout>("v5/layout",
+      roomLayoutRequest(item.candidate, item.face, sharedGrid), controller.signal))).then(results => {
+      if (controller.signal.aborted) return;
+      const completed = results.flatMap((result, index) =>
+        result.status === "fulfilled" ? [{ id: pending[index].id,
+          key: pending[index].key, layout: result.value }] : []);
+      const failures = results.flatMap((result, index) => {
+        if (result.status === "fulfilled") return [];
+        failedAutomaticLayouts.current.add(`${pending[index].id}:${pending[index].key}`);
+        return [`${pending[index].candidate.name}: ${(result.reason as Error).message}`];
+      });
+      setLayoutCache(cache => {
+        const next = { ...cache };
+        for (const result of completed) next[result.id] = {
+          key: result.key, variants: [result.layout], selected: 0,
+        };
+        return next;
+      });
+      setLayoutError(failures.length ? failures.join("; ") : "");
+    }).finally(() => { if (!controller.signal.aborted) setSharedLoading(false); });
+    return () => controller.abort();
+  }, [layoutMode, sharedGrid, response, doc.plan.draft, doc.rooms, layoutCache]);
   const roomField = (kind: "material" | "rules", key: string, label: string,
     min: number, max: number, unit: string) => room && <NumberField
       label={label} value={(room[kind] as Record<string, number>)[key]}
@@ -154,7 +209,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       faces={response?.faces ?? []} selectedRoomKey={room?.topologyKey}
       highlightRooms={layoutMode} roomMissing={roomMissing}
       roomNames={Object.fromEntries(doc.rooms.filter(item => item.topologyKey).map(item => [item.topologyKey!, item.name]))}
-      layout={layoutMode ? activeLayout : null}
+      layouts={layoutMode ? visibleLayouts : []}
       onSelectRoom={key => update(current => ({ ...current,
         selectedRoomId: current.rooms.find(item => item.topologyKey === key)?.id ?? null }))}
       viewport={doc.viewport} onViewport={viewport => update(current => ({ ...current, viewport }))}
@@ -245,22 +300,64 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
             onChange={event => update(current => ({ ...current,
               rooms: current.rooms.map(item => item.id === room.id ? { ...item, name: event.target.value } : item) }))} /></label>
           <p>Полезная площадь: {selectedFace.areaMm2 === null ? "—" : displayTenth(selectedFace.areaMm2)} мм²</p>
-          {roomField("material", "tile", "Сторона плитки", 50, 2000, "мм")}
-          {roomField("material", "grout", "Ширина шва", 0, 20, "мм")}
-          {roomField("rules", "gap", "Отступ", 0, 1000, "мм")}
-          {roomField("rules", "threshold", "Минимальный размер подрезки", 0, 1000, "мм")}
-          {roomField("rules", "angle", "Угол раскладки", 0, 360, "°")}
-          <button disabled={layoutLoading || !selectedFace.validation.valid}
-            onClick={() => void optimize()}>{layoutLoading ? "Рассчитываем…" : "Подобрать раскладку"}</button>
+          {doc.sharedGrid && !sharedGrid && <p role="status">
+            Опорная раскладка устарела. Выберите {referenceRoom?.name ?? "опорное помещение"} и рассчитайте её заново.
+          </p>}
+          {sharedGrid && room.id === sharedGrid.referenceRoomId && <div role="group" aria-label="Общая сетка раскладки">
+            <p>Это опорное помещение. В подключённых помещениях линии плитки сохраняют положение; площадь стен исключена из укладки.</p>
+            <button onClick={() => update(current => ({ ...current, sharedGrid: null }))}>
+              Отключить общую сетку
+            </button>
+          </div>}
+          {sharedGrid && room.id !== sharedGrid.referenceRoomId && <div role="group" aria-label="Общая сетка раскладки">
+            <p>{linked ? `Линии плитки продолжаются из помещения «${referenceRoom?.name}».` :
+              `Можно продолжить линии плитки из помещения «${referenceRoom?.name}».`}</p>
+            <button onClick={() => update(current => {
+              if (!current.sharedGrid) return current;
+              const linkedRoomIds = linked
+                ? current.sharedGrid.linkedRoomIds.filter(id => id !== room.id)
+                : [...current.sharedGrid.linkedRoomIds, room.id];
+              return { ...current, sharedGrid: { ...current.sharedGrid, linkedRoomIds } };
+            })}>{linked ? "Отвязать от общей сетки" : `Продолжить из «${referenceRoom?.name}»`}</button>
+          </div>}
+          {linked && sharedGrid ? <p>
+            Плитка {displayTenth(sharedGrid.tile)} мм, шов {displayTenth(sharedGrid.grout)} мм,
+            угол {displayTenth(sharedGrid.angle)}° — как в опорном помещении.
+          </p> : <>
+            {roomField("material", "tile", "Сторона плитки", 50, 2000, "мм")}
+            {roomField("material", "grout", "Ширина шва", 0, 20, "мм")}
+          </>}
+          {roomField("rules", "gap", "Отступ", 0, 100, "мм")}
+          {roomField("rules", "threshold", "Минимальный размер подрезки", 1, 1000, "мм")}
+          {!linked && roomField("rules", "angle", "Угол раскладки", 0, 89.9, "°")}
+          <button disabled={layoutLoading || !selectedFace.validation.valid || (linked && !sharedGrid)}
+            onClick={() => void optimize()}>{layoutLoading ? "Рассчитываем…" :
+              linked ? "Рассчитать с общей сеткой" : "Подобрать раскладку"}</button>
+          {sharedLoading && <p role="status">Переносим линии плитки в подключённые помещения…</p>}
           {layoutError && <p role="alert" className="error">{layoutError}</p>}
           {cachedLayout && cachedLayout.key !== layoutKey && <p role="status">Раскладка требует пересчёта.</p>}
           {cachedLayout?.key === layoutKey && <>
             <p>Плиток: {activeLayout?.metrics.tiles ?? 0}; отход: {activeLayout?.metrics.waste_percent ?? 0}%</p>
+            {activeLayout && !linked && room.id !== doc.sharedGrid?.referenceRoomId &&
+              <button onClick={() => update(current => ({ ...current, sharedGrid: {
+                referenceRoomId: room.id,
+                referenceBasis: roomLayoutBasis(room, selectedFace),
+                tile: room.material.tile, grout: room.material.grout,
+                angle: activeLayout.angle, offsetX: activeLayout.offset_x,
+                offsetY: activeLayout.offset_y, linkedRoomIds: [],
+              } }))}>Сделать опорной раскладкой</button>}
             <div className="variant-list">{cachedLayout.variants.map((variant, index) =>
               <button key={index} aria-pressed={cachedLayout.selected === index}
-                onClick={() => setLayoutCache(cache => ({ ...cache,
-                  [room.id]: { ...cache[room.id], selected: index } }))}>
-                {variant.title || `Вариант ${index + 1}`}
+                onClick={() => {
+                  setLayoutCache(cache => ({ ...cache,
+                    [room.id]: { ...cache[room.id], selected: index } }));
+                  if (doc.sharedGrid?.referenceRoomId === room.id)
+                    update(current => current.sharedGrid?.referenceRoomId === room.id ? ({ ...current,
+                      sharedGrid: { ...current.sharedGrid, referenceBasis: roomLayoutBasis(room, selectedFace),
+                        tile: room.material.tile, grout: room.material.grout, angle: variant.angle,
+                        offsetX: variant.offset_x, offsetY: variant.offset_y } }) : current);
+                }}>
+                {variant.title || (linked ? "Общая сетка" : `Вариант ${index + 1}`)}
               </button>)}</div>
             {activeLayout && <div className="physical-result-exports">
               <button onClick={() => exportResult("svg", activeLayout)}>Скачать план · SVG</button>

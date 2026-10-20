@@ -150,6 +150,16 @@ export type ConfirmedPhysicalRoomV5 = {
 export type PhysicalRoomRecordV6 = Omit<RoomRecord, "confirmed"> & {
   confirmed: ConfirmedPhysicalRoomV5 | null;
 };
+export type SharedLayoutGridV6 = {
+  referenceRoomId: string;
+  referenceBasis: string;
+  tile: number;
+  grout: number;
+  angle: number;
+  offsetX: number;
+  offsetY: number;
+  linkedRoomIds: string[];
+};
 export type ProjectDocumentV6 = Omit<ProjectDocumentV5, "schemaVersion" | "plan" | "rooms"> & {
   schemaVersion: 6;
   plan: {
@@ -163,6 +173,7 @@ export type ProjectDocumentV6 = Omit<ProjectDocumentV5, "schemaVersion" | "plan"
     } | null;
   };
   rooms: PhysicalRoomRecordV6[];
+  sharedGrid?: SharedLayoutGridV6 | null;
 };
 export type GraphCommand =
   | { type: "addVertex"; point: Point }

@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import hashlib
+import math
 from shapely.geometry import LineString, Point as ShapelyPoint
 
 from .physical_geometry import create_wall
@@ -42,6 +43,58 @@ def _trim_to_first_face(points: list[PhysicalPoint], existing) -> list[PhysicalP
     return points
 
 
+def _complete_oblique_contact(points: list[PhysicalPoint], existing, side: str,
+                              thickness_mm: float) -> list[PhysicalPoint]:
+    """Carry both longitudinal edges into the receiving wall's near face.
+
+    A square end cut at the first edge hit leaves the opposite corner short
+    for one diagonal orientation. The local overlap is consumed by the wall
+    union, giving the visible joint its correctly unequal outer/inner edges.
+    """
+    receiving = polygon(existing)
+    end = ShapelyPoint(points[1].x, points[1].y)
+    if receiving.boundary.distance(end) > .15 or receiving.contains(end):
+        return points
+    wall = create_wall("contact-probe", points, side, thickness_mm)
+    opposite_end = wall.corners[2]
+    if receiving.buffer(.1).covers(ShapelyPoint(opposite_end.x, opposite_end.y)):
+        return points
+    start, finish = points
+    dx, dy = finish.x - start.x, finish.y - start.y
+    length = math.hypot(dx, dy)
+    if length < .1:
+        return points
+    ux, uy = dx / length, dy / length
+    # Search a local continuation of the opposite long edge. Shallow, nearly
+    # parallel contacts are left to the normal overlap validation.
+    extension_limit = min(thickness_mm * 10, existing.thicknessMm * 10)
+    ray = LineString([(opposite_end.x, opposite_end.y),
+                      (opposite_end.x + ux * extension_limit,
+                       opposite_end.y + uy * extension_limit)])
+    hits = ray.intersection(receiving.boundary)
+    if isinstance(hits, ShapelyPoint):
+        candidates = [hits]
+    elif hasattr(hits, "geoms"):
+        candidates = [item for item in hits.geoms if isinstance(item, ShapelyPoint)]
+    else:
+        return points
+    for hit in sorted(candidates, key=ray.project):
+        distance = ray.project(hit)
+        if distance <= .1 or distance >= extension_limit:
+            continue
+        for correction in (0, -.1, .1, -.2, .2):
+            next_end = PhysicalPoint(x=round((finish.x + ux * (distance + correction)) * 10) / 10,
+                                     y=round((finish.y + uy * (distance + correction)) * 10) / 10)
+            candidate = [start, next_end]
+            try:
+                if simple_contact(existing, create_wall("contact-probe", candidate,
+                                                         side, thickness_mm), "probe"):
+                    return candidate
+            except ValueError:
+                pass
+    return points
+
+
 def execute_physical(graph: PhysicalGraphV5, command: dict,
                      command_id: str) -> tuple[PhysicalGraphV5, list[str]]:
     """Return a new graph or raise without mutating the input graph."""
@@ -64,6 +117,8 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
         next_graph = deepcopy(graph)
         for existing in next_graph.walls:
             points = _trim_to_first_face(points, existing)
+            points = _complete_oblique_contact(points, existing, command["side"],
+                                               command.get("thicknessMm", 100))
         wall = create_wall(wall_id, points, command["side"], command.get("thicknessMm", 100))
         for existing in next_graph.walls:
             suffix = hashlib.sha256((command_id + "\0" + existing.id).encode()).hexdigest()[:20]

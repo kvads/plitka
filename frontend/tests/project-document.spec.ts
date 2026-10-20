@@ -21,6 +21,17 @@ const envelope = async (page: any) => ({
 test("v6 raw physical fixtures validate every stored graph snapshot", () => {
   const source = v6PhysicalDocument();
   expect(parseV6(source)).toEqual(source);
+  const earlierV6 = structuredClone(source) as Record<string, unknown>;
+  delete earlierV6.sharedGrid;
+  expect(parseV6(earlierV6).sharedGrid).toBeNull();
+  const linked = { ...source, sharedGrid: {
+    referenceRoomId: source.rooms[0].id, referenceBasis: "source-basis",
+    tile: 600, grout: 2, angle: 0, offsetX: 73.2, offsetY: 41.6,
+    linkedRoomIds: [],
+  } };
+  expect(parseV6(linked).sharedGrid?.offsetX).toBe(73.2);
+  expect(() => parseV6({ ...linked, sharedGrid: { ...linked.sharedGrid,
+    linkedRoomIds: ["missing-room"] } })).toThrow();
   expect(parseV6(createV6("Новый проект", "", "fresh"))).toMatchObject({
     schemaVersion: 6, plan: { draft: { walls: [], junctions: [] } },
   });

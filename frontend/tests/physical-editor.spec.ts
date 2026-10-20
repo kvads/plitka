@@ -4,6 +4,7 @@ import type { ProjectDocumentV6 } from "../src/domain/plan/types";
 import { physicalBasisKey } from "../src/domain/plan/physical-basis";
 import { parseV6Import } from "../src/domain/plan/migration";
 import { splitWallDimensions } from "../src/domain/plan/physical-dimensions";
+import { newRoom } from "../src/domain/plan/rooms";
 import { readFile } from "node:fs/promises";
 
 test("physical v6 measures both exposed spans of a wall touched by a branch", () => {
@@ -16,6 +17,78 @@ test("physical v6 measures both exposed spans of a wall touched by a branch", ()
   const dimensions = splitWallDimensions(graph, area, 20);
   expect(dimensions.map(item => item.lengthMm)).toEqual([450, 450]);
   expect(dimensions.every(item => item.wallId === "host" && item.anchor.x > 100)).toBe(true);
+});
+
+test("physical v6 continues one tile grid through three separate rooms after reload", async ({ page, request }) => {
+  let graph: ProjectDocumentV6["plan"]["draft"] = { walls: [], junctions: [] };
+  let faces: { topologyKey: string; polygon: { outline: number[][] } }[] = [];
+  let revision = 0;
+  const walls: [number[][], "left" | "right"][] = [
+    [[[0, 0], [3000, 0]], "right"],
+    [[[3000, 0], [3000, 2000]], "left"],
+    [[[3000, 2000], [0, 2000]], "right"],
+    [[[0, 2000], [0, 0]], "left"],
+    [[[1000, 0], [1000, 2000]], "left"],
+    [[[2000, 0], [2000, 2000]], "left"],
+  ];
+  for (const [edge, side] of walls) {
+    const response = await request.post("/api/v5/plan/command", { data: {
+      schemaVersion: 5, commandId: `shared-grid-${revision}`, draftRevision: revision,
+      basisKey: await physicalBasisKey(graph), graph,
+      command: { type: "drawWall", drawnEdge: edge.map(([x, y]) => ({ x, y })),
+        side, thicknessMm: 100 },
+    } });
+    expect(response.ok()).toBeTruthy();
+    const body = await response.json();
+    expect(body.status).toBe("applied");
+    graph = body.graph;
+    faces = body.faces;
+    revision++;
+  }
+  expect(faces).toHaveLength(3);
+  const ordered = [...faces].sort((a, b) =>
+    Math.min(...a.polygon.outline.map(point => point[0])) -
+    Math.min(...b.polygon.outline.map(point => point[0])));
+  const names = ["Коридор", "Туалет", "Ванная"];
+  const rooms = ordered.map((face, index) => ({ ...newRoom(face.topologyKey, names[index]),
+    id: `shared-room-${index}` }));
+  rooms[1].material.tile = 300;
+  const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
+  document.plan = { draft: graph, draftRevision: revision, pendingEdit: null, restorePoint: null };
+  document.rooms = rooms;
+  document.selectedRoomId = rooms[0].id;
+  document.viewport = { centerX: 2200, centerY: 500, zoom: 2, gridStepMm: 100 };
+  await page.goto("/");
+  await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
+    JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
+  await page.goto("/#project/physical-v6-fixture");
+  await page.getByRole("button", { name: "Раскладка", exact: true }).click();
+  await page.getByRole("button", { name: "Подобрать раскладку" }).click();
+  await expect(page.getByText(/Плиток:/)).toBeVisible();
+  await page.getByRole("button", { name: "Сделать опорной раскладкой" }).click();
+  for (const index of [1, 2]) {
+    await page.locator(`[data-room-key="${ordered[index].topologyKey}"]`).click();
+    await page.getByRole("button", { name: `Продолжить из «Коридор»` }).click();
+    await expect(page.locator(`[data-layout-room-id="${rooms[index].id}"]`).first()).toBeVisible();
+    await expect(page.getByText(/Плитка 600,0 мм, шов 2,0 мм/)).toBeVisible();
+  }
+  await expect(page.locator('[data-layout-room-id="shared-room-0"]').first()).toBeVisible();
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0]);
+  expect(saved.sharedGrid.referenceRoomId).toBe(rooms[0].id);
+  expect(saved.sharedGrid.linkedRoomIds).toEqual([rooms[1].id, rooms[2].id]);
+  const recalculations: { tile: number; grout: number; angle: number;
+    offset_x: number; offset_y: number }[] = [];
+  page.on("request", event => {
+    if (event.url().endsWith("/api/v5/layout")) recalculations.push(event.postDataJSON());
+  });
+  await page.reload();
+  for (const room of rooms)
+    await expect(page.locator(`[data-layout-room-id="${room.id}"]`).first()).toBeVisible();
+  expect(recalculations).toHaveLength(3);
+  for (const request of recalculations)
+    expect([request.tile, request.grout, request.angle, request.offset_x, request.offset_y])
+      .toEqual([saved.sharedGrid.tile, saved.sharedGrid.grout, saved.sharedGrid.angle,
+        saved.sharedGrid.offsetX, saved.sharedGrid.offsetY]);
 });
 
 test("physical v6 draws at free coordinates and previews wall and branch lengths", async ({ page }) => {
@@ -237,7 +310,7 @@ test("physical v6 cancels an unfinished wall by button or Escape", async ({ page
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls)).toEqual([]);
 });
 
-test("physical v6 desktop wall cursor follows the mouse at 10 mm size", async ({ page }) => {
+test("physical v6 desktop wall cursor remains visible at low zoom", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Новый проект" }).click();
   await page.getByRole("textbox", { name: "Название проекта" }).fill("Курсор стены");
@@ -247,12 +320,48 @@ test("physical v6 desktop wall cursor follows the mouse at 10 mm size", async ({
   const box = (await canvas.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   const cursor = canvas.locator("[data-wall-cursor]");
-  await expect(cursor).toHaveAttribute("width", "10");
+  await expect.poll(async () => {
+    const width = Number(await cursor.getAttribute("width"));
+    const box = await cursor.boundingBox();
+    return { physical: width >= 10, visible: (box?.width ?? 0) >= 18 };
+  }).toEqual({ physical: true, visible: true });
   const first = Number(await cursor.getAttribute("x"));
   await page.mouse.move(box.x + box.width / 2 + 12, box.y + box.height / 2);
   const next = Number(await cursor.getAttribute("x"));
   expect(next - first).toBeGreaterThan(50);
   expect(next - first).toBeLessThan(150);
+});
+
+test("physical v6 snaps a diagonal wall to a face and previews the joint angle", async ({ page }) => {
+  const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
+  document.plan.draft = v6SavedWallGraph() as ProjectDocumentV6["plan"]["draft"];
+  document.viewport = { centerX: 500, centerY: -200, zoom: 5, gridStepMm: 100 };
+  await page.goto("/");
+  await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
+    JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
+  await page.goto("/#project/physical-v6-fixture");
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  await page.getByRole("radio", { name: "Справа" }).check();
+  const canvas = page.locator("[data-physical-canvas]");
+  const clientPoint = (x: number, y: number) => canvas.evaluate((node, coordinates) => {
+    const svg = node as SVGSVGElement;
+    const point = svg.createSVGPoint();
+    point.x = coordinates.x; point.y = -coordinates.y;
+    const screen = point.matrixTransform(svg.getScreenCTM()!);
+    return { x: screen.x, y: screen.y };
+  }, { x, y });
+  const start = await clientPoint(100, -500);
+  const end = await clientPoint(600, 0);
+  await page.mouse.click(start.x, start.y);
+  await page.mouse.move(end.x, end.y + 5);
+  await expect(canvas.locator("[data-wall-preview-angle]")).toHaveCount(1);
+  await page.mouse.click(end.x, end.y + 5);
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls.length)).toBe(2);
+  const stored = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft);
+  expect(stored.walls[1].drawnEdge[1].y).toBeGreaterThan(0);
+  expect(stored.junctions).toHaveLength(1);
 });
 
 test("physical v6 selects a room from its usable floor", async ({ page, request }) => {

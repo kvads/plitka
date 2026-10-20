@@ -45,6 +45,37 @@ def command_request(graph):
     return {key: value for key, value in request(graph).items() if key != "requestId"}
 
 
+def test_open_partition_keeps_one_room_and_excludes_wall_from_tile_layout():
+    graph = {"walls": [], "junctions": []}
+    walls = [
+        ([(0, 0), (1000, 0)], "right"),
+        ([(1000, 0), (1000, 1000)], "left"),
+        ([(1000, 1000), (0, 1000)], "right"),
+        ([(0, 1000), (0, 0)], "left"),
+        ([(100, 500), (500, 500)], "left"),
+    ]
+    for index, (edge, side) in enumerate(walls):
+        body = client.post("/api/v5/plan/command", json={
+            **command_request(graph), "commandId": f"open-partition-{index}",
+            "command": {"type": "drawWall", "drawnEdge": [
+                {"x": x, "y": y} for x, y in edge],
+                "side": side, "thicknessMm": 100},
+        }).json()
+        assert body["status"] == "applied", body.get("issues")
+        graph = body["graph"]
+    assert len(body["faces"]) == 1
+    face = body["faces"][0]
+    assert face["areaMm2"] == 760000
+    layout = client.post("/api/v5/layout", json={
+        **face["polygon"], "tile": 200, "grout": 2, "gap": 0,
+        "threshold": 50, "angle": 0, "offset_x": 0, "offset_y": 0,
+    })
+    assert layout.status_code == 200, layout.text
+    wall = Polygon([(100, 500), (500, 500), (500, 600), (100, 600)])
+    for part in layout.json()["parts"]:
+        assert Polygon(part["rings"][0], part["rings"][1:]).intersection(wall).area == 0
+
+
 def test_saved_physical_wall_validates_before_draw_wall_exists():
     for graph, area_count in [({"walls": [], "junctions": []}, 0), (saved_wall(), 1)]:
         result = client.post("/api/v5/plan/validate", json=request(graph))
@@ -303,6 +334,30 @@ def test_diagonal_cap_allows_only_local_contact_wedge():
     assert result["status"] == "applied", result["issues"]
     assert len(result["graph"]["junctions"]) == 1
     assert len(result["wallArea"]) == 1
+
+
+def test_diagonal_contact_extends_short_outer_edge_to_receiving_wall():
+    graph = saved_wall()
+    edge = [{"x": 100, "y": -500}, {"x": 600, "y": 20}]
+    preview = client.post("/api/v5/plan/preview", json={
+        **request(graph), "requestId": "diagonal-join", "drawnEdge": edge,
+        "side": "right", "thicknessMm": 100,
+    }).json()
+    committed = client.post("/api/v5/plan/command", json={
+        **command_request(graph), "commandId": "diagonal-join",
+        "command": {"type": "drawWall", "drawnEdge": edge,
+                    "side": "right", "thicknessMm": 100},
+    }).json()
+    assert preview["status"] == "valid", preview["issues"]
+    assert committed["status"] == "applied", committed["issues"]
+    assert preview["graph"] == committed["graph"]
+    wall = committed["graph"]["walls"][1]
+    assert wall["drawnEdge"][1]["y"] > 20
+    assert wall["corners"][2]["y"] >= 0
+    assert len(committed["graph"]["junctions"]) == 1
+    assert len(committed["wallArea"]) == 1
+    assert committed["openJointAngles"][0]["valueDeg"] > 0
+    assert client.post("/api/v5/plan/validate", json=request(committed["graph"])).json()["status"] == "valid"
 
 
 def test_malformed_thickness_is_atomic_in_physical_command():
