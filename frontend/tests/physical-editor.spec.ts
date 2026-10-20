@@ -310,7 +310,7 @@ test("physical v6 cancels an unfinished wall by button or Escape", async ({ page
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls)).toEqual([]);
 });
 
-test("physical v6 desktop wall cursor remains visible at low zoom", async ({ page }) => {
+test("physical v6 desktop wall cursor matches wall thickness", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Новый проект" }).click();
   await page.getByRole("textbox", { name: "Название проекта" }).fill("Курсор стены");
@@ -320,16 +320,22 @@ test("physical v6 desktop wall cursor remains visible at low zoom", async ({ pag
   const box = (await canvas.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   const cursor = canvas.locator("[data-wall-cursor]");
-  await expect.poll(async () => {
-    const width = Number(await cursor.getAttribute("width"));
-    const box = await cursor.boundingBox();
-    return { physical: width >= 10, visible: (box?.width ?? 0) >= 18 };
-  }).toEqual({ physical: true, visible: true });
-  const first = Number(await cursor.getAttribute("x"));
+  await expect(cursor.locator("[data-wall-cursor-corner]")).toHaveCount(0);
+  const footprint = () => cursor.locator("path").evaluate(node => {
+    const bounds = (node as SVGGraphicsElement).getBBox();
+    return { x: bounds.x, width: bounds.width, height: bounds.height };
+  });
+  await expect.poll(async () => (await footprint()).width).toBe(100);
+  const first = (await footprint()).x;
   await page.mouse.move(box.x + box.width / 2 + 12, box.y + box.height / 2);
-  const next = Number(await cursor.getAttribute("x"));
+  const next = (await footprint()).x;
   expect(next - first).toBeGreaterThan(50);
   expect(next - first).toBeLessThan(150);
+  await page.getByRole("spinbutton", { name: "Толщина, мм" }).fill("200");
+  await expect.poll(async () => (await footprint()).width).toBe(200);
+  await expect.poll(async () => (await footprint()).height).toBe(200);
+  await page.getByRole("spinbutton", { name: "Толщина, мм" }).fill("55");
+  await expect(page.getByRole("alert")).toContainText("шагом 10 мм");
 });
 
 test("physical v6 snaps a diagonal wall to a face and previews the joint angle", async ({ page }) => {
@@ -352,9 +358,20 @@ test("physical v6 snaps a diagonal wall to a face and previews the joint angle",
   }, { x, y });
   const start = await clientPoint(100, -500);
   const end = await clientPoint(600, 0);
+  const nearFace = await clientPoint(600, -40);
+  await page.mouse.move(nearFace.x, nearFace.y);
+  const cursor = canvas.locator("[data-wall-cursor]");
+  await expect(cursor.locator("[data-wall-cursor-corner]")).toHaveCount(4);
+  await expect.poll(() => cursor.locator("path").evaluate(node =>
+    (node as SVGGraphicsElement).getBBox().y)).toBe(0);
+  await expect.poll(() => cursor.locator("path").evaluate(node =>
+    (node as SVGGraphicsElement).getBBox().height)).toBe(100);
   await page.mouse.click(start.x, start.y);
   await page.mouse.move(end.x, end.y + 5);
-  await expect(canvas.locator("[data-wall-preview-angle]")).toHaveCount(1);
+  await expect(canvas.locator("[data-wall-preview-angle]")).toHaveCount(2);
+  await expect(canvas.locator("[data-wall-angle-arc]")).toHaveCount(2);
+  const angles = await canvas.locator("[data-wall-preview-angle]").allTextContents();
+  expect(angles[0]).not.toBe(angles[1]);
   await page.mouse.click(end.x, end.y + 5);
   await expect.poll(() => page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls.length)).toBe(2);

@@ -2,7 +2,7 @@
 
 import math
 
-from shapely.geometry import Point as ShapelyPoint, Polygon
+from shapely.geometry import LineString, Point as ShapelyPoint, Polygon
 
 from .physical_junctions import polygon
 from .physical_models import PhysicalGraphV5, PhysicalWallV5
@@ -58,12 +58,85 @@ def _wall_vector(wall: PhysicalWallV5, edge: str) -> tuple[float, float]:
     return sign * dx / length, sign * dy / length
 
 
+def _long_edges(wall: PhysicalWallV5):
+    a, b, c, d = wall.corners
+    return ((a, b), (d, c))
+
+
+def _physical_joint_corners(host: PhysicalWallV5, branch: PhysicalWallV5,
+                            host_edge: str) -> list[dict]:
+    """Angles in free space at the two physical branch-to-face corners."""
+    a, b, c, d = host.corners
+    host_side = (a, b) if host_edge == "drawn" else (d, c)
+    face = LineString([(point.x, point.y) for point in host_side])
+    solid = polygon(host).union(polygon(branch))
+    if not isinstance(solid, Polygon):
+        return []
+    outline = list(solid.exterior.coords)[:-1]
+    result = []
+    for first, last in _long_edges(branch):
+        dx, dy = last.x - first.x, last.y - first.y
+        length = math.hypot(dx, dy)
+        if length < .1:
+            continue
+        # Rounded 0.1 mm corners can stop just before the receiving face.
+        extended = LineString([(first.x, first.y),
+                               (last.x + .2 * dx / length, last.y + .2 * dy / length)])
+        hit = face.intersection(extended)
+        if not isinstance(hit, ShapelyPoint):
+            continue
+        for index, (x, y) in enumerate(outline):
+            if math.hypot(x - hit.x, y - hit.y) > .21:
+                continue
+            prev = outline[index - 1]
+            following = outline[(index + 1) % len(outline)]
+            first_ray = (prev[0] - x, prev[1] - y)
+            second_ray = (following[0] - x, following[1] - y)
+            lengths = (math.hypot(*first_ray), math.hypot(*second_ray))
+            if min(lengths) < .1:
+                continue
+            u = (first_ray[0] / lengths[0], first_ray[1] / lengths[0])
+            v = (second_ray[0] / lengths[1], second_ray[1] / lengths[1])
+            bisector = (u[0] + v[0], u[1] + v[1])
+            bisector_length = math.hypot(*bisector)
+            if bisector_length < .01:
+                continue
+            nx, ny = bisector[0] / bisector_length, bisector[1] / bisector_length
+            probe = ShapelyPoint(x + nx * 5, y + ny * 5)
+            if solid.buffer(.1).covers(probe):
+                continue
+            angle = math.degrees(math.acos(max(-1, min(1, u[0] * v[0] + u[1] * v[1]))))
+            anchor = {"x": _round(x + nx * 35), "y": _round(y + ny * 35)}
+            if not solid.buffer(.1).covers(ShapelyPoint(anchor["x"], anchor["y"])):
+                result.append({"valueDeg": _round(angle), "anchor": anchor,
+                               "corner": {"x": _round(x), "y": _round(y)},
+                               "rays": [{"x": u[0], "y": u[1]},
+                                        {"x": v[0], "y": v[1]}]})
+            break
+    return result
+
+
 def derive_open_joint_angles(graph: PhysicalGraphV5) -> list[dict]:
     walls = {wall.id: wall for wall in graph.walls}
     result = []
     for joint in graph.junctions:
         for index, part in enumerate(joint.participants):
             for other in joint.participants[index + 1:]:
+                host_part = next((candidate for candidate in (part, other)
+                                  if candidate.edge in ("drawn", "opposite")), None)
+                branch_part = next((candidate for candidate in (part, other)
+                                    if candidate.edge in ("startCap", "endCap")), None)
+                if host_part and branch_part:
+                    corners = _physical_joint_corners(walls[host_part.wallId],
+                                                      walls[branch_part.wallId], host_part.edge)
+                    if corners:
+                        for corner in corners:
+                            for wall_id, adjacent_id in ((part.wallId, other.wallId),
+                                                         (other.wallId, part.wallId)):
+                                result.append({"junctionId": joint.id, "wallId": wall_id,
+                                               "adjacentWallId": adjacent_id,
+                                               "label": "Угол стыка", **corner})
+                        continue
                 first = _wall_vector(walls[part.wallId], part.edge)
                 second = _wall_vector(walls[other.wallId], other.edge)
                 cosine = abs(first[0] * second[0] + first[1] * second[1])

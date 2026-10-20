@@ -56,7 +56,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const layoutGeneration = useRef(0);
   const failedAutomaticLayouts = useRef(new Set<string>());
   const thickness = Number(thicknessInput.replace(",", "."));
-  const thicknessValid = isTenth(thickness) && thickness >= 0.1 && thickness <= 100000;
+  const thicknessValid = Number.isInteger(thickness / 10) && thickness >= 10 && thickness <= 100000;
   const selected = doc.plan.draft.walls.find(wall => wall.id === selectedWallId);
   useEffect(() => { if (selectedWallId && !selected) {
     setSelectedWallId(null); setSelectedHandle(null); setDeleteWallImpact(null);
@@ -76,7 +76,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       ? [{ roomId: candidate.id, layout: cached.variants[cached.selected] }] : [];
   });
   const selectedThickness = Number(selectedThicknessInput.replace(",", "."));
-  const selectedThicknessValid = isTenth(selectedThickness) && selectedThickness >= 0.1 && selectedThickness <= 100000;
+  const selectedThicknessValid = Number.isInteger(selectedThickness / 10) && selectedThickness >= 10 && selectedThickness <= 100000;
   const chooseWall = (wallId: string | null) => {
     setSelectedWallId(wallId);
     setSelectedHandle(null);
@@ -369,7 +369,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           : <p>Выберите замкнутое помещение на полотне.</p>}
       </> : <>
         <h2>{selected ? "Стена" : "Новая стена"}</h2>
-        <label>Толщина, мм<input type="number" min="0.1" max="100000" step="0.1"
+        <label>Толщина, мм<input type="number" min="10" max="100000" step="10"
           value={selected ? selectedThicknessInput : thicknessInput}
           onChange={event => selected ? setSelectedThicknessInput(event.target.value) : setThicknessInput(event.target.value)} /></label>
         {selected ? <>
@@ -385,7 +385,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
                 onClick={() => void command({ type: "nudgeWallHandle", wallId: selected.id,
                   handle: selectedHandle, axis, direction })}>{label}</button>)}
           </div>}
-          {!selectedThicknessValid && <p role="alert">Введите толщину от 0,1 до 100000 мм с шагом 0,1 мм.</p>}
+          {!selectedThicknessValid && <p role="alert">Введите толщину от 10 до 100000 мм с шагом 10 мм.</p>}
           <button disabled={busy || !selectedThicknessValid} onClick={() => void command({
             type: "setWallThickness", wallId: selected.id, thicknessMm: selectedThickness,
           })}>Применить толщину</button>
@@ -416,7 +416,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
             }}>Удалить стену</button>
           </div>}
         </> : <>
-          {!thicknessValid && <p role="alert">Введите толщину от 0,1 до 100000 мм с шагом 0,1 мм.</p>}
+          {!thicknessValid && <p role="alert">Введите толщину от 10 до 100000 мм с шагом 10 мм.</p>}
           <fieldset><legend>Сторона от проведённого края</legend>
             <label><input type="radio" name="wall-side" checked={side === "left"} onChange={() => setSide("left")} />Слева</label>
             <label><input type="radio" name="wall-side" checked={side === "right"} onChange={() => setSide("right")} />Справа</label>

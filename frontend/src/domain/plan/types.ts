@@ -116,6 +116,8 @@ export type OpenJointAngleV5 = {
   valueDeg: number;
   label: "Угол стыка";
   anchor: Point;
+  corner?: Point;
+  rays?: [Point, Point];
 };
 export type PhysicalGraphResponseV5 = {
   schemaVersion: 5;

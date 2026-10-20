@@ -16,6 +16,14 @@ def _fields(command: dict, required: set[str], optional: set[str] = frozenset())
         raise ValueError("Проверьте параметры команды стены.")
 
 
+def _new_thickness(value: object) -> float:
+    if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+            not math.isfinite(value) or not 10 <= value <= 100000 or
+            value % 10 != 0):
+        raise ValueError("Толщина стены должна быть от 10 до 100000 мм с шагом 10 мм.")
+    return value
+
+
 def _trim_to_first_face(points: list[PhysicalPoint], existing) -> list[PhysicalPoint]:
     """Stop a drawn edge on the first physical boundary it reaches."""
     line = LineString([(point.x, point.y) for point in points])
@@ -52,46 +60,49 @@ def _complete_oblique_contact(points: list[PhysicalPoint], existing, side: str,
     union, giving the visible joint its correctly unequal outer/inner edges.
     """
     receiving = polygon(existing)
-    end = ShapelyPoint(points[1].x, points[1].y)
-    if receiving.boundary.distance(end) > .15 or receiving.contains(end):
-        return points
     wall = create_wall("contact-probe", points, side, thickness_mm)
-    opposite_end = wall.corners[2]
-    if receiving.buffer(.1).covers(ShapelyPoint(opposite_end.x, opposite_end.y)):
-        return points
     start, finish = points
     dx, dy = finish.x - start.x, finish.y - start.y
     length = math.hypot(dx, dy)
     if length < .1:
         return points
     ux, uy = dx / length, dy / length
-    # Search a local continuation of the opposite long edge. Shallow, nearly
-    # parallel contacts are left to the normal overlap validation.
+    # Search a local continuation of either short cap's opposite corner.
+    # The user's first click can lie on the receiving face too.
     extension_limit = min(thickness_mm * 10, existing.thicknessMm * 10)
-    ray = LineString([(opposite_end.x, opposite_end.y),
-                      (opposite_end.x + ux * extension_limit,
-                       opposite_end.y + uy * extension_limit)])
-    hits = ray.intersection(receiving.boundary)
-    if isinstance(hits, ShapelyPoint):
-        candidates = [hits]
-    elif hasattr(hits, "geoms"):
-        candidates = [item for item in hits.geoms if isinstance(item, ShapelyPoint)]
-    else:
-        return points
-    for hit in sorted(candidates, key=ray.project):
-        distance = ray.project(hit)
-        if distance <= .1 or distance >= extension_limit:
+    for cap_index, opposite in ((0, wall.corners[3]), (1, wall.corners[2])):
+        cap = points[cap_index]
+        cap_point = ShapelyPoint(cap.x, cap.y)
+        if (receiving.boundary.distance(cap_point) > .15 or
+                receiving.contains(cap_point) or
+                receiving.buffer(.1).covers(ShapelyPoint(opposite.x, opposite.y))):
             continue
-        for correction in (0, -.1, .1, -.2, .2):
-            next_end = PhysicalPoint(x=round((finish.x + ux * (distance + correction)) * 10) / 10,
-                                     y=round((finish.y + uy * (distance + correction)) * 10) / 10)
-            candidate = [start, next_end]
-            try:
-                if simple_contact(existing, create_wall("contact-probe", candidate,
-                                                         side, thickness_mm), "probe"):
-                    return candidate
-            except ValueError:
-                pass
+        direction = -1 if cap_index == 0 else 1
+        ray = LineString([(opposite.x, opposite.y),
+                          (opposite.x + direction * ux * extension_limit,
+                           opposite.y + direction * uy * extension_limit)])
+        hits = ray.intersection(receiving.boundary)
+        if isinstance(hits, ShapelyPoint):
+            candidates = [hits]
+        elif hasattr(hits, "geoms"):
+            candidates = [item for item in hits.geoms if isinstance(item, ShapelyPoint)]
+        else:
+            continue
+        for hit in sorted(candidates, key=ray.project):
+            distance = ray.project(hit)
+            if distance <= .1 or distance >= extension_limit:
+                continue
+            for correction in (0, -.1, .1, -.2, .2):
+                shifted = PhysicalPoint(
+                    x=round((cap.x + direction * ux * (distance + correction)) * 10) / 10,
+                    y=round((cap.y + direction * uy * (distance + correction)) * 10) / 10)
+                candidate = [shifted, finish] if cap_index == 0 else [start, shifted]
+                try:
+                    if simple_contact(existing, create_wall("contact-probe", candidate,
+                                                             side, thickness_mm), "probe"):
+                        return candidate
+                except ValueError:
+                    pass
     return points
 
 
@@ -114,12 +125,13 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
         wall_id = "wall-" + command_id
         if any(wall.id == wall_id for wall in graph.walls):
             raise ValueError("Команда стены уже применена.")
+        thickness_mm = _new_thickness(command.get("thicknessMm", 100))
         next_graph = deepcopy(graph)
         for existing in next_graph.walls:
             points = _trim_to_first_face(points, existing)
             points = _complete_oblique_contact(points, existing, command["side"],
-                                               command.get("thicknessMm", 100))
-        wall = create_wall(wall_id, points, command["side"], command.get("thicknessMm", 100))
+                                               thickness_mm)
+        wall = create_wall(wall_id, points, command["side"], thickness_mm)
         for existing in next_graph.walls:
             suffix = hashlib.sha256((command_id + "\0" + existing.id).encode()).hexdigest()[:20]
             joint_id = "joint-" + command_id if len(next_graph.walls) == 1 else "joint-" + suffix
@@ -139,7 +151,8 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
         if index is None:
             raise ValueError("Стена не найдена.")
         old = next_graph.walls[index]
-        replacement = create_wall(old.id, old.drawnEdge, old.side, command["thicknessMm"])
+        replacement = create_wall(old.id, old.drawnEdge, old.side,
+                                  _new_thickness(command["thicknessMm"]))
         next_graph.walls[index] = replacement
         next_graph = rebuild_simple_contacts(next_graph, graph)
         validate_physical_graph(next_graph)

@@ -717,11 +717,13 @@ export function parseV6(value: unknown): ProjectDocumentV6 {
       if (edge.length !== 2) fail();
       edge.forEach(pointV6);
       choice(command.side, ["left", "right"]);
-      if (command.thicknessMm !== undefined) requireTenth(num(command.thicknessMm));
+      if (command.thicknessMm !== undefined && (num(command.thicknessMm) < 10 ||
+          num(command.thicknessMm) > 100000 || num(command.thicknessMm) % 10 !== 0)) fail();
     } else if (type === "setWallThickness") {
       exact(command, ["type", "wallId", "thicknessMm"]);
       if (!graph.walls.some(w => w.id === str(command.wallId, 1))) fail();
-      requireTenth(num(command.thicknessMm));
+      if (num(command.thicknessMm) < 10 || num(command.thicknessMm) > 100000 ||
+          num(command.thicknessMm) % 10 !== 0) fail();
     } else if (type === "nudgeWallHandle") {
       exact(command, ["type", "wallId", "handle", "axis", "direction"]);
       if (!graph.walls.some(w => w.id === str(command.wallId, 1))) fail();

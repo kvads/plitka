@@ -171,7 +171,7 @@ def test_draw_wall_preview_and_commit_share_a_seamless_t_joint():
     joint = committed["graph"]["junctions"][0]
     assert joint["id"] == "joint-joint-one"
     assert {p["wallId"] for p in joint["participants"]} == {"w1", "wall-joint-one"}
-    assert len(committed["openJointAngles"]) == 2
+    assert len(committed["openJointAngles"]) == 4
     assert all(item["valueDeg"] == 90 and item["label"] == "Угол стыка"
                for item in committed["openJointAngles"])
     assert client.post("/api/v5/plan/validate", json=request(committed["graph"])).json()["status"] == "valid"
@@ -358,6 +358,59 @@ def test_diagonal_contact_extends_short_outer_edge_to_receiving_wall():
     assert len(committed["wallArea"]) == 1
     assert committed["openJointAngles"][0]["valueDeg"] > 0
     assert client.post("/api/v5/plan/validate", json=request(committed["graph"])).json()["status"] == "valid"
+
+
+def test_joint_angles_follow_two_free_corners_of_diagonal_wall():
+    graph = saved_wall()
+    result = client.post("/api/v5/plan/command", json={
+        **command_request(graph), "commandId": "diagonal-corners",
+        "command": {"type": "drawWall", "drawnEdge": [
+            {"x": 100, "y": -500}, {"x": 600, "y": 0}],
+            "side": "right", "thicknessMm": 100},
+    }).json()
+    assert result["status"] == "applied", result["issues"]
+    labels = [angle for angle in result["openJointAngles"]
+              if angle["wallId"] == "wall-diagonal-corners"]
+    assert sorted(angle["valueDeg"] for angle in labels) == [45, 135]
+    assert labels[0]["anchor"] != labels[1]["anchor"]
+    assert labels[0]["corner"] != labels[1]["corner"]
+    assert all(angle["corner"]["y"] == 0 for angle in labels)
+
+
+def test_diagonal_wall_started_on_a_face_connects_both_width_corners():
+    graph = saved_wall()
+    result = client.post("/api/v5/plan/command", json={
+        **command_request(graph), "commandId": "diagonal-start",
+        "command": {"type": "drawWall", "drawnEdge": [
+            {"x": 500, "y": 0}, {"x": 1000, "y": -500}],
+            "side": "right", "thicknessMm": 100},
+    }).json()
+    assert result["status"] == "applied", result["issues"]
+    new = result["graph"]["walls"][1]
+    assert new["drawnEdge"][0]["y"] > 0
+    assert new["corners"][3]["y"] == 0
+    assert len(result["graph"]["junctions"]) == 1
+    assert sorted(angle["valueDeg"] for angle in result["openJointAngles"]
+                  if angle["wallId"] == new["id"]) == [45, 135]
+    assert client.post("/api/v5/plan/validate", json=request(result["graph"])).json()["status"] == "valid"
+
+
+def test_new_wall_thickness_uses_ten_millimeter_steps():
+    for value in (0.1, 55, 105.5, 100010):
+        drawn = client.post("/api/v5/plan/command", json={
+            **command_request({"walls": [], "junctions": []}),
+            "commandId": f"bad-width-{value}",
+            "command": {"type": "drawWall", "drawnEdge": [
+                {"x": 0, "y": 0}, {"x": 1000, "y": 0}],
+                "side": "left", "thicknessMm": value},
+        }).json()
+        assert drawn["status"] == "invalid"
+        resized = client.post("/api/v5/plan/command", json={
+            **command_request(saved_wall()), "commandId": f"bad-resize-{value}",
+            "command": {"type": "setWallThickness", "wallId": "w1",
+                        "thicknessMm": value},
+        }).json()
+        assert resized["status"] == "invalid"
 
 
 def test_malformed_thickness_is_atomic_in_physical_command():
