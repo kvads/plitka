@@ -4,6 +4,7 @@ import { clampZoom, viewportAtAnchor, worldPoint, zoomAroundWorld } from "../../
 import { roundTenth } from "../../domain/plan/precision";
 import type { Layout } from "../../types";
 import { physicalPreview, type PhysicalPreviewResponse } from "../../domain/plan/physical-preview";
+import { splitWallDimensions } from "../../domain/plan/physical-dimensions";
 
 type Viewport = ProjectDocumentV6["viewport"];
 type Handle = "start" | "center" | "end";
@@ -47,10 +48,8 @@ const displayTenth = (value: number) => value.toLocaleString("ru-RU", {
   minimumFractionDigits: 1, maximumFractionDigits: 1,
 });
 
-function snapPoint(point: Point, grid = 100): Point {
-  return { x: roundTenth(Math.round(point.x / grid) * grid),
-    y: roundTenth(Math.round(point.y / grid) * grid) };
-}
+const precisePoint = (point: Point): Point =>
+  ({ x: roundTenth(point.x), y: roundTenth(point.y) });
 
 export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces = [], openJointAngles = [],
   selectedRoomKey, onSelectRoom,
@@ -69,7 +68,6 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   const [hover, setHover] = useState<Point | null>(null);
   const [cursor, setCursor] = useState<Point | null>(null);
   const [serverPreview, setServerPreview] = useState<{ key: string; response: PhysicalPreviewResponse } | null>(null);
-  const [snapNotice, setSnapNotice] = useState("");
   const mobile = window.matchMedia("(hover: none) and (pointer: coarse)").matches;
   const shown = liveViewport ?? viewport;
   const span = 9000 / shown.zoom;
@@ -116,7 +114,6 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         setStart(null);
         setHover(null);
         setServerPreview(null);
-        setSnapNotice("");
       }
     };
     window.addEventListener("keydown", cancel);
@@ -213,24 +210,16 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   };
   const visibleCorners = corners.filter(corner => corners.every(other =>
     other === corner || Math.hypot(other.x - corner.x, other.y - corner.y) * pixelScale >= targetSpacingPx));
-  const mobileStep = 100 * Math.max(1, Math.ceil(targetSpacingPx / Math.max(0.01, pixelScale * 100)));
   const mobileTargets: Point[] = (() => {
     if (!mobile || !wallTool) return [];
-    const left = shown.centerX - span / 2, right = shown.centerX + span / 2;
-    const bottom = shown.centerY - height / 2, top = shown.centerY + height / 2;
     const result = [...visibleCorners];
     for (const point of guideTargets)
       if (result.every(other => Math.hypot(point.x - other.x, point.y - other.y) * pixelScale >= targetSpacingPx))
         result.push(point);
-    for (let x = Math.ceil(left / mobileStep) * mobileStep; x <= right; x += mobileStep)
-      for (let y = Math.ceil(bottom / mobileStep) * mobileStep; y <= top; y += mobileStep)
-        if (corners.every(point => Math.hypot(point.x - x, point.y - y) * pixelScale >= targetSpacingPx) &&
-            result.every(point => Math.hypot(point.x - x, point.y - y) * pixelScale >= targetSpacingPx))
-          result.push({ x, y });
     return result;
   })();
-  const target = (point: Point): Point | null => {
-    const radius = (mobile ? 22 : 20) / Math.max(pixelScale, 0.01);
+  const target = (point: Point): Point => {
+    const radius = (mobile ? 18 : 14) / Math.max(pixelScale, 0.01);
     const candidates = mobile ? mobileTargets : corners;
     const ranked = candidates.map(candidate => ({ point: candidate,
       distance: Math.hypot(point.x - candidate.x, point.y - candidate.y),
@@ -241,8 +230,25 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     const nearest = ranked[0] ?? null;
     if (nearest && mobile && corners.filter(corner =>
       Math.hypot(corner.x - nearest.point.x, corner.y - nearest.point.y) * pixelScale < targetSpacingPx).length > 1)
-      return null;
-    return nearest ? nearest.point : mobile ? null : snapPoint(point);
+      return precisePoint(point);
+    if (nearest) return nearest.point;
+    if (start) {
+      let aligned: Point | null = null;
+      let bestDistance = (mobile ? 18 : 12) / Math.max(pixelScale, .01);
+      for (const direction of guideDirections) {
+        const distanceAlong = (point.x - start.x) * direction.x +
+          (point.y - start.y) * direction.y;
+        const candidate = { x: start.x + distanceAlong * direction.x,
+          y: start.y + distanceAlong * direction.y };
+        const distance = Math.hypot(point.x - candidate.x, point.y - candidate.y);
+        if (Math.abs(distanceAlong) >= .1 && distance < bestDistance) {
+          aligned = candidate;
+          bestDistance = distance;
+        }
+      }
+      if (aligned) return precisePoint(aligned);
+    }
+    return precisePoint(point);
   };
   const begin = (event: React.PointerEvent<SVGSVGElement>) => {
     const node = svg.current;
@@ -329,8 +335,6 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       const point = world(event.clientX, event.clientY);
       if (!point) return;
       const selected = target(point);
-      if (!selected) { setSnapNotice("Приблизьте план и выберите подсвеченную точку."); return; }
-      setSnapNotice("");
       if (!start) setStart(selected);
       else if (Math.hypot(selected.x - start.x, selected.y - start.y) >= 0.1) {
         onDrawWall([start, selected]);
@@ -352,6 +356,16 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   })() : null;
   const acceptedPreview = serverPreview?.key === previewKey && serverPreview.response.status === "valid"
     ? serverPreview.response : null;
+  const splitDimensions = splitWallDimensions(
+    acceptedPreview?.graph ?? graph, acceptedPreview?.wallArea ?? wallArea, 17 / pixelScale);
+  const otherFaceDimensions = selectedRoomKey ? faces.find(face => face.topologyKey === selectedRoomKey)
+    ?.freeDimensions.filter(dimension => !splitDimensions.some(segment =>
+      Math.abs(dimension.valueMm - segment.lengthMm) <= .2 &&
+      ((Math.hypot(dimension.from.x - segment.from.x, dimension.from.y - segment.from.y) <= .2 &&
+        Math.hypot(dimension.to.x - segment.to.x, dimension.to.y - segment.to.y) <= .2) ||
+       (Math.hypot(dimension.from.x - segment.to.x, dimension.from.y - segment.to.y) <= .2 &&
+        Math.hypot(dimension.to.x - segment.from.x, dimension.to.y - segment.from.y) <= .2)))) ?? [] : [];
+  const previewLength = start && hover && wallTool ? Math.hypot(hover.x - start.x, hover.y - start.y) : 0;
   const selectedWall = graph.walls.find(wall => wall.id === selectedWallId);
   const selectedFace = faces.find(face => face.topologyKey === selectedRoomKey);
   const handlePoints: Record<Handle, Point> | null = selectedWall ? {
@@ -436,8 +450,12 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       {wallTool && !start && cursor && <rect data-wall-cursor x={cursor.x - 5} y={-cursor.y - 5}
         width={10} height={10} fill="url(#physical-wall-cursor-hatch)"
         stroke="#333" strokeWidth={1 / pixelScale} />}
-      {snapNotice && <text x={shown.centerX} y={-shown.centerY + height * .42}
-        textAnchor="middle" fontSize={14 / pixelScale} fill="#333">{snapNotice}</text>}
+      {previewLength >= .1 && start && hover && <text data-wall-preview-length
+        x={(start.x + hover.x) / 2} y={-(start.y + hover.y) / 2 - 18 / pixelScale}
+        textAnchor="middle" fontSize={13 / pixelScale} fontWeight={600}
+        fill="#222" stroke="#fff" strokeWidth={3 / pixelScale} paintOrder="stroke">
+        {displayTenth(previewLength)} мм
+      </text>}
     </g>
     {graph.walls.map(wall => <path key={wall.id} data-wall-id={wall.id}
       tabIndex={wallTool ? -1 : 0} role="button" aria-label="Выбрать стену"
@@ -477,12 +495,18 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       </g>;
     })}
     <g pointerEvents="none" fill="#333" fontSize={12 / pixelScale} textAnchor="middle">
+      {splitDimensions.map((dimension, index) => <text key={`segment-${index}`}
+        data-wall-segment-length={dimension.wallId}
+        x={dimension.anchor.x} y={-dimension.anchor.y}
+        stroke="#fff" strokeWidth={3 / pixelScale} paintOrder="stroke">
+        {displayTenth(dimension.lengthMm)} мм
+      </text>)}
       {selectedWallId && openJointAngles.filter(angle => angle.wallId === selectedWallId)
         .map(angle => <text key={`${angle.junctionId}:${angle.adjacentWallId}`}
           x={angle.anchor.x} y={-angle.anchor.y}>{displayTenth(angle.valueDeg)}°</text>)}
       {selectedFace?.innerAngles.map((angle, index) => <text key={`a${index}`}
         x={angle.anchor.x} y={-angle.anchor.y}>{displayTenth(angle.valueDeg)}°</text>)}
-      {selectedFace?.freeDimensions.map((dimension, index) => <text key={`d${index}`}
+      {otherFaceDimensions.map((dimension, index) => <text key={`d${index}`}
         x={dimension.anchor.x}
         y={-dimension.anchor.y}>
         {displayTenth(dimension.valueMm)} мм
@@ -490,7 +514,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     </g>
   </svg>
     {start && wallTool && <button type="button" className="physical-cancel-wall-start"
-      onClick={() => { setStart(null); setHover(null); setServerPreview(null); setSnapNotice(""); }}>
+      onClick={() => { setStart(null); setHover(null); setServerPreview(null); }}>
       Отменить начало стены
     </button>}
   </>;

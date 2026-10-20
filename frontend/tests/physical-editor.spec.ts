@@ -3,7 +3,61 @@ import { touchSession, v6DiagonalWallGraph, v6PhysicalDocument, v6SavedWallGraph
 import type { ProjectDocumentV6 } from "../src/domain/plan/types";
 import { physicalBasisKey } from "../src/domain/plan/physical-basis";
 import { parseV6Import } from "../src/domain/plan/migration";
+import { splitWallDimensions } from "../src/domain/plan/physical-dimensions";
 import { readFile } from "node:fs/promises";
+
+test("physical v6 measures both exposed spans of a wall touched by a branch", () => {
+  const graph = { walls: [{ id: "host", drawnEdge: [{ x: 0, y: 0 }, { x: 0, y: 1000 }],
+    side: "right" as const, thicknessMm: 100,
+    corners: [{ x: 0, y: 0 }, { x: 0, y: 1000 }, { x: 100, y: 1000 }, { x: 100, y: 0 }]
+  }], junctions: [] };
+  const area = [{ outline: [[0, 0], [100, 0], [100, 450], [500, 450],
+    [500, 550], [100, 550], [100, 1000], [0, 1000]], holes: [] }];
+  const dimensions = splitWallDimensions(graph, area, 20);
+  expect(dimensions.map(item => item.lengthMm)).toEqual([450, 450]);
+  expect(dimensions.every(item => item.wallId === "host" && item.anchor.x > 100)).toBe(true);
+});
+
+test("physical v6 draws at free coordinates and previews wall and branch lengths", async ({ page }) => {
+  const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
+  document.plan.draft = { walls: [{ id: "host", drawnEdge: [{ x: 0, y: 0 }, { x: 0, y: 1000 }],
+    side: "right", thicknessMm: 100,
+    corners: [{ x: 0, y: 0 }, { x: 0, y: 1000 }, { x: 100, y: 1000 }, { x: 100, y: 0 }]
+  }], junctions: [] };
+  document.plan.pendingEdit = null;
+  document.plan.restorePoint = null;
+  document.viewport = { centerX: 200, centerY: 500, zoom: 4, gridStepMm: 100 };
+  await page.goto("/");
+  await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
+    JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
+  await page.goto("/#project/physical-v6-fixture");
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const canvas = page.locator("[data-physical-canvas]");
+  const clientPoint = (x: number, y: number) => canvas.evaluate((node, coordinates) => {
+    const svg = node as SVGSVGElement;
+    const point = svg.createSVGPoint();
+    point.x = coordinates.x; point.y = -coordinates.y;
+    const screen = point.matrixTransform(svg.getScreenCTM()!);
+    return { x: screen.x, y: screen.y };
+  }, { x, y });
+  const start = await clientPoint(100, 453.7);
+  const end = await clientPoint(510.3, 453.7);
+  await page.mouse.click(start.x, start.y);
+  await page.mouse.move(end.x, end.y);
+  await expect(canvas.locator("[data-wall-preview-length]")).toContainText("410,3 мм");
+  await expect(canvas.locator('[data-wall-segment-length="host"]')).toHaveCount(2);
+  await page.mouse.click(end.x, end.y);
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls.length)).toBe(2);
+  const edge = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls[1].drawnEdge);
+  expect(edge[0].y).toBe(453.7);
+  expect(edge[1].y).toBe(453.7);
+  await expect(canvas.locator('[data-wall-segment-length="host"]')).toHaveCount(2);
+  const lengths = await canvas.locator('[data-wall-segment-length="host"]').allTextContents();
+  expect(lengths).toContain("453,7 мм");
+  expect(lengths).toContain("446,3 мм");
+});
 
 test("physical v6 replays a saved pending wall command", async ({ page }) => {
   const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
@@ -262,7 +316,7 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].id)).toBe(roomId);
 });
 
-test("physical v6 shows separated touch targets and creates a wall with two taps", async ({ browser }) => {
+test("physical v6 starts freely and offers separated 90-degree touch targets", async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 375, height: 740 },
     hasTouch: true, isMobile: true });
   const page = await context.newPage();
@@ -273,6 +327,8 @@ test("physical v6 shows separated touch targets and creates a wall with two taps
     await page.getByRole("button", { name: "Создать проект" }).click();
     await page.getByRole("button", { name: "Раскрыть меню" }).click();
     await page.getByRole("button", { name: "Стена", exact: true }).click();
+    await expect(page.locator("[data-mobile-target]")).toHaveCount(0);
+    await page.touchscreen.tap(185, 350);
     const targets = await page.locator("[data-mobile-target]").evaluateAll(nodes => nodes.map(node => {
       const dot = node.querySelector("circle")!;
       const x = Number(dot.getAttribute("cx")), y = Number(dot.getAttribute("cy"));
@@ -281,15 +337,12 @@ test("physical v6 shows separated touch targets and creates a wall with two taps
         y: matrix.b * x + matrix.d * y + matrix.f,
         worldX: x, worldY: -y };
     }));
-    expect(targets.length).toBeGreaterThan(5);
+    expect(targets.length).toBeGreaterThan(0);
     for (let index = 0; index < targets.length; index++)
       for (const other of targets.slice(index + 1))
         expect(Math.hypot(targets[index].x - other.x, targets[index].y - other.y)).toBeGreaterThanOrEqual(43.9);
-    const middle = targets.find(point => point.x > 120 && point.x < 230 && point.y > 250 && point.y < 450)!;
-    const second = targets.find(point => point.y === middle.y && point.x > middle.x + 44)!;
-    expect(middle).toBeTruthy();
+    const second = targets.find(point => Math.abs(point.y - 350) < 2 && point.x > 230 && point.x < 350)!;
     expect(second).toBeTruthy();
-    await page.touchscreen.tap(middle.x, middle.y);
     const guides = await page.locator("[data-guide-target]").evaluateAll(nodes => nodes.map(node => {
       const circle = node.querySelector("circle")!;
       return { x: Number(circle.getAttribute("cx")), y: -Number(circle.getAttribute("cy")) };
@@ -298,11 +351,14 @@ test("physical v6 shows separated touch targets and creates a wall with two taps
     for (const guide of guides) {
       expect(Number.isInteger(guide.x * 10)).toBeTruthy();
       expect(Number.isInteger(guide.y * 10)).toBeTruthy();
-      expect(guide.x === middle.worldX || guide.y === middle.worldY).toBeTruthy();
     }
     await page.touchscreen.tap(second.x, second.y);
     await expect.poll(() => page.evaluate(() =>
       JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls.length)).toBe(1);
+    const edge = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls[0].drawnEdge);
+    expect(edge[0].y).toBe(edge[1].y);
+    expect(edge[0].x % 100).not.toBe(0);
   } finally { await context.close(); }
 });
 
