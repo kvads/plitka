@@ -127,6 +127,7 @@ export type PhysicalGraphResponseV5 = {
   basisKey: string;
   status: "valid" | "invalid" | "applied";
   graph: PhysicalGraphV5;
+  normalizedGraph?: PhysicalGraphV5;
   affectedWallIds: string[];
   wallArea: PhysicalPolygonV5[];
   faces: PhysicalRoomV5[];

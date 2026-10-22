@@ -36,7 +36,6 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [projectMenu, setProjectMenu] = useState(false);
   const [wallTool, setWallTool] = useState(false);
-  const [side, setSide] = useState<"left" | "right">("left");
   const [thicknessInput, setThicknessInput] = useState("100");
   const [selectedThicknessInput, setSelectedThicknessInput] = useState("");
   const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
@@ -219,8 +218,8 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         if (selectedWallId && !busy) void command({ type: "nudgeWallHandle",
           wallId: selectedWallId, handle, axis, direction });
       }}
-      wallTool={wallTool && !layoutMode} side={side} thicknessMm={thicknessValid ? thickness : 100}
-      onDrawWall={edge => { if (thicknessValid && !busy) void drawWall(edge, side, thickness); }} />
+      wallTool={wallTool && !layoutMode} thicknessMm={thicknessValid ? thickness : 100}
+      onDrawWall={edge => { if (thicknessValid && !busy) void drawWall(edge, "left", thickness); }} />
     <div className="canvas-sidebar-shell" data-overlay style={{ position: "absolute", top: 12, left: 12 }}>
       <button className="canvas-sidebar-toggle" aria-label={menuOpen ? "Свернуть меню" : "Раскрыть меню"}
         aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}>
@@ -417,10 +416,6 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           </div>}
         </> : <>
           {!thicknessValid && <p role="alert">Введите толщину от 10 до 100000 мм с шагом 10 мм.</p>}
-          <fieldset><legend>Сторона от проведённого края</legend>
-            <label><input type="radio" name="wall-side" checked={side === "left"} onChange={() => setSide("left")} />Слева</label>
-            <label><input type="radio" name="wall-side" checked={side === "right"} onChange={() => setSide("right")} />Справа</label>
-          </fieldset>
           <p>Укажите начало и конец стены на полотне.</p>
         </>}
       </>}

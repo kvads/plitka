@@ -588,8 +588,8 @@ export function physicalGraphSchema(value: unknown): PhysicalGraphV5 {
     if (length < 0.1) fail();
     const widths = [[c, b], [d, a]].map(([p, q]) => (dx * (p.y - q.y) - dy * (p.x - q.x)) / length);
     const expected = (wall.side === "left" ? 1 : -1) * (wall.thicknessMm as number);
-    if (widths.some(width => Math.abs(width - expected) > 0.1000001)) fail();
-    if (Math.abs((c.x - d.x) * dy - (c.y - d.y) * dx) / length > 0.1000001) fail();
+    if (widths.some(width => Math.abs(width - expected) > 0.2000001)) fail();
+    if (Math.abs((c.x - d.x) * dy - (c.y - d.y) * dx) / length > 0.2000001) fail();
   }
   const edgePoints = (wall: Obj, name: string) => {
     const [a, b, c, d] = (wall.corners as unknown[]).map(pointV6);

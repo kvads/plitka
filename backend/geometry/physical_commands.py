@@ -7,7 +7,7 @@ from shapely.geometry import LineString, Point as ShapelyPoint
 
 from .physical_geometry import create_wall
 from .physical_junctions import simple_contact, polygon, rebuild_simple_contacts
-from .physical_models import PhysicalGraphV5, PhysicalPoint
+from .physical_models import PhysicalGraphV5, PhysicalPoint, PhysicalWallV5
 from .physical_validation import validate_physical_graph
 
 
@@ -106,6 +106,77 @@ def _complete_oblique_contact(points: list[PhysicalPoint], existing, side: str,
     return points
 
 
+def _miter_contact(wall: PhysicalWallV5, existing: PhysicalWallV5) -> PhysicalWallV5:
+    """Stop each long edge separately at the same receiving physical face."""
+    if not polygon(wall).intersects(polygon(existing)):
+        return wall
+    a, b, c, d = wall.corners
+    length = math.hypot(b.x - a.x, b.y - a.y)
+    ux, uy = (b.x - a.x) / length, (b.y - a.y) / length
+    limit = min(length / 2, 10 * max(wall.thicknessMm, existing.thicknessMm))
+    candidates = []
+    for host_a, host_b in ((existing.corners[0], existing.corners[1]),
+                           (existing.corners[3], existing.corners[2]),
+                           (existing.corners[0], existing.corners[3]),
+                           (existing.corners[1], existing.corners[2])):
+        vx, vy = host_b.x - host_a.x, host_b.y - host_a.y
+        denominator = ux * vy - uy * vx
+        if abs(denominator) < .1 * math.hypot(vx, vy):
+            continue
+        for cap_indices in ((0, 3), (1, 2)):
+            corners = list(wall.corners)
+            distances = []
+            for index in cap_indices:
+                corner = corners[index]
+                ox, oy = host_a.x - corner.x, host_a.y - corner.y
+                distance = (ox * vy - oy * vx) / denominator
+                ratio = (ox * uy - oy * ux) / denominator
+                if not -.001 <= ratio <= 1.001 or abs(distance) > limit:
+                    break
+                distances.append(abs(distance))
+                corners[index] = PhysicalPoint(
+                    x=round((corner.x + ux * distance) * 10) / 10,
+                    y=round((corner.y + uy * distance) * 10) / 10)
+            if len(distances) != 2:
+                continue
+            if all(corners[index] == wall.corners[index] for index in cap_indices):
+                continue
+            candidate = wall.model_copy(update={"corners": corners,
+                "drawnEdge": [corners[0], corners[1]]})
+            try:
+                validate_physical_graph(PhysicalGraphV5(walls=[candidate], junctions=[]))
+                if (polygon(candidate).intersection(polygon(existing)).area <= .02 and
+                        simple_contact(existing, candidate, "miter-probe")):
+                    candidates.append((sum(distances), candidate))
+            except ValueError:
+                pass
+    return min(candidates, key=lambda item: item[0])[1] if candidates else wall
+
+
+def normalize_mitered_contacts(graph: PhysicalGraphV5) -> PhysicalGraphV5:
+    """Repair old rectangular cap overlaps without moving the host walls."""
+    repaired = deepcopy(graph)
+    walls = {wall.id: index for index, wall in enumerate(repaired.walls)}
+    for joint in graph.junctions:
+        if len(joint.participants) != 2:
+            continue
+        for cap, host in ((joint.participants[0], joint.participants[1]),
+                          (joint.participants[1], joint.participants[0])):
+            if cap.edge not in ("startCap", "endCap") or host.edge not in ("drawn", "opposite"):
+                continue
+            index = walls[cap.wallId]
+            repaired.walls[index] = _miter_contact(repaired.walls[index],
+                                                     repaired.walls[walls[host.wallId]])
+            break
+    if repaired != graph:
+        try:
+            repaired = rebuild_simple_contacts(repaired, graph)
+            validate_physical_graph(repaired)
+        except ValueError:
+            return graph
+    return repaired
+
+
 def execute_physical(graph: PhysicalGraphV5, command: dict,
                      command_id: str) -> tuple[PhysicalGraphV5, list[str]]:
     """Return a new graph or raise without mutating the input graph."""
@@ -133,6 +204,8 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
                                                thickness_mm)
         wall = create_wall(wall_id, points, command["side"], thickness_mm)
         for existing in next_graph.walls:
+            wall = _miter_contact(wall, existing)
+        for existing in next_graph.walls:
             suffix = hashlib.sha256((command_id + "\0" + existing.id).encode()).hexdigest()[:20]
             joint_id = "joint-" + command_id if len(next_graph.walls) == 1 else "joint-" + suffix
             joint = simple_contact(existing, wall, joint_id)
@@ -153,6 +226,9 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
         old = next_graph.walls[index]
         replacement = create_wall(old.id, old.drawnEdge, old.side,
                                   _new_thickness(command["thicknessMm"]))
+        for neighbor in next_graph.walls:
+            if neighbor.id != old.id:
+                replacement = _miter_contact(replacement, neighbor)
         next_graph.walls[index] = replacement
         next_graph = rebuild_simple_contacts(next_graph, graph)
         validate_physical_graph(next_graph)
@@ -199,6 +275,13 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
                                   y=point.y + (dy if i in endpoints else 0))
                     for i, point in enumerate(wall.drawnEdge)]
             next_graph.walls[index] = create_wall(wall.id, edge, wall.side, wall.thicknessMm)
+        for index, wall in enumerate(next_graph.walls):
+            if wall.id not in moves:
+                continue
+            for neighbor in next_graph.walls:
+                if neighbor.id != wall.id:
+                    wall = _miter_contact(wall, neighbor)
+            next_graph.walls[index] = wall
         next_graph = rebuild_simple_contacts(next_graph, graph)
         validate_physical_graph(next_graph)
         return next_graph, list(moves)

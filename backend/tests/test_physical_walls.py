@@ -6,8 +6,9 @@ from backend.main import app
 from backend.geometry.physical_models import PhysicalGraphV5
 from backend.geometry.physical_validation import canonical_basis_key, validate_physical_graph
 from backend.geometry.physical_geometry import create_wall
+from backend.geometry.physical_commands import execute_physical
 from backend.geometry.physical_models import PhysicalPoint
-from backend.geometry.physical_junctions import simple_contact
+from backend.geometry.physical_junctions import simple_contact, polygon
 from shapely.geometry import Polygon
 from shapely.geometry import Point as ShapelyPoint
 import pytest
@@ -352,8 +353,8 @@ def test_diagonal_contact_extends_short_outer_edge_to_receiving_wall():
     assert committed["status"] == "applied", committed["issues"]
     assert preview["graph"] == committed["graph"]
     wall = committed["graph"]["walls"][1]
-    assert wall["drawnEdge"][1]["y"] > 20
-    assert wall["corners"][2]["y"] >= 0
+    assert wall["drawnEdge"][1]["y"] == 0
+    assert wall["corners"][2]["y"] == 0
     assert len(committed["graph"]["junctions"]) == 1
     assert len(committed["wallArea"]) == 1
     assert committed["openJointAngles"][0]["valueDeg"] > 0
@@ -387,12 +388,49 @@ def test_diagonal_wall_started_on_a_face_connects_both_width_corners():
     }).json()
     assert result["status"] == "applied", result["issues"]
     new = result["graph"]["walls"][1]
-    assert new["drawnEdge"][0]["y"] > 0
+    assert new["drawnEdge"][0]["y"] == 0
     assert new["corners"][3]["y"] == 0
     assert len(result["graph"]["junctions"]) == 1
     assert sorted(angle["valueDeg"] for angle in result["openJointAngles"]
                   if angle["wallId"] == new["id"]) == [45, 135]
     assert client.post("/api/v5/plan/validate", json=request(result["graph"])).json()["status"] == "valid"
+
+
+def test_slanted_branch_stores_both_cap_vertices_on_vertical_wall_face():
+    host = create_wall("host-vertical", [PhysicalPoint(x=0, y=0),
+        PhysicalPoint(x=0, y=1000)], "right", 100)
+    graph = PhysicalGraphV5(walls=[host], junctions=[])
+    result, _ = execute_physical(graph, {"type": "drawWall", "drawnEdge": [
+        {"x": 100, "y": 500}, {"x": 600, "y": 800}],
+        "side": "left", "thicknessMm": 100}, "angled-vertical")
+    branch = result.walls[1]
+    assert branch.corners[0].x == branch.corners[3].x == 100
+    assert branch.corners[0].y != branch.corners[3].y
+    assert polygon(branch).intersection(polygon(host)).area == 0
+    assert len(result.junctions) == 1
+    validate_physical_graph(result)
+    resized, _ = execute_physical(result, {"type": "setWallThickness",
+        "wallId": branch.id, "thicknessMm": 110}, "resize-angled-vertical")
+    assert resized.walls[1].corners[0].x == resized.walls[1].corners[3].x == 100
+    validate_physical_graph(resized)
+
+
+def test_validation_repairs_a_saved_rectangular_cap_overlap():
+    host = create_wall("host-vertical", [PhysicalPoint(x=0, y=0),
+        PhysicalPoint(x=0, y=1000)], "right", 100)
+    branch = create_wall("old-branch", [PhysicalPoint(x=100, y=500),
+        PhysicalPoint(x=600, y=800)], "left", 100)
+    joint = simple_contact(host, branch, "old-joint")
+    assert joint is not None
+    old = PhysicalGraphV5(walls=[host, branch], junctions=[joint])
+    body = client.post("/api/v5/plan/validate", json=request(old.model_dump())).json()
+    assert body["status"] == "valid"
+    fixed = PhysicalGraphV5.model_validate(body["normalizedGraph"])
+    assert fixed.walls[1].corners[0].x == fixed.walls[1].corners[3].x == 100
+    assert fixed.junctions[0].id == "old-joint"
+    validate_physical_graph(fixed)
+    again = client.post("/api/v5/plan/validate", json=request(fixed.model_dump())).json()
+    assert "normalizedGraph" not in again
 
 
 def test_new_wall_thickness_uses_ten_millimeter_steps():

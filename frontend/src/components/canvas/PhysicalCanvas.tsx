@@ -5,6 +5,7 @@ import { roundTenth } from "../../domain/plan/precision";
 import type { Layout } from "../../types";
 import { physicalPreview, type PhysicalPreviewResponse } from "../../domain/plan/physical-preview";
 import { splitWallDimensions } from "../../domain/plan/physical-dimensions";
+import { centeredWallGeometry, immediateJointAngles, nearestCubeAttachment } from "../../domain/plan/physical-draw";
 
 type Viewport = ProjectDocumentV6["viewport"];
 type Handle = "start" | "center" | "end";
@@ -31,7 +32,6 @@ type Props = {
   onSelectHandle?: (handle: Handle) => void;
   onNudge?: (handle: Handle, axis: "x" | "y", direction: -1 | 1) => void;
   wallTool: boolean;
-  side: "left" | "right";
   thicknessMm: number;
   onDrawWall: (edge: [Point, Point]) => void;
 };
@@ -55,7 +55,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   selectedRoomKey, onSelectRoom,
   highlightRooms = false, roomMissing = {}, roomNames = {}, layouts = [], viewport, onViewport,
   selectedWallId, onSelectWall, selectedHandle, onSelectHandle, onNudge,
-  wallTool, side, thicknessMm, onDrawWall }: Props) {
+  wallTool, thicknessMm, onDrawWall }: Props) {
   const svg = useRef<SVGSVGElement>(null);
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef<Gesture | null>(null);
@@ -120,14 +120,14 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     window.addEventListener("keydown", cancel);
     return () => window.removeEventListener("keydown", cancel);
   }, [start, wallTool]);
-  const previewKey = JSON.stringify([graph, draftRevision, start, hover, side, thicknessMm]);
+  const geometry = start && hover && wallTool ? centeredWallGeometry(graph, start, hover, thicknessMm) : null;
+  const previewKey = JSON.stringify([graph, draftRevision, geometry?.edge, thicknessMm]);
   useEffect(() => {
     setServerPreview(null);
-    if (!wallTool || !start || !hover || !Number.isFinite(thicknessMm) ||
-        Math.hypot(hover.x - start.x, hover.y - start.y) < 0.1) return;
+    if (!wallTool || !geometry || !Number.isFinite(thicknessMm)) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      physicalPreview(graph, draftRevision, [start, hover], side, thicknessMm, controller.signal)
+      physicalPreview(graph, draftRevision, geometry.edge, "left", thicknessMm, controller.signal)
         .then(response => {
           if (!controller.signal.aborted) setServerPreview({ key: previewKey, response });
         }).catch(() => {});
@@ -219,28 +219,6 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         result.push(point);
     return result;
   })();
-  const nearestFace = (point: Point, radius: number) => {
-    let closest: { point: Point; normal: Point; distance: number } | null = null;
-    for (const wall of graph.walls) for (const [a, b] of [
-      [wall.corners[0], wall.corners[1]], [wall.corners[3], wall.corners[2]],
-    ]) {
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const lengthSq = dx * dx + dy * dy;
-      if (lengthSq < .01) continue;
-      const ratio = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSq;
-      if (ratio < 0 || ratio > 1) continue;
-      const projected = { x: a.x + ratio * dx, y: a.y + ratio * dy };
-      const distance = Math.hypot(point.x - projected.x, point.y - projected.y);
-      if (distance >= radius || (closest && distance >= closest.distance)) continue;
-      const center = { x: wall.corners.reduce((sum, corner) => sum + corner.x, 0) / 4,
-        y: wall.corners.reduce((sum, corner) => sum + corner.y, 0) / 4 };
-      const scale = Math.sqrt(lengthSq);
-      const sign = (projected.x - center.x) * -dy + (projected.y - center.y) * dx >= 0 ? 1 : -1;
-      closest = { point: precisePoint(projected),
-        normal: { x: -dy / scale * sign, y: dx / scale * sign }, distance };
-    }
-    return closest;
-  };
   const target = (point: Point): Point => {
     const radius = (mobile ? 18 : 14) / Math.max(pixelScale, 0.01);
     const candidates = mobile ? mobileTargets : corners;
@@ -257,8 +235,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     if (nearest) return nearest.point;
     // The square cursor has physical width: attract when its near side
     // reaches the wall, even while the pointer is farther from that face.
-    const face = nearestFace(point, radius + thicknessMm / 2);
-    if (face) return face.point;
+    const face = nearestCubeAttachment(graph, point, radius, thicknessMm);
+    if (face) return face.center;
     if (start) {
       let aligned: Point | null = null;
       let bestDistance = (mobile ? 18 : 12) / Math.max(pixelScale, .01);
@@ -327,9 +305,9 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       const point = world(event.clientX, event.clientY);
       const snapped = point ? target(point) : null;
       setCursor(snapped);
-      const face = point && !start ? nearestFace(point,
-        (mobile ? 18 : 14) / Math.max(pixelScale, .01) + thicknessMm / 2) : null;
-      setCursorFace(face && snapped && face.point.x === snapped.x && face.point.y === snapped.y
+      const face = point && !start ? nearestCubeAttachment(graph, point,
+        (mobile ? 18 : 14) / Math.max(pixelScale, .01), thicknessMm) : null;
+      setCursorFace(face && snapped && face.center.x === snapped.x && face.center.y === snapped.y
         ? { normal: face.normal } : null);
       setHover(snapped);
     }
@@ -369,7 +347,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       const selected = target(point);
       if (!start) setStart(selected);
       else if (Math.hypot(selected.x - start.x, selected.y - start.y) >= 0.1) {
-        onDrawWall([start, selected]);
+        const finished = centeredWallGeometry(graph, start, selected, thicknessMm);
+        if (finished) onDrawWall(finished.edge);
         setStart(null);
       }
     } else {
@@ -377,20 +356,12 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       else onSelectWall(current.wallId);
     }
   };
-  const preview = start && hover && wallTool ? (() => {
-    const dx = hover.x - start.x, dy = hover.y - start.y, length = Math.hypot(dx, dy);
-    if (length < 0.1) return null;
-    const sign = side === "left" ? 1 : -1;
-    const x = -dy * thicknessMm * sign / length;
-    const y = dx * thicknessMm * sign / length;
-    return [start, hover, { x: hover.x + x, y: hover.y + y },
-      { x: start.x + x, y: start.y + y }];
-  })() : null;
+  const preview = geometry?.corners;
   const acceptedPreview = serverPreview?.key === previewKey && serverPreview.response.status === "valid"
     ? serverPreview.response : null;
   const previewWallId = acceptedPreview?.affectedWallIds[0];
   const previewAngles = previewWallId ? acceptedPreview!.openJointAngles.filter(angle =>
-    angle.wallId === previewWallId) : [];
+    angle.wallId === previewWallId) : geometry ? immediateJointAngles(geometry) : [];
   const splitDimensions = splitWallDimensions(
     acceptedPreview?.graph ?? graph, acceptedPreview?.wallArea ?? wallArea, 17 / pixelScale);
   const otherFaceDimensions = selectedRoomKey ? faces.find(face => face.topologyKey === selectedRoomKey)
@@ -403,13 +374,12 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   const previewLength = start && hover && wallTool ? Math.hypot(hover.x - start.x, hover.y - start.y) : 0;
   const cursorFootprint = cursor ? (() => {
     const normal = cursorFace?.normal ?? { x: 1, y: 0 };
-    const lateral = side === "left"
-      ? { x: -normal.y, y: normal.x } : { x: normal.y, y: -normal.x };
-    const along = { x: normal.x * thicknessMm, y: normal.y * thicknessMm };
-    const across = { x: lateral.x * thicknessMm, y: lateral.y * thicknessMm };
-    return [cursor, { x: cursor.x + along.x, y: cursor.y + along.y },
-      { x: cursor.x + along.x + across.x, y: cursor.y + along.y + across.y },
-      { x: cursor.x + across.x, y: cursor.y + across.y }];
+    const lateral = { x: -normal.y, y: normal.x };
+    const center = cursor;
+    return [-1, 1, 1, -1].map((along, index) => ({
+      x: center.x + (normal.x * along + lateral.x * (index < 2 ? -1 : 1)) * thicknessMm / 2,
+      y: center.y + (normal.y * along + lateral.y * (index < 2 ? -1 : 1)) * thicknessMm / 2,
+    }));
   })() : null;
   const jointAngleMark = (angle: OpenJointAngleV5, key: string, pending = false) => {
     const corner = angle.corner, rays = angle.rays;
@@ -517,8 +487,17 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     <g pointerEvents="none">
       {(acceptedPreview?.wallArea ?? wallArea).map((shape, index) => <path key={index} d={svgPath(shape)} fill="#aaa" fillRule="evenodd"
         stroke="#292929" strokeWidth={2 / pixelScale} />)}
-      {preview && !acceptedPreview && <path d={wallPath(preview)} fill="#b9b9b9" stroke="#555"
-        strokeDasharray={`${8 / pixelScale} ${5 / pixelScale}`} strokeWidth={1.5 / pixelScale} />}
+      {preview && !acceptedPreview && <g data-immediate-wall-preview>
+        <path d={wallPath(preview)} fill="#aaa" stroke="none" />
+        {[0, 2].map(index => <line key={index}
+          x1={preview[index].x} y1={-preview[index].y}
+          x2={preview[index + 1].x} y2={-preview[index + 1].y}
+          stroke="#292929" strokeWidth={2 / pixelScale} />)}
+        {!geometry?.attachments[0] && <line x1={preview[0].x} y1={-preview[0].y}
+          x2={preview[3].x} y2={-preview[3].y} stroke="#292929" strokeWidth={2 / pixelScale} />}
+        {!geometry?.attachments[1] && <line x1={preview[1].x} y1={-preview[1].y}
+          x2={preview[2].x} y2={-preview[2].y} stroke="#292929" strokeWidth={2 / pixelScale} />}
+      </g>}
       {acceptedPreview?.proposedWall && <path d={wallPath(acceptedPreview.proposedWall.corners)}
         fill="#77777780" stroke="#333" strokeWidth={2 / pixelScale} />}
       {start && <circle cx={start.x} cy={-start.y} r={8 / pixelScale} fill="#333" />}
@@ -528,6 +507,9 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         {thicknessMm * pixelScale >= 20 && cursorFootprint.map((corner, index) =>
           <circle key={index} data-wall-cursor-corner cx={corner.x} cy={-corner.y}
             r={2 / pixelScale} fill="#fff" stroke="#333" strokeWidth={1 / pixelScale} />)}
+        {cursor && <circle data-wall-cursor-center
+          cx={cursor.x} cy={-cursor.y}
+          r={2 / pixelScale} fill="#333" />}
       </g>}
       {previewLength >= .1 && start && hover && <text data-wall-preview-length
         x={(start.x + hover.x) / 2} y={-(start.y + hover.y) / 2 - 18 / pixelScale}

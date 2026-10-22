@@ -72,13 +72,17 @@ export function usePhysicalProject(initial: ProjectDocumentV6,
           current.current.plan.draftRevision === doc.plan.draftRevision) {
         setResponse(result);
         setError(result.status === "invalid" ? result.issues[0]?.message ?? "Геометрия недопустима." : "");
+        if (result.status === "valid" && result.normalizedGraph &&
+            !current.current.plan.pendingEdit)
+          update(document => ({ ...document, plan: { ...document.plan,
+            draft: result.normalizedGraph!, draftRevision: document.plan.draftRevision + 1 } }));
       }
     }).catch(cause => {
       if (alive.current && generation === validationEpoch.current && !controller.signal.aborted)
         setError((cause as Error).message);
     });
     return () => controller.abort();
-  }, [doc.plan.draft, doc.plan.draftRevision]);
+  }, [doc.plan.draft, doc.plan.draftRevision, update]);
 
   const runPending = useCallback(async (pending: GraphPendingV5, original: ProjectDocumentV6) => {
     if (commandRunning.current) return;

@@ -48,12 +48,11 @@ def validate_physical_graph(graph: PhysicalGraphV5) -> None:
             for p, q in ((c, b), (d, a))
         ]
         expected = wall.thicknessMm if wall.side == "left" else -wall.thicknessMm
-        if any(abs(width - expected) > TOLERANCE_MM + 1e-7 for width in signed_widths):
+        if any(abs(width - expected) > 2 * TOLERANCE_MM + 1e-7 for width in signed_widths):
             raise ValueError("Физическая ширина стены не соответствует толщине.")
-        if any(abs((p.x - q.x) * ux + (p.y - q.y) * uy) / length > TOLERANCE_MM + 1e-7
-               for p, q in ((c, b), (d, a))):
-            raise ValueError("Торцы стены должны быть перпендикулярны выбранному краю.")
-        if abs((c.x - d.x) * uy - (c.y - d.y) * ux) / length > TOLERANCE_MM + 1e-7:
+        # A joined wall may have a mitred cap: its two corners stop at
+        # different positions on the receiving wall's physical face.
+        if abs((c.x - d.x) * uy - (c.y - d.y) * ux) / length > 2 * TOLERANCE_MM + 1e-7:
             raise ValueError("Продольные грани стены должны быть параллельны.")
         polygon = Polygon([_pair(p) for p in wall.corners])
         if not polygon.is_valid or polygon.area <= 0:

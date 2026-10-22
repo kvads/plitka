@@ -11,7 +11,7 @@ from .graph_routes import read_request
 from .models import Model
 from .physical_models import PhysicalGraphV5
 from .physical_validation import validate_physical_graph, canonical_basis_key
-from .physical_commands import execute_physical
+from .physical_commands import execute_physical, normalize_mitered_contacts
 from .physical_junctions import polygon, validate_simple_contacts
 from .physical_faces import derive_physical_faces
 from .physical_measurements import derive_open_joint_angles
@@ -102,6 +102,9 @@ async def validate_route(request: Request):
     result["wallArea"] = _area(req.graph)
     result["faces"] = derive_physical_faces(req.graph)
     result["openJointAngles"] = derive_open_joint_angles(req.graph)
+    normalized = normalize_mitered_contacts(req.graph)
+    if normalized != req.graph:
+        result["normalizedGraph"] = normalized.model_dump(mode="json")
     return result
 
 
