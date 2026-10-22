@@ -48,14 +48,14 @@ test("wall cube cannot remain inside a host wall and chooses its nearest face", 
     .toEqual({ x: 200, y: 1050 });
 });
 
-test("a free wall begins at the cursor boundary instead of its center", () => {
+test("a free wall begins at the cursor boundary opposite its draw direction", () => {
   const geometry = centeredWallGeometry({ walls: [], junctions: [] },
     { x: 0, y: 0 }, { x: 0, y: -1000 }, 100)!;
   const start = { x: (geometry.corners[0].x + geometry.corners[3].x) / 2,
     y: (geometry.corners[0].y + geometry.corners[3].y) / 2 };
-  expect(start).toEqual({ x: 0, y: -50 });
+  expect(start).toEqual({ x: 0, y: 50 });
   expect(Math.hypot(geometry.edge[1].x - geometry.edge[0].x,
-    geometry.edge[1].y - geometry.edge[0].y)).toBe(950);
+    geometry.edge[1].y - geometry.edge[0].y)).toBe(1050);
 });
 
 test("physical v6 continues one tile grid through three separate rooms after reload", async ({ page, request }) => {

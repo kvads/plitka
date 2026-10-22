@@ -81,10 +81,11 @@ export function centeredWallGeometry(graph: PhysicalGraphV5, start: Point, end: 
   const attachments = [nearestCubeAttachment(graph, start, .2, thicknessMm),
     nearestCubeAttachment(graph, end, .2, thicknessMm)];
   if (!attachments[0] && length <= thicknessMm / 2 + .1) return null;
-  // A free first click identifies the cursor square, not its centerline cap.
-  // Begin the wall at the square boundary facing the second click. Attached
+  // A free first click identifies the whole cursor square, not its center.
+  // Begin at the square boundary behind the drag direction so the complete
+  // cursor footprint becomes the first section of the new wall. Attached
   // starts remain on the receiving face so joined walls stay continuous.
-  const physicalStart = attachments[0] ? start : add(start, direction, thicknessMm / 2);
+  const physicalStart = attachments[0] ? start : add(start, direction, -thicknessMm / 2);
   let drawnStart = rounded(add(physicalStart, offset));
   let drawnEnd = rounded(add(end, offset));
   const sideOffset = { x: left.x * thicknessMm, y: left.y * thicknessMm };
