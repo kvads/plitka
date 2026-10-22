@@ -48,6 +48,20 @@ test("wall cube cannot remain inside a host wall and chooses its nearest face", 
     .toEqual({ x: 200, y: 1050 });
 });
 
+test("a wall snapped near a host end keeps the selected face and closes the cube-centre gap", () => {
+  const graph = { walls: [{ id: "host", drawnEdge: [{ x: 0, y: 0 }, { x: 0, y: 1000 }],
+    side: "right" as const, thicknessMm: 100,
+    corners: [{ x: 0, y: 0 }, { x: 0, y: 1000 }, { x: 100, y: 1000 }, { x: 100, y: 0 }],
+  }], junctions: [] };
+  const attachment = nearestCubeAttachment(graph, { x: 150, y: 10 }, 2, 100)!;
+  expect(attachment.center).toEqual({ x: 150, y: 10 });
+  const geometry = centeredWallGeometry(graph, attachment.center, { x: 1000, y: 10 }, 100,
+    [attachment, null])!;
+  expect(geometry.edge[0].x).toBe(100);
+  expect(geometry.corners[0].x).toBe(100);
+  expect(geometry.corners[3].x).toBe(100);
+});
+
 test("a free wall begins at the cursor boundary opposite its draw direction", () => {
   const geometry = centeredWallGeometry({ walls: [], junctions: [] },
     { x: 0, y: 0 }, { x: 0, y: -1000 }, 100)!;
@@ -442,6 +456,39 @@ test("physical v6 moves an intersecting wall cursor onto the nearest host face",
   const cap = await clientPoint(200, 900);
   await page.mouse.move(cap.x, cap.y);
   await expect.poll(async () => (await footprint()).y).toBe(-1100);
+});
+
+test("physical v6 commits a snapped wall near a host end as a junction", async ({ page }) => {
+  const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
+  document.plan.draft = { walls: [{ id: "host",
+    drawnEdge: [{ x: 0, y: 0 }, { x: 0, y: 1000 }], side: "right", thicknessMm: 100,
+    corners: [{ x: 0, y: 0 }, { x: 0, y: 1000 }, { x: 100, y: 1000 }, { x: 100, y: 0 }],
+  }], junctions: [] };
+  document.plan.pendingEdit = null;
+  document.plan.restorePoint = null;
+  document.viewport = { centerX: 500, centerY: 500, zoom: 5, gridStepMm: 100 };
+  await page.goto("/");
+  await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
+    JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
+  await page.goto("/#project/physical-v6-fixture");
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const canvas = page.locator("[data-physical-canvas]");
+  const clientPoint = (x: number, y: number) => canvas.evaluate((node, coordinates) => {
+    const point = new DOMPoint(coordinates.x, -coordinates.y)
+      .matrixTransform((node as SVGSVGElement).getScreenCTM()!);
+    return { x: point.x, y: point.y };
+  }, { x, y });
+  const start = await clientPoint(150, 10);
+  const end = await clientPoint(1000, 10);
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.click(start.x, start.y);
+  await page.mouse.move(end.x, end.y);
+  await page.mouse.click(end.x, end.y);
+  await expect.poll(() => page.evaluate(() => {
+    const graph = JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft;
+    return { walls: graph.walls.length, junctions: graph.junctions.length,
+      startX: graph.walls[1]?.drawnEdge[0].x };
+  })).toEqual({ walls: 2, junctions: 1, startX: 100 });
 });
 
 test("physical v6 snaps a diagonal wall to a face and previews the joint angle", async ({ page }) => {

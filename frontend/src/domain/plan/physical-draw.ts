@@ -2,6 +2,7 @@ import type { OpenJointAngleV5, PhysicalGraphV5, Point } from "./types";
 import { roundTenth } from "./precision";
 
 export type PhysicalFace = { point: Point; normal: Point; from: Point; to: Point; distance: number };
+export type PhysicalAttachment = PhysicalFace & { center: Point };
 
 const rounded = (point: Point): Point => ({ x: roundTenth(point.x), y: roundTenth(point.y) });
 const dot = (a: Point, b: Point) => a.x * b.x + a.y * b.y;
@@ -47,7 +48,7 @@ export function nearestPhysicalFace(graph: PhysicalGraphV5, point: Point, radius
 }
 
 export function nearestCubeAttachment(graph: PhysicalGraphV5, point: Point,
-                                      radius: number, thicknessMm: number) {
+                                      radius: number, thicknessMm: number): PhysicalAttachment | null {
   const pointerInsideWall = graph.walls.some(wall => inside(wall.corners, point));
   const reach = thicknessMm / 2 + radius;
   const face = nearestPhysicalFace(graph, point,
@@ -61,25 +62,30 @@ export function nearestCubeAttachment(graph: PhysicalGraphV5, point: Point,
     ? { ...face, center } : null;
 }
 
-function intersectionOnFace(origin: Point, direction: Point, face: PhysicalFace): number | null {
+function intersectionOnFace(origin: Point, direction: Point, face: PhysicalFace,
+                            extendSelectedFace = false): number | null {
   const segment = difference(face.to, face.from);
   const denominator = cross(direction, segment);
   if (Math.abs(denominator) < .1 * Math.hypot(segment.x, segment.y)) return null;
   const offset = difference(face.from, origin);
   const along = cross(offset, segment) / denominator;
   const ratio = cross(offset, direction) / denominator;
-  return ratio >= -.001 && ratio <= 1.001 ? along : null;
+  return extendSelectedFace || (ratio >= -.001 && ratio <= 1.001) ? along : null;
 }
 
 export function centeredWallGeometry(graph: PhysicalGraphV5, start: Point, end: Point,
-                                     thicknessMm: number) {
+                                     thicknessMm: number,
+                                     attachmentHints?: readonly [PhysicalAttachment | null,
+                                       PhysicalAttachment | null]) {
   const delta = difference(end, start), length = Math.hypot(delta.x, delta.y);
   if (length < .1) return null;
   const direction = { x: delta.x / length, y: delta.y / length };
   const left = { x: -direction.y, y: direction.x };
   const offset = { x: -left.x * thicknessMm / 2, y: -left.y * thicknessMm / 2 };
-  const attachments = [nearestCubeAttachment(graph, start, .2, thicknessMm),
-    nearestCubeAttachment(graph, end, .2, thicknessMm)];
+  const attachments: [PhysicalAttachment | null, PhysicalAttachment | null] = attachmentHints
+    ? [attachmentHints[0], attachmentHints[1]]
+    : [nearestCubeAttachment(graph, start, .2, thicknessMm),
+      nearestCubeAttachment(graph, end, .2, thicknessMm)];
   if (!attachments[0] && length <= thicknessMm / 2 + .1) return null;
   // A free first click identifies the whole cursor square, not its center.
   // Begin at the square boundary behind the drag direction so the complete
@@ -92,8 +98,12 @@ export function centeredWallGeometry(graph: PhysicalGraphV5, start: Point, end: 
   for (const [index, face] of attachments.entries()) {
     if (!face) continue;
     const cap = index === 0 ? drawnStart : drawnEnd;
-    const first = intersectionOnFace(cap, direction, face);
-    const second = intersectionOnFace(add(cap, sideOffset), direction, face);
+    // The face was explicitly selected by the cursor. Near one of its ends a
+    // cap corner can sit just beyond the finite segment, but the whole cap
+    // still has to be brought onto the selected face instead of being left at
+    // the cursor centre with a half-thickness gap.
+    const first = intersectionOnFace(cap, direction, face, true);
+    const second = intersectionOnFace(add(cap, sideOffset), direction, face, true);
     if (first === null || second === null) continue;
     const adjustment = index === 0 ? Math.min(0, first, second) : Math.max(0, first, second);
     if (Math.abs(adjustment) > thicknessMm * 10) continue;
@@ -106,7 +116,7 @@ export function centeredWallGeometry(graph: PhysicalGraphV5, start: Point, end: 
   for (const [index, face] of attachments.entries()) {
     if (!face) continue;
     for (const cornerIndex of index === 0 ? [0, 3] : [1, 2]) {
-      const crossing = intersectionOnFace(corners[cornerIndex], direction, face);
+      const crossing = intersectionOnFace(corners[cornerIndex], direction, face, true);
       if (crossing !== null && Math.abs(crossing) < thicknessMm * 10)
         corners[cornerIndex] = rounded(add(corners[cornerIndex], direction, crossing));
     }

@@ -5,13 +5,15 @@ import { roundTenth } from "../../domain/plan/precision";
 import type { Layout } from "../../types";
 import { physicalPreview, type PhysicalPreviewResponse } from "../../domain/plan/physical-preview";
 import { splitWallDimensions } from "../../domain/plan/physical-dimensions";
-import { centeredWallGeometry, immediateJointAngles, nearestCubeAttachment } from "../../domain/plan/physical-draw";
+import { centeredWallGeometry, immediateJointAngles, nearestCubeAttachment,
+  type PhysicalAttachment } from "../../domain/plan/physical-draw";
 
 type Viewport = ProjectDocumentV6["viewport"];
 type Handle = "start" | "center" | "end";
 type Gesture = { id: number; client: Point; viewport: Viewport; moved: boolean;
   wallId: string | null; roomKey: string | null; handle: Handle | null;
   arrow: { axis: "x" | "y"; direction: -1 | 1 } | null };
+type WallTarget = { point: Point; attachment: PhysicalAttachment | null };
 type Props = {
   graph: PhysicalGraphV5;
   draftRevision: number;
@@ -65,7 +67,9 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   const [liveViewport, setLiveViewport] = useState<Viewport | null>(null);
   const [size, setSize] = useState({ width: 1000, height: 700 });
   const [start, setStart] = useState<Point | null>(null);
+  const [startFace, setStartFace] = useState<PhysicalAttachment | null>(null);
   const [hover, setHover] = useState<Point | null>(null);
+  const [hoverFace, setHoverFace] = useState<PhysicalAttachment | null>(null);
   const [cursor, setCursor] = useState<Point | null>(null);
   const [cursorFace, setCursorFace] = useState<{ normal: Point } | null>(null);
   const [serverPreview, setServerPreview] = useState<{ key: string; response: PhysicalPreviewResponse } | null>(null);
@@ -107,20 +111,26 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     node.addEventListener("wheel", wheel, { passive: false });
     return () => node.removeEventListener("wheel", wheel);
   }, [onViewport]);
-  useEffect(() => { setStart(null); setHover(null); setCursor(null); setCursorFace(null); }, [wallTool]);
+  useEffect(() => {
+    setStart(null); setStartFace(null); setHover(null); setHoverFace(null);
+    setCursor(null); setCursorFace(null);
+  }, [wallTool]);
   useEffect(() => {
     if (!start || !wallTool) return;
     const cancel = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setStart(null);
+        setStartFace(null);
         setHover(null);
+        setHoverFace(null);
         setServerPreview(null);
       }
     };
     window.addEventListener("keydown", cancel);
     return () => window.removeEventListener("keydown", cancel);
   }, [start, wallTool]);
-  const geometry = start && hover && wallTool ? centeredWallGeometry(graph, start, hover, thicknessMm) : null;
+  const geometry = start && hover && wallTool
+    ? centeredWallGeometry(graph, start, hover, thicknessMm, [startFace, hoverFace]) : null;
   const previewKey = JSON.stringify([graph, draftRevision, geometry?.edge, thicknessMm]);
   useEffect(() => {
     setServerPreview(null);
@@ -157,8 +167,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     return inside;
   });
   const guideDirections: Point[] = [{ x: 1, y: 0 }, { x: 0, y: 1 }];
-  const startAttachment = start && wallTool
-    ? nearestCubeAttachment(graph, start, .2, thicknessMm) : null;
+  const startAttachment = start && wallTool ? startFace : null;
   if (startAttachment && guideDirections.every(direction =>
     Math.abs(startAttachment.normal.x * direction.x + startAttachment.normal.y * direction.y) < .999999))
     guideDirections.unshift(startAttachment.normal);
@@ -224,13 +233,13 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         result.push(point);
     return result;
   })();
-  const target = (point: Point): Point => {
+  const target = (point: Point): WallTarget => {
     const radius = (mobile ? 18 : 14) / Math.max(pixelScale, 0.01);
     // A cursor square touching an existing wall must sit against one of its
     // exposed faces. Face selection comes before point targets so a corner
     // cannot leave half of the square embedded in the host wall.
     const face = nearestCubeAttachment(graph, point, radius, thicknessMm);
-    if (face) return face.center;
+    if (face) return { point: face.center, attachment: face };
     const candidates = mobile ? mobileTargets : corners;
     const ranked = candidates.map(candidate => ({ point: candidate,
       distance: Math.hypot(point.x - candidate.x, point.y - candidate.y),
@@ -241,8 +250,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     const nearest = ranked[0] ?? null;
     if (nearest && mobile && corners.filter(corner =>
       Math.hypot(corner.x - nearest.point.x, corner.y - nearest.point.y) * pixelScale < targetSpacingPx).length > 1)
-      return precisePoint(point);
-    if (nearest) return nearest.point;
+      return { point: precisePoint(point), attachment: null };
+    if (nearest) return { point: nearest.point, attachment: null };
     if (start) {
       let aligned: Point | null = null;
       let bestDistance = (mobile ? 18 : 12) / Math.max(pixelScale, .01);
@@ -257,9 +266,9 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
           bestDistance = distance;
         }
       }
-      if (aligned) return precisePoint(aligned);
+      if (aligned) return { point: precisePoint(aligned), attachment: null };
     }
-    return precisePoint(point);
+    return { point: precisePoint(point), attachment: null };
   };
   const begin = (event: React.PointerEvent<SVGSVGElement>) => {
     const node = svg.current;
@@ -310,12 +319,10 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     } else if (wallTool && event.pointerType === "mouse") {
       const point = world(event.clientX, event.clientY);
       const snapped = point ? target(point) : null;
-      setCursor(snapped);
-      const face = point && !start ? nearestCubeAttachment(graph, point,
-        (mobile ? 18 : 14) / Math.max(pixelScale, .01), thicknessMm) : null;
-      setCursorFace(face && snapped && face.center.x === snapped.x && face.center.y === snapped.y
-        ? { normal: face.normal } : null);
-      setHover(snapped);
+      setCursor(snapped?.point ?? null);
+      setCursorFace(snapped?.attachment ? { normal: snapped.attachment.normal } : null);
+      setHover(snapped?.point ?? null);
+      setHoverFace(snapped?.attachment ?? null);
     }
   };
   const finish = (event: React.PointerEvent<SVGSVGElement>, cancelled = false) => {
@@ -351,11 +358,17 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       const point = world(event.clientX, event.clientY);
       if (!point) return;
       const selected = target(point);
-      if (!start) setStart(selected);
-      else if (Math.hypot(selected.x - start.x, selected.y - start.y) >= 0.1) {
-        const finished = centeredWallGeometry(graph, start, selected, thicknessMm);
+      if (!start) {
+        setStart(selected.point);
+        setStartFace(selected.attachment);
+        setHover(selected.point);
+        setHoverFace(selected.attachment);
+      } else if (Math.hypot(selected.point.x - start.x, selected.point.y - start.y) >= 0.1) {
+        const finished = centeredWallGeometry(graph, start, selected.point, thicknessMm,
+          [startFace, selected.attachment]);
         if (finished) onDrawWall(finished.edge);
         setStart(null);
+        setStartFace(null);
       }
     } else {
       if (current.roomKey) onSelectRoom?.(current.roomKey);
@@ -593,7 +606,9 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     </g>
   </svg>
     {start && wallTool && <button type="button" className="physical-cancel-wall-start"
-      onClick={() => { setStart(null); setHover(null); setServerPreview(null); }}>
+      onClick={() => {
+        setStart(null); setStartFace(null); setHover(null); setHoverFace(null); setServerPreview(null);
+      }}>
       Отменить начало стены
     </button>}
   </>;
