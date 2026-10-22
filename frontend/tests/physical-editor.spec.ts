@@ -135,6 +135,41 @@ test("an oblique wall snapped between two host faces is accepted as two junction
     .not.toEqual([lower.corners[1], lower.corners[2]]);
 });
 
+test("a diagonal brace closes the inside of an existing L corner", async ({ request }) => {
+  let graph: ProjectDocumentV6["plan"]["draft"] = { walls: [], junctions: [] };
+  let revision = 0;
+  for (const [edge, side] of [
+    [[[0, 0], [1200, 0]], "right"],
+    [[[0, 0], [0, -1200]], "left"],
+  ] as const) {
+    const response = await request.post("/api/v5/plan/command", { data: {
+      schemaVersion: 5, commandId: `brace-host-${revision}`, draftRevision: revision,
+      basisKey: await physicalBasisKey(graph), graph,
+      command: { type: "drawWall", drawnEdge: edge.map(([x, y]) => ({ x, y })),
+        side, thicknessMm: 100 },
+    } });
+    const result = await response.json();
+    expect(result.status, JSON.stringify(result.issues)).toBe("applied");
+    graph = result.graph;
+    revision++;
+  }
+  expect(graph.junctions).toHaveLength(1);
+  const startAttachment = nearestCubeAttachment(graph, { x: 100, y: -1100 }, 2, 100)!;
+  const endAttachment = nearestCubeAttachment(graph, { x: 1100, y: -100 }, 2, 100)!;
+  const geometry = centeredWallGeometry(graph, startAttachment.center, endAttachment.center, 100,
+    [startAttachment, endAttachment])!;
+  const response = await request.post("/api/v5/plan/command", { data: {
+    schemaVersion: 5, commandId: "diagonal-brace", draftRevision: revision,
+    basisKey: await physicalBasisKey(graph), graph,
+    command: { type: "drawWall", drawnEdge: geometry.edge, side: "left", thicknessMm: 100 },
+  } });
+  const result = await response.json();
+  expect(result.status, JSON.stringify({ edge: geometry.edge, issues: result.issues }))
+    .toBe("applied");
+  expect(result.graph.walls).toHaveLength(3);
+  expect(result.graph.junctions).toHaveLength(3);
+});
+
 test("physical v6 continues one tile grid through three separate rooms after reload", async ({ page, request }) => {
   let graph: ProjectDocumentV6["plan"]["draft"] = { walls: [], junctions: [] };
   let faces: { topologyKey: string; polygon: { outline: number[][] } }[] = [];

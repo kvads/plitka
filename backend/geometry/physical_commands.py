@@ -210,17 +210,41 @@ def _miter_end_caps(first: PhysicalWallV5, second: PhysicalWallV5
             second_cap_line = LineString([(second.corners[index].x, second.corners[index].y)
                                           for index in second_indices])
             shared_cap = first_cap_line.intersection(second_cap_line)
-            if shared_cap.is_empty:
-                continue
+            eligible = False
             if isinstance(shared_cap, ShapelyPoint):
                 host_ends = [ShapelyPoint(second.corners[index].x, second.corners[index].y)
                              for index in second_indices]
                 # A cap merely touching a host corner is still a regular
                 # cap-to-long-edge junction. A point inside the host cap is an
                 # explicit end-to-end snap and needs the shared miter.
-                if min(shared_cap.distance(point) for point in host_ends) <= .15:
-                    continue
-            elif shared_cap.length < .1:
+                eligible = min(shared_cap.distance(point) for point in host_ends) > .15
+            elif not shared_cap.is_empty and shared_cap.length >= .1:
+                eligible = True
+            if not eligible and shared_cap.is_empty:
+                # Near a free host end, an oblique incoming cap can hit the
+                # long face with its inner corner while its outer corner would
+                # project just beyond the finite face. Treat that corner zone
+                # as a miter and move both wall ends; rejecting it prevents a
+                # diagonal brace from closing an otherwise valid L outline.
+                first_dx = first.drawnEdge[1].x - first.drawnEdge[0].x
+                first_dy = first.drawnEdge[1].y - first.drawnEdge[0].y
+                second_dx = second.drawnEdge[1].x - second.drawnEdge[0].x
+                second_dy = second.drawnEdge[1].y - second.drawnEdge[0].y
+                cosine = abs(first_dx * second_dx + first_dy * second_dy) / max(
+                    1e-9, math.hypot(first_dx, first_dy) * math.hypot(second_dx, second_dy))
+                if cosine > .1:
+                    reach = 2 * max(first.thicknessMm, second.thicknessMm)
+                    for host_long in second_long:
+                        shared_long = first_cap_line.intersection(LineString([
+                            (host_long[0].x, host_long[0].y),
+                            (host_long[1].x, host_long[1].y)]))
+                        host_end = ShapelyPoint(host_long[second_cap].x,
+                                                host_long[second_cap].y)
+                        if (not shared_long.is_empty and
+                                shared_long.distance(host_end) <= reach + .15):
+                            eligible = True
+                            break
+            if not eligible:
                 continue
             second_center = PhysicalPoint(
                 x=sum(second.corners[index].x for index in second_indices) / 2,
