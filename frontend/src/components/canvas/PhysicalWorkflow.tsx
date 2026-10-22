@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ChevronsLeft, ChevronsRight, FolderOpen, MousePointer2, PencilRuler, RotateCcw } from "lucide-react";
+import { ArrowLeft, ChevronsLeft, ChevronsRight, FolderOpen, Grid3X3, PencilRuler, RotateCcw } from "lucide-react";
 import PhysicalCanvas from "./PhysicalCanvas";
 import ProjectMenu from "./ProjectMenu";
 import { usePhysicalProject } from "../../domain/plan/usePhysicalProject";
@@ -33,7 +33,6 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const { doc, update, command, drawWall, busy, error } = project;
   const response = project.response?.draftRevision === doc.plan.draftRevision ? project.response : null;
   const [menuOpen, setMenuOpen] = useState(() => !window.matchMedia("(hover: none) and (pointer: coarse)").matches);
-  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [projectMenu, setProjectMenu] = useState(false);
   const [wallTool, setWallTool] = useState(false);
   const [thicknessInput, setThicknessInput] = useState("100");
@@ -198,7 +197,6 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const setMode = (mode: "object" | "variants") => {
     update(current => ({ ...current, workflow: { requestedStage: mode } }));
     setMenuOpen(false);
-    setModeMenuOpen(false);
     setProjectMenu(false);
     setWallTool(false);
   };
@@ -228,8 +226,6 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       {menuOpen && <aside className="canvas-sidebar" aria-label="Управление планом">
         <div className="canvas-title"><strong>{doc.name}</strong><small>{doc.address || "Адрес не указан"}</small></div>
         <button aria-label="Проекты" title="Проекты" onClick={onBack}><ArrowLeft /></button>
-        <button aria-label="План" title="План" aria-pressed={!layoutMode} onClick={() => setMode("object")}><PencilRuler /></button>
-        <button aria-label="Раскладка" title="Раскладка" aria-pressed={layoutMode} onClick={() => setMode("variants")}><MousePointer2 /></button>
         {!layoutMode && <button aria-label="Стена" title="Стена" aria-pressed={wallTool}
           onClick={() => { setWallTool(value => !value); setMenuOpen(false); setProjectMenu(false); }}><PencilRuler /></button>}
         <button aria-label="Проект" title="Проект" onClick={() => { setProjectMenu(value => !value); setMenuOpen(false); }}><FolderOpen /></button>
@@ -237,13 +233,15 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           onClick={() => project.undo()}><RotateCcw /></button>
       </aside>}
     </div>
-    <div className="physical-mode-switch">
-      <button aria-label="Переключить режим" aria-expanded={modeMenuOpen} className="canvas-sidebar-toggle"
-        onClick={() => setModeMenuOpen(value => !value)}>{layoutMode ? "Раскладка" : "План"}</button>
-      {modeMenuOpen && <nav aria-label="Режим проекта" className="physical-mode-options">
-        <button aria-current={!layoutMode ? "page" : undefined} onClick={() => setMode("object")}>План</button>
-        <button aria-current={layoutMode ? "page" : undefined} onClick={() => setMode("variants")}>Раскладка</button>
-      </nav>}
+    <div className="physical-mode-switch" role="group" aria-label="Режим проекта" data-overlay>
+      <button type="button" aria-pressed={!layoutMode} onClick={() => setMode("object")}>
+        <PencilRuler aria-hidden="true" />
+        <span>План</span>
+      </button>
+      <button type="button" aria-pressed={layoutMode} onClick={() => setMode("variants")}>
+        <Grid3X3 aria-hidden="true" />
+        <span>Раскладка</span>
+      </button>
     </div>
     {(wallTool || selected || projectMenu || layoutMode || doc.plan.pendingEdit) && <aside className="canvas-panel" data-overlay
       style={{ position: "absolute", right: 12, top: 62, maxWidth: "min(340px, calc(100vw - 72px))", maxHeight: "calc(100dvh - 74px)", overflowY: "auto" }}>

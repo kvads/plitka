@@ -37,6 +37,27 @@ test("wall cube attaches by its rotated side to a diagonal end cap", () => {
   expect(geometry?.corners[3].x + geometry!.corners[3].y).toBeCloseTo(4000, 0);
 });
 
+test("wall cube cannot remain inside a host wall and chooses its nearest face", () => {
+  const graph = { walls: [{ id: "host", drawnEdge: [{ x: 0, y: 0 }, { x: 0, y: 1000 }],
+    side: "right" as const, thicknessMm: 400,
+    corners: [{ x: 0, y: 0 }, { x: 0, y: 1000 }, { x: 400, y: 1000 }, { x: 400, y: 0 }],
+  }], junctions: [] };
+  expect(nearestCubeAttachment(graph, { x: 300, y: 500 }, 10, 100)?.center)
+    .toEqual({ x: 450, y: 500 });
+  expect(nearestCubeAttachment(graph, { x: 200, y: 950 }, 10, 100)?.center)
+    .toEqual({ x: 200, y: 1050 });
+});
+
+test("a free wall begins at the cursor boundary instead of its center", () => {
+  const geometry = centeredWallGeometry({ walls: [], junctions: [] },
+    { x: 0, y: 0 }, { x: 0, y: -1000 }, 100)!;
+  const start = { x: (geometry.corners[0].x + geometry.corners[3].x) / 2,
+    y: (geometry.corners[0].y + geometry.corners[3].y) / 2 };
+  expect(start).toEqual({ x: 0, y: -50 });
+  expect(Math.hypot(geometry.edge[1].x - geometry.edge[0].x,
+    geometry.edge[1].y - geometry.edge[0].y)).toBe(950);
+});
+
 test("physical v6 continues one tile grid through three separate rooms after reload", async ({ page, request }) => {
   let graph: ProjectDocumentV6["plan"]["draft"] = { walls: [], junctions: [] };
   let faces: { topologyKey: string; polygon: { outline: number[][] } }[] = [];
@@ -122,6 +143,7 @@ test("physical v6 draws at free coordinates and previews wall and branch lengths
   await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
     JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
   await page.goto("/#project/physical-v6-fixture");
+  await expect(page.locator("[data-wall-id]")).toHaveCount(1);
   await page.getByRole("button", { name: "Стена", exact: true }).click();
   const canvas = page.locator("[data-physical-canvas]");
   const clientPoint = (x: number, y: number) => canvas.evaluate((node, coordinates) => {
@@ -327,8 +349,7 @@ test("physical v6 pan between wall taps keeps the first world point", async ({ p
   expect(wall.drawnEdge[0].x).toBeLessThan(0);
   expect(wall.side).toBe("left");
   expect(wall.thicknessMm).toBe(150);
-  await page.getByRole("button", { name: "Переключить режим" }).click();
-  const choices = page.getByRole("navigation", { name: "Режим проекта" });
+  const choices = page.getByRole("group", { name: "Режим проекта" });
   await expect(choices).toBeVisible();
   const bounds = (await choices.boundingBox())!;
   expect(bounds.x).toBeGreaterThanOrEqual(0);
@@ -388,6 +409,39 @@ test("physical v6 desktop wall cursor matches wall thickness", async ({ page }) 
   await expect.poll(async () => (await footprint()).height).toBe(200);
   await page.getByRole("spinbutton", { name: "Толщина, мм" }).fill("55");
   await expect(page.getByRole("alert")).toContainText("шагом 10 мм");
+});
+
+test("physical v6 moves an intersecting wall cursor onto the nearest host face", async ({ page }) => {
+  const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
+  document.plan.draft = { walls: [{ id: "thick-host",
+    drawnEdge: [{ x: 0, y: 0 }, { x: 0, y: 1000 }], side: "right", thicknessMm: 400,
+    corners: [{ x: 0, y: 0 }, { x: 0, y: 1000 }, { x: 400, y: 1000 }, { x: 400, y: 0 }],
+  }], junctions: [] };
+  document.plan.pendingEdit = null;
+  document.plan.restorePoint = null;
+  document.viewport = { centerX: 200, centerY: 500, zoom: 5, gridStepMm: 100 };
+  await page.goto("/");
+  await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
+    JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
+  await page.goto("/#project/physical-v6-fixture");
+  await expect(page.locator("[data-wall-id]")).toHaveCount(1);
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const canvas = page.locator("[data-physical-canvas]");
+  const clientPoint = (x: number, y: number) => canvas.evaluate((node, coordinates) => {
+    const point = new DOMPoint(coordinates.x, -coordinates.y)
+      .matrixTransform((node as SVGSVGElement).getScreenCTM()!);
+    return { x: point.x, y: point.y };
+  }, { x, y });
+  const footprint = () => canvas.locator("[data-wall-cursor] path").evaluate(node => {
+    const bounds = (node as SVGGraphicsElement).getBBox();
+    return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+  });
+  const side = await clientPoint(300, 500);
+  await page.mouse.move(side.x, side.y);
+  await expect.poll(async () => (await footprint()).x).toBe(400);
+  const cap = await clientPoint(200, 900);
+  await page.mouse.move(cap.x, cap.y);
+  await expect.poll(async () => (await footprint()).y).toBe(-1100);
 });
 
 test("physical v6 snaps a diagonal wall to a face and previews the joint angle", async ({ page }) => {
@@ -657,7 +711,7 @@ test("physical v6 diagonal wall ruler offers a precise perpendicular target", as
     document.plan.restorePoint = null;
     document.rooms = [];
     document.selectedRoomId = null;
-    document.viewport = { centerX: 2000, centerY: 0, zoom: 14, gridStepMm: 100 };
+    document.viewport = { centerX: 2500, centerY: 500, zoom: 14, gridStepMm: 100 };
     await page.goto("/");
     await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
       JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
@@ -666,18 +720,23 @@ test("physical v6 diagonal wall ruler offers a precise perpendicular target", as
     await page.getByRole("button", { name: "Стена", exact: true }).click();
     const canvas = page.locator("[data-physical-canvas]");
     const start = await canvas.evaluate(svg => {
-      const point = new DOMPoint(2000, 0).matrixTransform((svg as SVGSVGElement).getScreenCTM()!);
+      const point = new DOMPoint(2500, -500).matrixTransform((svg as SVGSVGElement).getScreenCTM()!);
       return { x: point.x, y: point.y };
     });
     await page.touchscreen.tap(start.x, start.y);
+    const anchor = await page.locator("[data-wall-start]").evaluate(node => ({
+      x: Number(node.getAttribute("cx")), y: -Number(node.getAttribute("cy")),
+    }));
     const guides = await page.locator("[data-guide-target]").evaluateAll(nodes => nodes.map(node => {
       const circle = node.querySelector("circle")!;
       return { x: Number(circle.getAttribute("cx")), y: -Number(circle.getAttribute("cy")) };
     }));
-    const perpendicular = guides.find(point => point.x > 2000 && point.y < 0);
+    const perpendicular = guides.find(point => point.x > anchor.x && point.y < anchor.y);
     expect(perpendicular).toBeTruthy();
-    const dx = perpendicular!.x - 2000, dy = perpendicular!.y;
-    expect(Math.abs(Math.hypot(dx, dy) - 100)).toBeLessThanOrEqual(.1);
+    const dx = perpendicular!.x - anchor.x, dy = perpendicular!.y - anchor.y;
+    const distance = Math.hypot(dx, dy);
+    expect(distance).toBeGreaterThanOrEqual(99.9);
+    expect(Math.min(distance % 100, 100 - distance % 100)).toBeLessThanOrEqual(.1);
     expect(Math.abs(dx + dy)).toBeLessThanOrEqual(.1);
     await expect(canvas.getByText("100,0 мм · 90,0°").first()).toBeVisible();
   } finally { await context.close(); }
@@ -692,16 +751,19 @@ for (const width of [320, 430]) test(`physical v6 controls fit a ${width}px phon
     await page.getByRole("button", { name: "Новый проект" }).click();
     await page.getByRole("textbox", { name: "Название проекта" }).fill("Телефон");
     await page.getByRole("button", { name: "Создать проект" }).click();
-    const switcher = page.getByRole("button", { name: "Переключить режим" });
-    await expect(switcher).toBeVisible();
-    await switcher.click();
-    const modes = page.getByRole("navigation", { name: "Режим проекта" });
+    const modes = page.getByRole("group", { name: "Режим проекта" });
     await expect(modes).toBeVisible();
     const bounds = (await modes.boundingBox())!;
+    const sidebarToggleBounds = (await page.getByRole("button", { name: "Раскрыть меню" }).boundingBox())!;
     expect(bounds.x).toBeGreaterThanOrEqual(0);
     expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+    expect(bounds.x).toBeGreaterThanOrEqual(sidebarToggleBounds.x + sidebarToggleBounds.width + 4);
+    await expect(modes.getByRole("button", { name: "План" })).toHaveAttribute("aria-pressed", "true");
     await modes.getByRole("button", { name: "План" }).click();
     await page.getByRole("button", { name: "Раскрыть меню" }).click();
+    const sidebar = page.getByRole("complementary", { name: "Управление планом" });
+    await expect(sidebar.getByRole("button", { name: "План", exact: true })).toHaveCount(0);
+    await expect(sidebar.getByRole("button", { name: "Раскладка", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Стена", exact: true }).click();
     await expect(page.getByRole("button", { name: "Раскрыть меню" })).toBeVisible();
     const thicknessField = page.getByRole("spinbutton", { name: "Толщина, мм" });

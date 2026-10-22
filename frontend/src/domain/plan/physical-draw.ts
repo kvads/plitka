@@ -48,10 +48,16 @@ export function nearestPhysicalFace(graph: PhysicalGraphV5, point: Point, radius
 
 export function nearestCubeAttachment(graph: PhysicalGraphV5, point: Point,
                                       radius: number, thicknessMm: number) {
-  const face = nearestPhysicalFace(graph, point, radius + thicknessMm / 2);
+  const pointerInsideWall = graph.walls.some(wall => inside(wall.corners, point));
+  const reach = thicknessMm / 2 + radius;
+  const face = nearestPhysicalFace(graph, point,
+    pointerInsideWall ? Number.POSITIVE_INFINITY : reach + .001);
   if (!face) return null;
   const center = rounded(add(face.point, face.normal, thicknessMm / 2));
-  return Math.hypot(point.x - center.x, point.y - center.y) <= radius
+  // Once the cursor square touches a wall, it belongs on the nearest exposed
+  // face. Comparing with the future center left thick host walls with a dead
+  // zone where the cursor could remain inside their surface.
+  return pointerInsideWall || Math.hypot(point.x - face.point.x, point.y - face.point.y) <= reach
     ? { ...face, center } : null;
 }
 
@@ -72,10 +78,15 @@ export function centeredWallGeometry(graph: PhysicalGraphV5, start: Point, end: 
   const direction = { x: delta.x / length, y: delta.y / length };
   const left = { x: -direction.y, y: direction.x };
   const offset = { x: -left.x * thicknessMm / 2, y: -left.y * thicknessMm / 2 };
-  let drawnStart = rounded(add(start, offset));
-  let drawnEnd = rounded(add(end, offset));
   const attachments = [nearestCubeAttachment(graph, start, .2, thicknessMm),
     nearestCubeAttachment(graph, end, .2, thicknessMm)];
+  if (!attachments[0] && length <= thicknessMm / 2 + .1) return null;
+  // A free first click identifies the cursor square, not its centerline cap.
+  // Begin the wall at the square boundary facing the second click. Attached
+  // starts remain on the receiving face so joined walls stay continuous.
+  const physicalStart = attachments[0] ? start : add(start, direction, thicknessMm / 2);
+  let drawnStart = rounded(add(physicalStart, offset));
+  let drawnEnd = rounded(add(end, offset));
   const sideOffset = { x: left.x * thicknessMm, y: left.y * thicknessMm };
   for (const [index, face] of attachments.entries()) {
     if (!face) continue;

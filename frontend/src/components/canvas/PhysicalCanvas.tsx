@@ -157,6 +157,11 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     return inside;
   });
   const guideDirections: Point[] = [{ x: 1, y: 0 }, { x: 0, y: 1 }];
+  const startAttachment = start && wallTool
+    ? nearestCubeAttachment(graph, start, .2, thicknessMm) : null;
+  if (startAttachment && guideDirections.every(direction =>
+    Math.abs(startAttachment.normal.x * direction.x + startAttachment.normal.y * direction.y) < .999999))
+    guideDirections.unshift(startAttachment.normal);
   if (start && wallTool) for (const wall of graph.walls) {
     for (const [a, b] of [[wall.corners[0], wall.corners[1]],
       [wall.corners[3], wall.corners[2]]]) {
@@ -221,6 +226,11 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   })();
   const target = (point: Point): Point => {
     const radius = (mobile ? 18 : 14) / Math.max(pixelScale, 0.01);
+    // A cursor square touching an existing wall must sit against one of its
+    // exposed faces. Face selection comes before point targets so a corner
+    // cannot leave half of the square embedded in the host wall.
+    const face = nearestCubeAttachment(graph, point, radius, thicknessMm);
+    if (face) return face.center;
     const candidates = mobile ? mobileTargets : corners;
     const ranked = candidates.map(candidate => ({ point: candidate,
       distance: Math.hypot(point.x - candidate.x, point.y - candidate.y),
@@ -233,10 +243,6 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       Math.hypot(corner.x - nearest.point.x, corner.y - nearest.point.y) * pixelScale < targetSpacingPx).length > 1)
       return precisePoint(point);
     if (nearest) return nearest.point;
-    // The square cursor has physical width: attract when its near side
-    // reaches the wall, even while the pointer is farther from that face.
-    const face = nearestCubeAttachment(graph, point, radius, thicknessMm);
-    if (face) return face.center;
     if (start) {
       let aligned: Point | null = null;
       let bestDistance = (mobile ? 18 : 12) / Math.max(pixelScale, .01);
@@ -357,6 +363,14 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     }
   };
   const preview = geometry?.corners;
+  const previewStart = preview ? {
+    x: (preview[0].x + preview[3].x) / 2,
+    y: (preview[0].y + preview[3].y) / 2,
+  } : start;
+  const previewEnd = preview ? {
+    x: (preview[1].x + preview[2].x) / 2,
+    y: (preview[1].y + preview[2].y) / 2,
+  } : hover;
   const acceptedPreview = serverPreview?.key === previewKey && serverPreview.response.status === "valid"
     ? serverPreview.response : null;
   const previewWallId = acceptedPreview?.affectedWallIds[0];
@@ -371,7 +385,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         Math.hypot(dimension.to.x - segment.to.x, dimension.to.y - segment.to.y) <= .2) ||
        (Math.hypot(dimension.from.x - segment.to.x, dimension.from.y - segment.to.y) <= .2 &&
         Math.hypot(dimension.to.x - segment.from.x, dimension.to.y - segment.from.y) <= .2)))) ?? [] : [];
-  const previewLength = start && hover && wallTool ? Math.hypot(hover.x - start.x, hover.y - start.y) : 0;
+  const previewLength = previewStart && previewEnd && wallTool
+    ? Math.hypot(previewEnd.x - previewStart.x, previewEnd.y - previewStart.y) : 0;
   const cursorFootprint = cursor ? (() => {
     const normal = cursorFace?.normal ?? { x: 1, y: 0 };
     const lateral = { x: -normal.y, y: normal.x };
@@ -448,10 +463,10 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       {pixelScale * 10 >= 6 && grid(10, "#e8e8e8", .5)}
       {pixelScale * 100 >= 6 && grid(100, "#a5a5a5", 1)}
       {grid(1000, "#555", 1.35)}
-      {start && wallTool && guideDirections.map((direction, index) =>
+      {previewStart && wallTool && guideDirections.map((direction, index) =>
         <line key={`guide-${index}`}
-          x1={start.x - direction.x * span} y1={-start.y + direction.y * span}
-          x2={start.x + direction.x * span} y2={-start.y - direction.y * span}
+          x1={previewStart.x - direction.x * span} y1={-previewStart.y + direction.y * span}
+          x2={previewStart.x + direction.x * span} y2={-previewStart.y - direction.y * span}
           stroke="#777" strokeDasharray={`${6 / pixelScale} ${5 / pixelScale}`}
           strokeWidth={1 / pixelScale} />)}
       {start && wallTool && mobile && guideLabels.map((point, index) =>
@@ -500,7 +515,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       </g>}
       {acceptedPreview?.proposedWall && <path d={wallPath(acceptedPreview.proposedWall.corners)}
         fill="#77777780" stroke="#333" strokeWidth={2 / pixelScale} />}
-      {start && <circle cx={start.x} cy={-start.y} r={8 / pixelScale} fill="#333" />}
+      {previewStart && <circle data-wall-start cx={previewStart.x} cy={-previewStart.y}
+        r={8 / pixelScale} fill="#333" />}
       {wallTool && !start && cursorFootprint && <g data-wall-cursor>
         <path d={wallPath(cursorFootprint)} fill="url(#physical-wall-cursor-hatch)"
           stroke="#333" strokeWidth={1.5 / pixelScale} />
@@ -511,8 +527,9 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
           cx={cursor.x} cy={-cursor.y}
           r={2 / pixelScale} fill="#333" />}
       </g>}
-      {previewLength >= .1 && start && hover && <text data-wall-preview-length
-        x={(start.x + hover.x) / 2} y={-(start.y + hover.y) / 2 - 18 / pixelScale}
+      {previewLength >= .1 && previewStart && previewEnd && <text data-wall-preview-length
+        x={(previewStart.x + previewEnd.x) / 2}
+        y={-(previewStart.y + previewEnd.y) / 2 - 18 / pixelScale}
         textAnchor="middle" fontSize={13 / pixelScale} fontWeight={600}
         fill="#222" stroke="#fff" strokeWidth={3 / pixelScale} paintOrder="stroke">
         {displayTenth(previewLength)} мм

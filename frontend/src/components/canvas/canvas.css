@@ -295,7 +295,49 @@
   z-index: 4;
 }
 .physical-mode-switch {
-  display: none;
+  position: absolute;
+  z-index: 5;
+  top: max(12px, env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(112px, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #aaa;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 4px 18px #0002;
+}
+.physical-mode-switch button {
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #39453f;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.physical-mode-switch button svg {
+  width: 19px;
+  height: 19px;
+}
+.physical-mode-switch button:hover {
+  background: #edf2ee;
+}
+.physical-mode-switch button[aria-pressed="true"] {
+  background: #294f3e;
+  color: #fff;
+  box-shadow: 0 2px 7px #17342633;
+}
+.physical-mode-switch button:focus-visible {
+  outline: 3px solid #ce894b;
+  outline-offset: 2px;
 }
 .physical-handle-controls, .physical-nudge-controls {
   display: flex;
@@ -330,25 +372,13 @@
 }
 @media (max-width: 600px) {
   .physical-mode-switch {
-    position: absolute;
-    z-index: 5;
-    top: max(12px, env(safe-area-inset-top, 0px));
-    right: 12px;
-    display: flex;
-    align-items: flex-start;
-    flex-direction: row-reverse;
-    gap: 8px;
+    top: max(8px, env(safe-area-inset-top, 0px));
+    left: 88px;
+    right: max(8px, env(safe-area-inset-right, 0px));
+    transform: none;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .physical-mode-options {
-    display: flex;
-    gap: 4px;
-    padding: 6px;
-    border: 1px solid #bbb;
-    border-radius: 9px;
-    background: white;
-    box-shadow: 0 4px 16px #0002;
-  }
-  .physical-mode-options button { min-width: 44px; min-height: 44px; }
+  .physical-mode-switch button { padding-inline: 10px; }
   .physical-editor > .canvas-panel {
     top: auto !important;
     bottom: max(12px, env(safe-area-inset-bottom, 0px)) !important;
