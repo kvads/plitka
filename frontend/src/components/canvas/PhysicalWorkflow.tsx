@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, ChevronsLeft, ChevronsRight, DoorOpen, FolderOpen, Grid3X3, LoaderCircle, MousePointer2, PencilRuler, RotateCcw, Trash2, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronsLeft, ChevronsRight, Cuboid, DoorOpen, FolderOpen, Grid3X3, LoaderCircle, MousePointer2, PencilRuler, RotateCcw, Trash2, X } from "lucide-react";
 import PhysicalCanvas from "./PhysicalCanvas";
 import ProjectMenu from "./ProjectMenu";
 import { usePhysicalProject } from "../../domain/plan/usePhysicalProject";
@@ -73,6 +73,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const [sharedLoading, setSharedLoading] = useState(false);
   const [layoutScope, setLayoutScope] = useState<"room" | "through">(
     () => initial.sharedGrid ? "through" : "room");
+  const [room3D, setRoom3D] = useState(false);
   const layoutGeneration = useRef(0);
   const failedAutomaticLayouts = useRef(new Set<string>());
   const thickness = Number(thicknessInput.replace(",", "."));
@@ -288,12 +289,31 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   }, [response, doc.plan.draft, doc.rooms, update]);
   const setMode = (mode: "object" | "variants") => {
     update(current => ({ ...current, workflow: { requestedStage: mode } }));
+    setRoom3D(false);
     setMenuOpen(false);
     setProjectMenu(false);
     setWallTool(false);
     setDoorTool(false);
     setInteractionTool("select");
   };
+  const showRoomPreview = () => {
+    if (!layoutMode)
+      update(current => ({ ...current, workflow: { requestedStage: "variants" } }));
+    setRoom3D(true);
+    setMenuOpen(false);
+    setProjectMenu(false);
+    setWallTool(false);
+    setDoorTool(false);
+    setInteractionTool("select");
+  };
+  useEffect(() => {
+    if (!room3D) return;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setRoom3D(false);
+    };
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, [room3D]);
   const activateInteractionTool = (tool: "select" | "delete") => {
     setInteractionTool(tool);
     setWallTool(false);
@@ -329,7 +349,18 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     if (opening) setPendingElementDeletion({ kind: "door", openingId, widthMm: opening.widthMm });
   };
   return <div className="app physical-editor" style={{ position: "relative", height: "100dvh", overflow: "hidden" }}>
-    <PhysicalCanvas graph={doc.plan.draft} draftRevision={doc.plan.draftRevision}
+    {room3D ? <div className="room-preview-fullscreen">
+      {room && selectedFace?.polygon ? <Suspense fallback={
+        <div className="room-preview-fullscreen-loading" role="status">Загружаем 3D-помещение…</div>
+      }>
+        <RoomPreview3D polygon={selectedFace.polygon} layout={activeLayout}
+          roomName={room.name} tileSize={sharedGrid?.tile ?? room.material.tile} />
+      </Suspense> : <div className="room-preview-empty" role="status">
+        <Cuboid aria-hidden="true" />
+        <strong>Нет выбранного помещения</strong>
+        <span>Вернитесь в режим «Раскладка» и выберите замкнутое помещение.</span>
+      </div>}
+    </div> : <PhysicalCanvas graph={doc.plan.draft} draftRevision={doc.plan.draftRevision}
       wallArea={response?.wallArea ?? []}
       faces={response?.faces ?? []} selectedRoomKey={room?.topologyKey}
       highlightRooms={layoutMode} roomMissing={roomMissing}
@@ -356,7 +387,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         if (doorWidthValid && !busy) void command({ type: "addDoorOpening", wallId, offsetMm,
           widthMm: doorWidth });
       }}
-      onResetDoorTool={() => setDoorTool(false)} />
+      onResetDoorTool={() => setDoorTool(false)} />}
     <div className="canvas-sidebar-shell" data-overlay style={{ position: "absolute", top: 12, left: 12 }}>
       <button className="canvas-sidebar-toggle" aria-label={menuOpen ? "Свернуть меню" : "Раскрыть меню"}
         aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}>
@@ -379,16 +410,20 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       </aside>}
     </div>
     <div className="physical-mode-switch" role="group" aria-label="Режим проекта" data-overlay>
-      <button type="button" aria-pressed={!layoutMode} onClick={() => setMode("object")}>
+      <button type="button" aria-pressed={!layoutMode && !room3D} onClick={() => setMode("object")}>
         <PencilRuler aria-hidden="true" />
         <span>План</span>
       </button>
-      <button type="button" aria-pressed={layoutMode} onClick={() => setMode("variants")}>
+      <button type="button" aria-pressed={layoutMode && !room3D} onClick={() => setMode("variants")}>
         <Grid3X3 aria-hidden="true" />
         <span>Раскладка</span>
       </button>
+      <button type="button" aria-pressed={room3D} onClick={showRoomPreview}>
+        <Cuboid aria-hidden="true" />
+        <span>3D</span>
+      </button>
     </div>
-    {!layoutMode && <div className="physical-interaction-tools" role="toolbar"
+    {!layoutMode && !room3D && <div className="physical-interaction-tools" role="toolbar"
       aria-label="Действие с элементами плана" data-overlay>
       <button type="button" aria-label="Выбрать элемент" title="Выбрать элемент"
         aria-pressed={interactionTool === "select" && !wallTool && !doorTool}
@@ -408,7 +443,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     {deleteWallError && <div className="physical-delete-error" role="alert" data-overlay>
       {deleteWallError}
     </div>}
-    {(wallTool || doorTool || selected || selectedDoor || projectMenu || layoutMode || doc.plan.pendingEdit) && <aside className="canvas-panel" data-overlay data-layout-mode={layoutMode || undefined}
+    {!room3D && (wallTool || doorTool || selected || selectedDoor || projectMenu || layoutMode || doc.plan.pendingEdit) && <aside className="canvas-panel" data-overlay data-layout-mode={layoutMode || undefined}
       style={{ position: "absolute", right: 12, top: 62, maxWidth: "min(340px, calc(100vw - 72px))", maxHeight: "calc(100dvh - 138px)", overflowY: "auto" }}>
       {wallTool && !layoutMode && <button type="button" className="physical-reset-wall-tool"
         onClick={() => setWallTool(false)} title="Также можно нажать Esc без начатой стены">
