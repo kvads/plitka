@@ -22,6 +22,16 @@ def _line(pair):
     return LineString([(p.x, p.y) for p in pair])
 
 
+def rounded_contact_overlap_limit(first: PhysicalWallV5, second: PhysicalWallV5) -> float:
+    """Area of a sub-0.2 mm strip caused by tenth-mm vertex rounding."""
+    cap_lengths = [
+        _line(edge).length
+        for wall in (first, second)
+        for edge in (_edges(wall)["startCap"], _edges(wall)["endCap"])
+    ]
+    return .2 * max(first.thicknessMm, second.thicknessMm, *cap_lengths)
+
+
 def _point_on_edge(edge, point):
     return _line(edge).distance(ShapelyPoint(point.x, point.y)) <= 0.1 + 1e-7
 
@@ -38,7 +48,8 @@ def simple_contact(existing: PhysicalWallV5, new: PhysicalWallV5,
     old_polygon, new_polygon = polygon(existing), polygon(new)
     overlap = old_polygon.intersection(new_polygon)
     has_overlap = overlap.area > 0.01
-    if has_overlap and (overlap.geom_type != "Polygon" or len(overlap.interiors)):
+    has_material_overlap = overlap.area > rounded_contact_overlap_limit(existing, new)
+    if has_material_overlap and (overlap.geom_type != "Polygon" or len(overlap.interiors)):
         raise ValueError("Перекрытие стен выходит за локальную область стыка.")
     edges_old, edges_new = _edges(existing), _edges(new)
     candidates = []
@@ -49,9 +60,28 @@ def simple_contact(existing: PhysicalWallV5, new: PhysicalWallV5,
         for cap_name in ("startCap", "endCap"):
             cap = _line(cap_edges[cap_name])
             for long_name in ("drawn", "opposite"):
-                shared = cap.intersection(_line(long_edges[long_name]))
-                if shared.length >= 0.1 - 1e-7 or (has_overlap and isinstance(shared, ShapelyPoint)):
-                    if has_overlap:
+                long = _line(long_edges[long_name])
+                shared = cap.intersection(long)
+                shared_length = shared.length
+                anchor = (shared if isinstance(shared, ShapelyPoint) else
+                          shared.interpolate(shared_length / 2) if shared_length else None)
+                # Tenth-millimetre rounding can leave a correctly projected
+                # cap parallel to its host face with a sub-tolerance gap. Use
+                # the projected overlap rather than requiring an exact GEOS
+                # line intersection in that case.
+                if shared_length < 0.1 - 1e-7 and not isinstance(shared, ShapelyPoint):
+                    cap_points = [ShapelyPoint(point.x, point.y)
+                                  for point in cap_edges[cap_name]]
+                    if all(long.distance(point) <= 0.1 + 1e-7 for point in cap_points):
+                        positions = sorted(long.project(point) for point in cap_points)
+                        start = max(0.0, positions[0])
+                        finish = min(long.length, positions[1])
+                        if finish - start >= 0.1 - 1e-7:
+                            shared_length = finish - start
+                            anchor = long.interpolate((start + finish) / 2)
+                if (shared_length >= 0.1 - 1e-7 or
+                        (has_overlap and isinstance(shared, ShapelyPoint))):
+                    if has_material_overlap:
                         cap_a, cap_b = cap_edges[cap_name]
                         long_a, long_b = long_edges[long_name]
                         dx, dy = cap_wall.drawnEdge[1].x - cap_wall.drawnEdge[0].x, cap_wall.drawnEdge[1].y - cap_wall.drawnEdge[0].y
@@ -79,7 +109,8 @@ def simple_contact(existing: PhysicalWallV5, new: PhysicalWallV5,
                                 ((vx - line_start.x) * dx + (vy - line_start.y) * dy) / axis_length > .1)
                                for vx, vy in overlap.exterior.coords):
                             continue
-                    anchor = shared if isinstance(shared, ShapelyPoint) else shared.interpolate(shared.length / 2)
+                    if anchor is None:
+                        continue
                     point = PhysicalPoint(x=round(anchor.x * 10) / 10,
                                           y=round(anchor.y * 10) / 10)
                     if _point_on_edge(cap_edges[cap_name], point) and _point_on_edge(long_edges[long_name], point):

@@ -6,7 +6,8 @@ import math
 from shapely.geometry import LineString, Point as ShapelyPoint
 
 from .physical_geometry import create_wall
-from .physical_junctions import simple_contact, polygon, rebuild_simple_contacts
+from .physical_junctions import (simple_contact, polygon, rebuild_simple_contacts,
+                                 rounded_contact_overlap_limit)
 from .physical_models import PhysicalGraphV5, PhysicalPoint, PhysicalWallV5
 from .physical_validation import validate_physical_graph
 
@@ -115,7 +116,11 @@ def _complete_oblique_contact(points: list[PhysicalPoint], existing, side: str,
 
 def _miter_contact(wall: PhysicalWallV5, existing: PhysicalWallV5) -> PhysicalWallV5:
     """Stop each long edge separately at the same receiving physical face."""
-    if not polygon(wall).intersects(polygon(existing)):
+    # Coordinates are persisted at tenth-millimetre precision. A cap which
+    # was projected onto an oblique host face can therefore end up a few
+    # hundredths of a millimetre away from it; still run the exact miter in
+    # that rounding band.
+    if polygon(wall).distance(polygon(existing)) > .15:
         return wall
     a, b, c, d = wall.corners
     length = math.hypot(b.x - a.x, b.y - a.y)
@@ -152,7 +157,8 @@ def _miter_contact(wall: PhysicalWallV5, existing: PhysicalWallV5) -> PhysicalWa
                 "drawnEdge": [corners[0], corners[1]]})
             try:
                 validate_physical_graph(PhysicalGraphV5(walls=[candidate], junctions=[]))
-                if (polygon(candidate).intersection(polygon(existing)).area <= .02 and
+                if (polygon(candidate).intersection(polygon(existing)).area <=
+                        rounded_contact_overlap_limit(candidate, existing) and
                         simple_contact(existing, candidate, "miter-probe")):
                     candidates.append((sum(distances), candidate))
             except ValueError:
@@ -282,7 +288,8 @@ def _miter_end_caps(first: PhysicalWallV5, second: PhysicalWallV5
                 try:
                     validate_physical_graph(PhysicalGraphV5(
                         walls=[changed_first, changed_second], junctions=[]))
-                    if polygon(changed_first).intersection(polygon(changed_second)).area > .02:
+                    if (polygon(changed_first).intersection(polygon(changed_second)).area >
+                            rounded_contact_overlap_limit(changed_first, changed_second)):
                         continue
                     joint = simple_contact(changed_first, changed_second, "miter-cap-probe")
                     if not joint or not all(part.edge.endswith("Cap") for part in joint.participants):

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { touchSession, v6DiagonalWallGraph, v6PhysicalDocument, v6SavedWallGraph } from "./fixtures/projects";
-import type { ProjectDocumentV6 } from "../src/domain/plan/types";
+import type { Point, ProjectDocumentV6 } from "../src/domain/plan/types";
 import { physicalBasisKey } from "../src/domain/plan/physical-basis";
 import { parseV6Import } from "../src/domain/plan/migration";
 import { splitWallDimensions } from "../src/domain/plan/physical-dimensions";
@@ -168,6 +168,48 @@ test("a diagonal brace closes the inside of an existing L corner", async ({ requ
     .toBe("applied");
   expect(result.graph.walls).toHaveLength(3);
   expect(result.graph.junctions).toHaveLength(3);
+});
+
+test("a bridge can join two walls inside a compound angled layout", async ({ request }) => {
+  let graph: ProjectDocumentV6["plan"]["draft"] = { walls: [], junctions: [] };
+  let revision = 0;
+  const apply = async (edge: [Point, Point], id: string) => {
+    const response = await request.post("/api/v5/plan/command", { data: {
+      schemaVersion: 5, commandId: id, draftRevision: revision,
+      basisKey: await physicalBasisKey(graph), graph,
+      command: { type: "drawWall", drawnEdge: edge, side: "left", thicknessMm: 100 },
+    } });
+    const result = await response.json();
+    expect(result.status, JSON.stringify({ id, edge, issues: result.issues })).toBe("applied");
+    graph = result.graph;
+    revision++;
+  };
+  const attach = (wallIndex: number, edge: "drawn" | "opposite", ratio: number) => {
+    const wall = graph.walls[wallIndex];
+    const [from, to] = edge === "drawn"
+      ? [wall.corners[0], wall.corners[1]] : [wall.corners[3], wall.corners[2]];
+    const point = { x: from.x + (to.x - from.x) * ratio,
+      y: from.y + (to.y - from.y) * ratio };
+    return nearestCubeAttachment(graph, point, 2, 100)!;
+  };
+  const applySnapped = async (start: ReturnType<typeof attach>,
+                              end: ReturnType<typeof attach> | Point, id: string) => {
+    const endAttachment = "center" in end ? end : null;
+    const endPoint = endAttachment?.center ?? end;
+    const geometry = centeredWallGeometry(graph, start.center, endPoint, 100,
+      [start, endAttachment])!;
+    await apply(geometry.edge, id);
+  };
+
+  await apply([{ x: 0, y: 0 }, { x: 1200, y: 0 }], "compound-top");
+  await apply([{ x: 0, y: -100 }, { x: 0, y: -1200 }], "compound-left");
+  await applySnapped(attach(1, "opposite", .92), attach(0, "opposite", .88), "compound-first-diagonal");
+  await applySnapped(attach(2, "drawn", .45), { x: 1500, y: -1150 }, "compound-branch");
+  await applySnapped(attach(3, "opposite", .55), { x: 1500, y: -100 }, "compound-second-diagonal");
+  const beforeBridge = graph.junctions.length;
+  await applySnapped(attach(2, "drawn", .82), attach(4, "drawn", .82), "compound-bridge");
+  expect(graph.walls).toHaveLength(6);
+  expect(graph.junctions.length).toBeGreaterThanOrEqual(beforeBridge + 2);
 });
 
 test("physical v6 continues one tile grid through three separate rooms after reload", async ({ page, request }) => {
