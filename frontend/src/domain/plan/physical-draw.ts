@@ -83,6 +83,37 @@ function intersectionOnFace(origin: Point, direction: Point, face: PhysicalFace)
   return ratio >= -.001 && ratio <= 1.001 ? along : null;
 }
 
+export function alignCubeAttachmentToGuides(start: Point, pointer: Point,
+                                             attachment: PhysicalAttachment,
+                                             directions: readonly Point[], thicknessMm: number,
+                                             snapDistance: number): PhysicalAttachment {
+  const segment = difference(attachment.to, attachment.from);
+  const length = Math.hypot(segment.x, segment.y);
+  if (length < .1) return attachment;
+  const tangent = { x: segment.x / length, y: segment.y / length };
+  const inset = Math.min(thicknessMm / 2, length / 2);
+  const centerTrack: PhysicalFace = {
+    ...attachment,
+    from: add(add(attachment.from, tangent, inset), attachment.normal, thicknessMm / 2),
+    to: add(add(attachment.to, tangent, -inset), attachment.normal, thicknessMm / 2),
+  };
+  let best: { center: Point; distance: number } | null = null;
+  for (const direction of directions) {
+    const along = intersectionOnFace(start, direction, centerTrack);
+    if (along === null || Math.abs(along) < .1) continue;
+    const center = add(start, direction, along);
+    const distance = Math.hypot(pointer.x - center.x, pointer.y - center.y);
+    if (distance <= snapDistance && (!best || distance < best.distance))
+      best = { center, distance };
+  }
+  if (!best) return attachment;
+  const center = rounded(best.center);
+  const contact = rounded(add(center, attachment.normal, -thicknessMm / 2));
+  return { ...attachment, point: contact, center,
+    tangentialShift: Math.hypot(contact.x - attachment.point.x,
+      contact.y - attachment.point.y) };
+}
+
 export function centeredWallGeometry(graph: PhysicalGraphV5, start: Point, end: Point,
                                      thicknessMm: number,
                                      attachmentHints?: readonly [PhysicalAttachment | null,

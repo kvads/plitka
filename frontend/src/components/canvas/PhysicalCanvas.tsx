@@ -5,7 +5,7 @@ import { roundTenth } from "../../domain/plan/precision";
 import type { Layout } from "../../types";
 import { physicalPreview, type PhysicalPreviewResponse } from "../../domain/plan/physical-preview";
 import { splitWallDimensions } from "../../domain/plan/physical-dimensions";
-import { centeredWallGeometry, immediateJointAngles, nearestCubeAttachment,
+import { alignCubeAttachmentToGuides, centeredWallGeometry, immediateJointAngles, nearestCubeAttachment,
   type PhysicalAttachment } from "../../domain/plan/physical-draw";
 
 type Viewport = ProjectDocumentV6["viewport"];
@@ -244,7 +244,12 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     // exposed faces. Face selection comes before point targets so a corner
     // cannot leave half of the square embedded in the host wall.
     const face = nearestCubeAttachment(graph, point, radius, thicknessMm);
-    if (face) return { point: face.center, attachment: face };
+    if (face) {
+      const attachment = start ? alignCubeAttachmentToGuides(start, point, face,
+        guideDirections, thicknessMm, (mobile ? 18 : 12) / Math.max(pixelScale, .01) +
+          (startFace?.tangentialShift ?? 0)) : face;
+      return { point: attachment.center, attachment };
+    }
     const candidates = mobile ? mobileTargets : corners;
     const ranked = candidates.map(candidate => ({ point: candidate,
       distance: Math.hypot(point.x - candidate.x, point.y - candidate.y),

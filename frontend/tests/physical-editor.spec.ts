@@ -4,7 +4,8 @@ import type { Point, ProjectDocumentV6 } from "../src/domain/plan/types";
 import { physicalBasisKey } from "../src/domain/plan/physical-basis";
 import { parseV6Import } from "../src/domain/plan/migration";
 import { splitWallDimensions } from "../src/domain/plan/physical-dimensions";
-import { centeredWallGeometry, immediateJointAngles, nearestCubeAttachment } from "../src/domain/plan/physical-draw";
+import { alignCubeAttachmentToGuides, centeredWallGeometry, immediateJointAngles,
+  nearestCubeAttachment } from "../src/domain/plan/physical-draw";
 import { newRoom } from "../src/domain/plan/rooms";
 import { readFile } from "node:fs/promises";
 
@@ -60,6 +61,22 @@ test("a wall snapped near a host end aligns its outer corner and closes the cube
   expect(geometry.edge[0].x).toBe(100);
   expect(geometry.corners[0]).toEqual({ x: 100, y: 0 });
   expect(geometry.corners[3]).toEqual({ x: 100, y: 100 });
+});
+
+test("a wall face attachment preserves an exact 90 degree guide", () => {
+  const graph = { walls: [{ id: "host", drawnEdge: [{ x: 900, y: 0 }, { x: 900, y: 1000 }],
+    side: "right" as const, thicknessMm: 100,
+    corners: [{ x: 900, y: 0 }, { x: 900, y: 1000 }, { x: 1000, y: 1000 }, { x: 1000, y: 0 }],
+  }], junctions: [] };
+  const start = { x: 150, y: 500 };
+  const pointer = { x: 850, y: 501.5 };
+  const face = nearestCubeAttachment(graph, pointer, 60, 100)!;
+  const aligned = alignCubeAttachmentToGuides(start, pointer, face,
+    [{ x: 1, y: 0 }, { x: 0, y: 1 }], 100, 12);
+  expect(aligned.center).toEqual({ x: 850, y: 500 });
+  const geometry = centeredWallGeometry(graph, start, aligned.center, 100,
+    [null, aligned])!;
+  expect(geometry.edge[0].y).toBe(geometry.edge[1].y);
 });
 
 test("a free wall begins at the cursor boundary opposite its draw direction", () => {
@@ -686,6 +703,42 @@ test("physical v6 commits a snapped wall near a host end as a junction", async (
       startCap: graph.walls[1] ? [graph.walls[1].corners[0], graph.walls[1].corners[3]] : null };
   })).toEqual({ walls: 2, junctions: 1, start: { x: 100, y: 0 },
     startCap: [{ x: 100, y: 0 }, { x: 100, y: 100 }] });
+});
+
+test("physical v6 keeps a face-to-face wall exactly perpendicular", async ({ page }) => {
+  const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
+  document.plan.draft = { walls: [
+    { id: "left", drawnEdge: [{ x: 0, y: 0 }, { x: 0, y: 1000 }],
+      side: "right", thicknessMm: 100,
+      corners: [{ x: 0, y: 0 }, { x: 0, y: 1000 }, { x: 100, y: 1000 }, { x: 100, y: 0 }] },
+    { id: "right", drawnEdge: [{ x: 1000, y: 0 }, { x: 1000, y: 1000 }],
+      side: "left", thicknessMm: 100,
+      corners: [{ x: 1000, y: 0 }, { x: 1000, y: 1000 }, { x: 900, y: 1000 }, { x: 900, y: 0 }] },
+  ], junctions: [] };
+  document.plan.pendingEdit = null;
+  document.plan.restorePoint = null;
+  document.viewport = { centerX: 500, centerY: 500, zoom: 5, gridStepMm: 100 };
+  await page.goto("/");
+  await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
+    JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
+  await page.goto("/#project/physical-v6-fixture");
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const canvas = page.locator("[data-physical-canvas]");
+  const clientPoint = (x: number, y: number) => canvas.evaluate((node, coordinates) => {
+    const point = new DOMPoint(coordinates.x, -coordinates.y)
+      .matrixTransform((node as SVGSVGElement).getScreenCTM()!);
+    return { x: point.x, y: point.y };
+  }, { x, y });
+  const start = await clientPoint(150, 500);
+  const end = await clientPoint(850, 501.5);
+  await page.mouse.click(start.x, start.y);
+  await page.mouse.move(end.x, end.y);
+  await page.mouse.click(end.x, end.y);
+  await expect.poll(() => page.evaluate(() => {
+    const wall = JSON.parse(localStorage.getItem("plitka-projects-v6")!)
+      .projects[0].plan.draft.walls[2];
+    return wall ? [wall.drawnEdge[0].y, wall.drawnEdge[1].y] : null;
+  })).toEqual([450, 450]);
 });
 
 test("physical v6 snaps a diagonal wall to a face and previews the joint angle", async ({ page }) => {
