@@ -57,6 +57,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const [layoutCache, setLayoutCache] = useState<Record<string, { key: string; variants: Layout[]; selected: number }>>({});
   const [layoutLoading, setLayoutLoading] = useState(false);
   const [layoutError, setLayoutError] = useState("");
+  const [layoutNotice, setLayoutNotice] = useState("");
   const [sharedLoading, setSharedLoading] = useState(false);
   const [layoutScope, setLayoutScope] = useState<"room" | "through">(
     () => initial.sharedGrid ? "through" : "room");
@@ -114,6 +115,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     const capturedKey = layoutKey;
     setLayoutLoading(true);
     setLayoutError("");
+    setLayoutNotice("");
     try {
       const variants = linked
         ? [await api<Layout>("v5/layout", request)]
@@ -141,6 +143,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     const capturedKey = roomLayoutKey({ ...doc, sharedGrid: null }, room, selectedFace, null);
     setLayoutLoading(true);
     setLayoutError("");
+    setLayoutNotice("");
     try {
       const variants = (await api<{ variants: Layout[] }>("v5/optimize",
         roomLayoutRequest(room, selectedFace, null))).variants;
@@ -167,6 +170,25 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     } finally {
       if (generation === layoutGeneration.current) setLayoutLoading(false);
     }
+  };
+  const resetLayout = () => {
+    layoutGeneration.current++;
+    failedAutomaticLayouts.current.clear();
+    setLayoutLoading(false);
+    setSharedLoading(false);
+    setLayoutError("");
+    if (layoutScope === "through") {
+      setLayoutCache({});
+      if (doc.sharedGrid) update(current => ({ ...current, sharedGrid: null }));
+      setLayoutNotice("Сквозная раскладка сброшена. Параметры и стены сохранены.");
+      return;
+    }
+    if (room) setLayoutCache(cache => {
+      const next = { ...cache };
+      delete next[room.id];
+      return next;
+    });
+    setLayoutNotice("Раскладка помещения сброшена. Параметры и стены сохранены.");
   };
   useEffect(() => {
     if (!layoutMode || !sharedGrid || !response || response.status === "invalid" ||
@@ -390,6 +412,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           </button>
           {sharedLoading && <p role="status">Переносим линии плитки в подключённые помещения…</p>}
           {layoutError && <p role="alert" className="error">{layoutError}</p>}
+          {layoutNotice && <p role="status" className="layout-notice">{layoutNotice}</p>}
           {cachedLayout && cachedLayout.key !== layoutKey && <p role="status">Раскладка требует пересчёта.</p>}
           {layoutScope === "through" && sharedGrid && <div className="layout-success" role="status">
             <strong>Сквозная раскладка готова</strong>
@@ -416,6 +439,11 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
               <button onClick={() => exportResult("csv", activeLayout)}>Таблица деталей · CSV</button>
             </div>}
           </>}
+          {(layoutScope === "through" ? !!doc.sharedGrid || visibleLayouts.length > 0 : !!activeLayout) &&
+            <button type="button" className="layout-reset" onClick={resetLayout}>
+              <RotateCcw aria-hidden="true" />
+              <span>Сбросить раскладку</span>
+            </button>}
         </> : room ? <p role="status">{response === null ? "Проверяем геометрию помещения…"
           : "Полезный контур помещения разомкнут или разделён. Соедините стены, чтобы рассчитать раскладку."}</p>
           : <p>Выберите замкнутое помещение на полотне.</p>}

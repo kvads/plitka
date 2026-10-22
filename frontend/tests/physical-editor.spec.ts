@@ -300,6 +300,12 @@ test("physical v6 continues one tile grid through three separate rooms after rel
     expect([request.tile, request.grout, request.angle, request.offset_x, request.offset_y])
       .toEqual([saved.sharedGrid.tile, saved.sharedGrid.grout, saved.sharedGrid.angle,
         saved.sharedGrid.offsetX, saved.sharedGrid.offsetY]);
+  await page.getByRole("button", { name: "Сбросить раскладку" }).click();
+  await expect(page.getByText("Сквозная раскладка сброшена. Параметры и стены сохранены.")).toBeVisible();
+  await expect(page.locator("[data-layout-room-id]")).toHaveCount(0);
+  const reset = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0]);
+  expect(reset.sharedGrid).toBeNull();
+  expect(reset.plan.draft.walls).toHaveLength(saved.plan.draft.walls.length);
 });
 
 test("physical v6 draws at free coordinates and previews wall and branch lengths", async ({ page }) => {
@@ -862,7 +868,10 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await page.getByRole("button", { name: "Таблица деталей · CSV" }).click();
   const csv = await csvDownload;
   expect((await readFile(await csv.path(), "utf8"))).toContain("Площадь мм²");
-  await expect(page.locator("[data-room-key]")).toHaveAttribute("fill", "#fff");
+  await page.getByRole("button", { name: "Сбросить раскладку" }).click();
+  await expect(page.getByText("Раскладка помещения сброшена. Параметры и стены сохранены.")).toBeVisible();
+  await expect(page.locator("[data-layout-room-id]")).toHaveCount(0);
+  await expect(page.locator("[data-room-key]")).toHaveAttribute("fill", "#fff4bb");
   await expect(page.locator("[data-room-key]")).toHaveCount(1);
   const roomId = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].id);
   await page.getByRole("button", { name: "Раскрыть меню" }).click();

@@ -185,6 +185,21 @@
   background: #edf5ee;
 }
 .layout-success span, .layout-success small { line-height: 1.4; }
+.canvas-panel .layout-reset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: transparent;
+  color: #526358;
+  border: 1px solid #b9c6bc;
+}
+.canvas-panel .layout-reset svg { width: 18px; height: 18px; }
+.canvas-panel .layout-notice {
+  margin: 0;
+  color: #435b50;
+  font-size: 13px;
+}
 .canvas-panel .compact-row,
 .stage-actions {
   display: flex;
