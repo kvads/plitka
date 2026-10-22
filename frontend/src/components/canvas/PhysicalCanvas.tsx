@@ -5,8 +5,9 @@ import { roundTenth } from "../../domain/plan/precision";
 import type { Layout } from "../../types";
 import { physicalPreview, type PhysicalPreviewResponse } from "../../domain/plan/physical-preview";
 import { splitWallDimensions } from "../../domain/plan/physical-dimensions";
-import { alignCubeAttachmentToGuides, centeredWallGeometry, immediateJointAngles, nearestCubeAttachment,
-  type PhysicalAttachment } from "../../domain/plan/physical-draw";
+import { alignCubeAttachmentToGuides, alignToWallEndProjection, centeredWallGeometry,
+  immediateJointAngles, nearestCubeAttachment, type PhysicalAttachment,
+  type WallEndAlignment } from "../../domain/plan/physical-draw";
 import { openingCorners, openingOffset } from "../../domain/plan/physical-openings";
 
 type Viewport = ProjectDocumentV6["viewport"];
@@ -14,7 +15,7 @@ type Handle = "start" | "center" | "end";
 type Gesture = { id: number; client: Point; viewport: Viewport; moved: boolean;
   wallId: string | null; doorId: string | null; roomKey: string | null; handle: Handle | null;
   arrow: { axis: "x" | "y"; direction: -1 | 1 } | null };
-type WallTarget = { point: Point; attachment: PhysicalAttachment | null };
+type WallTarget = { point: Point; attachment: PhysicalAttachment | null; alignment?: WallEndAlignment };
 type Props = {
   graph: PhysicalGraphV5;
   draftRevision: number;
@@ -42,6 +43,9 @@ type Props = {
   doorWidthMm: number;
   selectedDoorId: string | null;
   onSelectDoor: (openingId: string | null) => void;
+  deleteTool: boolean;
+  onDeleteWall: (wallId: string) => void;
+  onDeleteDoor: (openingId: string) => void;
   onPlaceDoor: (wallId: string, offsetMm: number) => void;
   onResetDoorTool: () => void;
 };
@@ -66,7 +70,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   highlightRooms = false, roomMissing = {}, roomNames = {}, layouts = [], viewport, onViewport,
   selectedWallId, onSelectWall, selectedHandle, onSelectHandle, onNudge,
   wallTool, thicknessMm, onDrawWall, onResetWallTool,
-  doorTool, doorWidthMm, selectedDoorId, onSelectDoor, onPlaceDoor, onResetDoorTool }: Props) {
+  doorTool, doorWidthMm, selectedDoorId, onSelectDoor, deleteTool, onDeleteWall,
+  onDeleteDoor, onPlaceDoor, onResetDoorTool }: Props) {
   const svg = useRef<SVGSVGElement>(null);
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef<Gesture | null>(null);
@@ -79,6 +84,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   const [startFace, setStartFace] = useState<PhysicalAttachment | null>(null);
   const [hover, setHover] = useState<Point | null>(null);
   const [hoverFace, setHoverFace] = useState<PhysicalAttachment | null>(null);
+  const [hoverAlignment, setHoverAlignment] = useState<WallEndAlignment | null>(null);
   const [cursor, setCursor] = useState<Point | null>(null);
   const [cursorFace, setCursorFace] = useState<{ normal: Point } | null>(null);
   const [serverPreview, setServerPreview] = useState<{ key: string; response: PhysicalPreviewResponse } | null>(null);
@@ -123,6 +129,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   }, [onViewport]);
   useEffect(() => {
     setStart(null); setStartFace(null); setHover(null); setHoverFace(null);
+    setHoverAlignment(null);
     setCursor(null); setCursorFace(null);
     setDoorCursor(null);
   }, [wallTool, doorTool]);
@@ -135,6 +142,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
           setStartFace(null);
           setHover(null);
           setHoverFace(null);
+          setHoverAlignment(null);
           setServerPreview(null);
         } else if (wallTool) onResetWallTool();
         else onResetDoorTool();
@@ -272,6 +280,10 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       return { point: precisePoint(point), attachment: null };
     if (nearest) return { point: nearest.point, attachment: null };
     if (start) {
+      const projection = alignToWallEndProjection(graph, start, point, guideDirections,
+        (mobile ? 18 : 12) / Math.max(pixelScale, .01) + (startFace?.tangentialShift ?? 0));
+      if (projection && !insideWall(projection.point))
+        return { point: projection.point, attachment: null, alignment: projection };
       let aligned: Point | null = null;
       // If the first cube was shifted along a face to align its outer corner,
       // absorb the same displacement while choosing a guide. The user can
@@ -347,6 +359,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       setCursorFace(snapped?.attachment ? { normal: snapped.attachment.normal } : null);
       setHover(snapped?.point ?? null);
       setHoverFace(snapped?.attachment ?? null);
+      setHoverAlignment(snapped?.alignment ?? null);
     } else if (doorTool && event.pointerType === "mouse") {
       const point = world(event.clientX, event.clientY);
       const wallId = (event.target as Element).closest("[data-wall-id]")?.getAttribute("data-wall-id") ?? null;
@@ -392,12 +405,14 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         setStartFace(selected.attachment);
         setHover(selected.point);
         setHoverFace(selected.attachment);
+        setHoverAlignment(null);
       } else if (Math.hypot(selected.point.x - start.x, selected.point.y - start.y) >= 0.1) {
         const finished = centeredWallGeometry(graph, start, selected.point, thicknessMm,
           [startFace, selected.attachment]);
         if (finished) onDrawWall(finished.edge);
         setStart(null);
         setStartFace(null);
+        setHoverAlignment(null);
       }
     } else if (doorTool) {
       if (current.doorId) {
@@ -409,7 +424,10 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         ? openingOffset(graph, current.wallId, point, doorWidthMm) : null;
       if (current.wallId && offsetMm !== null) onPlaceDoor(current.wallId, offsetMm);
     } else {
-      if (current.doorId) onSelectDoor(current.doorId);
+      if (deleteTool) {
+        if (current.doorId) onDeleteDoor(current.doorId);
+        else if (current.wallId) onDeleteWall(current.wallId);
+      } else if (current.doorId) onSelectDoor(current.doorId);
       else if (current.roomKey) onSelectRoom?.(current.roomKey);
       else onSelectWall(current.wallId);
     }
@@ -497,7 +515,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         lines.push(<line key={`y${step}-${y}`} x1={left} x2={right} y1={-y} y2={-y} stroke={color} strokeWidth={width / pixelScale} />);
     return lines;
   };
-  return <><svg ref={svg} data-geometry data-physical-canvas data-door-tool={doorTool || undefined} tabIndex={0}
+  return <><svg ref={svg} data-geometry data-physical-canvas data-door-tool={doorTool || undefined}
+    data-delete-tool={deleteTool || undefined} tabIndex={0}
     role="application" aria-label="Полотно проекта" viewBox={viewBox}
     style={{ width: "100%", height: "100%", touchAction: "none", display: "block", background: "#fff" }}
     onPointerDown={begin} onPointerMove={move} onPointerUp={event => finish(event)}
@@ -520,6 +539,23 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
           x2={previewStart.x + direction.x * span} y2={-previewStart.y - direction.y * span}
           stroke="#777" strokeDasharray={`${6 / pixelScale} ${5 / pixelScale}`}
           strokeWidth={1 / pixelScale} />)}
+      {start && wallTool && hoverAlignment && <g data-wall-alignment-guide>
+        <line x1={hoverAlignment.from.x} y1={-hoverAlignment.from.y}
+          x2={hoverAlignment.to.x} y2={-hoverAlignment.to.y}
+          stroke="#9a4b24" strokeDasharray={`${7 / pixelScale} ${5 / pixelScale}`}
+          strokeWidth={1.5 / pixelScale} />
+        {[hoverAlignment.from, hoverAlignment.to].map((point, index) =>
+          <circle key={index} cx={point.x} cy={-point.y} r={3.5 / pixelScale}
+            fill="#fff" stroke="#9a4b24" strokeWidth={1.5 / pixelScale} />)}
+        <text data-wall-alignment-distance
+          x={(hoverAlignment.from.x + hoverAlignment.to.x) / 2}
+          y={-(hoverAlignment.from.y + hoverAlignment.to.y) / 2 - 10 / pixelScale}
+          textAnchor="middle" fontSize={12 / pixelScale} fontWeight={600}
+          fill="#7b371c" stroke="#fff" strokeWidth={3 / pixelScale} paintOrder="stroke">
+          {displayTenth(Math.hypot(hoverAlignment.to.x - hoverAlignment.from.x,
+            hoverAlignment.to.y - hoverAlignment.from.y))} мм
+        </text>
+      </g>}
       {start && wallTool && mobile && guideLabels.map((point, index) =>
         <text key={`ruler-${index}`} x={point.x + 10 / pixelScale}
           y={-point.y - 9 / pixelScale} fontSize={11 / pixelScale} fill="#444">
@@ -591,10 +627,11 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       {previewAngles.map((angle, index) => jointAngleMark(angle, `${angle.junctionId}:${index}`, true))}
     </g>
     {graph.walls.map(wall => <path key={wall.id} data-wall-id={wall.id}
-      tabIndex={wallTool || doorTool ? -1 : 0} role="button" aria-label={doorTool ? "Разместить дверной проём" : "Выбрать стену"}
+      tabIndex={wallTool || doorTool ? -1 : 0} role="button"
+      aria-label={doorTool ? "Разместить дверной проём" : deleteTool ? "Удалить стену" : "Выбрать стену"}
       aria-pressed={wall.id === selectedWallId}
       onKeyDown={event => { if (!wallTool && !doorTool && (event.key === "Enter" || event.key === " ")) {
-        event.preventDefault(); onSelectWall(wall.id);
+        event.preventDefault(); deleteTool ? onDeleteWall(wall.id) : onSelectWall(wall.id);
       } }}
       d={wallPath(wall.corners)} fill={wall.id === selectedWallId ? "#55555577" : "#00000000"}
       stroke={wall.id === selectedWallId ? "#111" : "none"}
@@ -610,7 +647,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         aria-label={`Дверной проём ${displayTenth(opening.widthMm)} мм`}
         aria-pressed={opening.id === selectedDoorId}
         onKeyDown={event => { if (!wallTool && !doorTool && (event.key === "Enter" || event.key === " ")) {
-          event.preventDefault(); onSelectDoor(opening.id);
+          event.preventDefault(); deleteTool ? onDeleteDoor(opening.id) : onSelectDoor(opening.id);
         } }}>
         <path d={wallPath(corners)} fill={opening.id === selectedDoorId ? "#d7ebdf" : "#fff"}
           stroke={opening.id === selectedDoorId ? "#285f43" : "transparent"}

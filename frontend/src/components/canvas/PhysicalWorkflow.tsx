@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, ChevronsLeft, ChevronsRight, DoorOpen, FolderOpen, Grid3X3, PencilRuler, RotateCcw, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronsLeft, ChevronsRight, DoorOpen, FolderOpen, Grid3X3, LoaderCircle, MousePointer2, PencilRuler, RotateCcw, Trash2, X } from "lucide-react";
 import PhysicalCanvas from "./PhysicalCanvas";
 import ProjectMenu from "./ProjectMenu";
 import { usePhysicalProject } from "../../domain/plan/usePhysicalProject";
@@ -30,6 +30,10 @@ type Removal =
   | { status: "deleted" | "alreadyMissing"; projectId: string; projects: ProjectDocumentV6[] }
   | { status: "conflict"; projectId: string; projects: ProjectDocumentV6[]; current: ProjectDocumentV6 };
 
+type PendingElementDeletion =
+  | { kind: "wall"; wallId: string; impact: PhysicalDeletionImpact }
+  | { kind: "door"; openingId: string; widthMm: number };
+
 export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }: {
   initial: ProjectDocumentV6;
   onSaved: (document: ProjectDocumentV6) => void;
@@ -50,14 +54,16 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const [selectedThicknessInput, setSelectedThicknessInput] = useState("");
   const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
   const [selectedHandle, setSelectedHandle] = useState<"start" | "center" | "end" | null>(null);
+  const [interactionTool, setInteractionTool] = useState<"select" | "delete">("select");
   const [deleting, setDeleting] = useState(false);
   const [deleteProjectError, setDeleteProjectError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
-  const [deleteWallImpact, setDeleteWallImpact] = useState<PhysicalDeletionImpact | null>(null);
+  const [pendingElementDeletion, setPendingElementDeletion] = useState<PendingElementDeletion | null>(null);
   const [deleteWallLoading, setDeleteWallLoading] = useState(false);
   const [deleteWallError, setDeleteWallError] = useState("");
   const deletionGeneration = useRef(0);
+  const deleteCancelButton = useRef<HTMLButtonElement>(null);
   const [layoutCache, setLayoutCache] = useState<Record<string, { key: string; variants: Layout[]; selected: number }>>({});
   const [layoutLoading, setLayoutLoading] = useState(false);
   const [layoutError, setLayoutError] = useState("");
@@ -76,7 +82,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const selectedDoorWidth = Number(selectedDoorWidthInput.replace(",", "."));
   const selectedDoorWidthValid = Number.isInteger(selectedDoorWidth / 10) && selectedDoorWidth >= 300 && selectedDoorWidth <= 3000;
   useEffect(() => { if (selectedWallId && !selected) {
-    setSelectedWallId(null); setSelectedHandle(null); setDeleteWallImpact(null);
+    setSelectedWallId(null); setSelectedHandle(null);
   } }, [selectedWallId, selected]);
   useEffect(() => { if (selectedDoorId && !selectedDoor) setSelectedDoorId(null); }, [selectedDoorId, selectedDoor]);
   const room = doc.rooms.find(item => item.id === doc.selectedRoomId);
@@ -99,7 +105,6 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     setSelectedDoorId(null);
     setSelectedWallId(wallId);
     setSelectedHandle(null);
-    setDeleteWallImpact(null);
     setDeleteWallError("");
     setSelectedThicknessInput(String(doc.plan.draft.walls.find(wall => wall.id === wallId)?.thicknessMm ?? ""));
   };
@@ -113,9 +118,12 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const layoutMode = doc.workflow.requestedStage === "variants";
   useEffect(() => {
     deletionGeneration.current++;
-    setDeleteWallImpact(null);
+    setPendingElementDeletion(null);
     setDeleteWallLoading(false);
-  }, [doc.plan.draftRevision, selectedWallId]);
+  }, [doc.plan.draftRevision]);
+  useEffect(() => {
+    if (pendingElementDeletion) deleteCancelButton.current?.focus();
+  }, [pendingElementDeletion]);
   const roomMissing = Object.fromEntries((response?.faces ?? []).map(face => {
     const candidate = doc.rooms.find(item => item.topologyKey === face.topologyKey);
     return [face.topologyKey, !candidate || layoutCache[candidate.id]?.key !==
@@ -282,6 +290,41 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     setProjectMenu(false);
     setWallTool(false);
     setDoorTool(false);
+    setInteractionTool("select");
+  };
+  const activateInteractionTool = (tool: "select" | "delete") => {
+    setInteractionTool(tool);
+    setWallTool(false);
+    setDoorTool(false);
+    setProjectMenu(false);
+    setPendingElementDeletion(null);
+    setDeleteWallError("");
+    if (tool === "delete") {
+      chooseWall(null);
+      chooseDoor(null);
+    }
+  };
+  const requestWallDeletion = async (wallId: string) => {
+    if (busy || deleteWallLoading) return;
+    const generation = ++deletionGeneration.current;
+    setDeleteWallLoading(true);
+    setDeleteWallError("");
+    try {
+      const preview = await physicalDeletionPreview(doc, wallId);
+      if (generation !== deletionGeneration.current) return;
+      if (preview.status === "ready" && preview.impact)
+        setPendingElementDeletion({ kind: "wall", wallId, impact: preview.impact });
+      else setDeleteWallError(preview.issues[0]?.message ?? "Удаление недоступно.");
+    } catch (cause) {
+      if (generation === deletionGeneration.current) setDeleteWallError((cause as Error).message);
+    } finally {
+      if (generation === deletionGeneration.current) setDeleteWallLoading(false);
+    }
+  };
+  const requestDoorDeletion = (openingId: string) => {
+    if (busy) return;
+    const opening = (doc.plan.draft.openings ?? []).find(item => item.id === openingId);
+    if (opening) setPendingElementDeletion({ kind: "door", openingId, widthMm: opening.widthMm });
   };
   return <div className="app physical-editor" style={{ position: "relative", height: "100dvh", overflow: "hidden" }}>
     <PhysicalCanvas graph={doc.plan.draft} draftRevision={doc.plan.draftRevision}
@@ -295,6 +338,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       viewport={doc.viewport} onViewport={viewport => update(current => ({ ...current, viewport }))}
       selectedWallId={selectedWallId} onSelectWall={chooseWall}
       selectedDoorId={selectedDoorId} onSelectDoor={chooseDoor}
+      deleteTool={interactionTool === "delete" && !layoutMode}
+      onDeleteWall={wallId => { void requestWallDeletion(wallId); }}
+      onDeleteDoor={requestDoorDeletion}
       selectedHandle={selectedHandle} onSelectHandle={setSelectedHandle}
       onNudge={(handle, axis, direction) => {
         if (selectedWallId && !busy) void command({ type: "nudgeWallHandle",
@@ -319,9 +365,11 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         <button aria-label="Проекты" title="Проекты" onClick={onBack}><ArrowLeft /></button>
         {!layoutMode && <button aria-label="Стена" title="Стена" aria-pressed={wallTool}
           onClick={() => { setWallTool(value => !value); setDoorTool(false); chooseDoor(null);
+            setInteractionTool("select");
             setMenuOpen(false); setProjectMenu(false); }}><PencilRuler /></button>}
         {!layoutMode && <button aria-label="Дверной проём" title="Дверной проём" aria-pressed={doorTool}
           onClick={() => { setDoorTool(value => !value); setWallTool(false); chooseWall(null);
+            setInteractionTool("select");
             setMenuOpen(false); setProjectMenu(false); }}><DoorOpen /></button>}
         <button aria-label="Проект" title="Проект" onClick={() => { setProjectMenu(value => !value); setMenuOpen(false); }}><FolderOpen /></button>
         <button aria-label="Отменить правку" title="Отменить правку" disabled={!project.canUndo || busy}
@@ -338,8 +386,28 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         <span>Раскладка</span>
       </button>
     </div>
+    {!layoutMode && <div className="physical-interaction-tools" role="toolbar"
+      aria-label="Действие с элементами плана" data-overlay>
+      <button type="button" aria-label="Выбрать элемент" title="Выбрать элемент"
+        aria-pressed={interactionTool === "select" && !wallTool && !doorTool}
+        onClick={() => activateInteractionTool("select")}>
+        <MousePointer2 aria-hidden="true" />
+      </button>
+      <button type="button" className="physical-delete-tool"
+        aria-label={deleteWallLoading ? "Проверяем удаление" : "Удалить элемент"}
+        title={deleteWallLoading ? "Проверяем удаление" : "Удалить элемент"}
+        aria-pressed={interactionTool === "delete" && !wallTool && !doorTool}
+        disabled={deleteWallLoading || busy}
+        onClick={() => activateInteractionTool("delete")}>
+        {deleteWallLoading ? <LoaderCircle className="is-loading" aria-hidden="true" />
+          : <Trash2 aria-hidden="true" />}
+      </button>
+    </div>}
+    {deleteWallError && <div className="physical-delete-error" role="alert" data-overlay>
+      {deleteWallError}
+    </div>}
     {(wallTool || doorTool || selected || selectedDoor || projectMenu || layoutMode || doc.plan.pendingEdit) && <aside className="canvas-panel" data-overlay
-      style={{ position: "absolute", right: 12, top: 62, maxWidth: "min(340px, calc(100vw - 72px))", maxHeight: "calc(100dvh - 74px)", overflowY: "auto" }}>
+      style={{ position: "absolute", right: 12, top: 62, maxWidth: "min(340px, calc(100vw - 72px))", maxHeight: "calc(100dvh - 138px)", overflowY: "auto" }}>
       {wallTool && !layoutMode && <button type="button" className="physical-reset-wall-tool"
         onClick={() => setWallTool(false)} title="Также можно нажать Esc без начатой стены">
         <X aria-hidden="true" />
@@ -499,10 +567,6 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
               type: "setDoorWidth", openingId: selectedDoor.id, widthMm: selectedDoorWidth,
             })}>Применить ширину</button>
             <button onClick={() => chooseDoor(null)}>Снять выделение</button>
-            <button className="danger" disabled={busy} onClick={() => {
-              void command({ type: "deleteDoorOpening", openingId: selectedDoor.id });
-              chooseDoor(null);
-            }}>Удалить проём</button>
           </> : <>
             <p>Нажмите на стену — проём разместится по центру указанной точки.</p>
             <small className="muted">У торцов и сочленений сохраняется необходимый участок стены.</small>
@@ -530,32 +594,6 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
             type: "setWallThickness", wallId: selected.id, thicknessMm: selectedThickness,
           })}>Применить толщину</button>
           <button onClick={() => setSelectedWallId(null)}>Снять выделение</button>
-          <button className="danger" disabled={busy || deleteWallLoading} onClick={async () => {
-            const generation = ++deletionGeneration.current;
-            setDeleteWallLoading(true);
-            setDeleteWallError("");
-            try {
-              const preview = await physicalDeletionPreview(doc, selected.id);
-              if (generation !== deletionGeneration.current) return;
-              if (preview.status === "ready") setDeleteWallImpact(preview.impact);
-              else setDeleteWallError(preview.issues[0]?.message ?? "Удаление недоступно.");
-            } catch (cause) {
-              if (generation === deletionGeneration.current) setDeleteWallError((cause as Error).message);
-            } finally {
-              if (generation === deletionGeneration.current) setDeleteWallLoading(false);
-            }
-          }}>{deleteWallLoading ? "Проверяем удаление…" : "Удалить стену"}</button>
-          {deleteWallError && <p className="error" role="alert">{deleteWallError}</p>}
-          {deleteWallImpact && <div role="dialog" aria-label="Удалить стену">
-            <p>Будет удалена стена, {deleteWallImpact.junctionIds.length} связанных стыков
-              {deleteWallImpact.openingIds.length ? ` и дверных проёмов: ${deleteWallImpact.openingIds.length}` : ""}.
-              Затронутых помещений: {deleteWallImpact.affectedRoomKeys.length}.</p>
-            <button onClick={() => setDeleteWallImpact(null)}>Отмена</button>
-            <button className="danger" disabled={busy} onClick={() => {
-              void command({ type: "deleteWall", wallId: selected.id });
-              setDeleteWallImpact(null);
-            }}>Удалить стену</button>
-          </div>}
         </> : <>
           {!thicknessValid && <p role="alert">Введите толщину от 10 до 100000 мм с шагом 10 мм.</p>}
           <p>Укажите начало и конец стены на полотне.</p>
@@ -571,5 +609,32 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         <button onClick={project.discardPending}>Отменить изменение</button>
       </div>}
     </aside>}
+    {pendingElementDeletion && <div className="canvas-modal physical-delete-confirmation" data-overlay>
+      <section role="alertdialog" aria-modal="true" aria-labelledby="physical-delete-title"
+        onKeyDown={event => { if (event.key === "Escape") setPendingElementDeletion(null); }}>
+        <h2 id="physical-delete-title">{pendingElementDeletion.kind === "wall"
+          ? "Удалить стену?" : "Удалить дверной проём?"}</h2>
+        {pendingElementDeletion.kind === "wall" ? <p>
+          Будет удалена стена, {pendingElementDeletion.impact.junctionIds.length} связанных стыков
+          {pendingElementDeletion.impact.openingIds.length
+            ? ` и дверных проёмов: ${pendingElementDeletion.impact.openingIds.length}` : ""}.
+          Затронутых помещений: {pendingElementDeletion.impact.affectedRoomKeys.length}.
+        </p> : <p>Будет удалён дверной проём шириной {displayTenth(pendingElementDeletion.widthMm)} мм.</p>}
+        <div className="delete-project-actions">
+          <button ref={deleteCancelButton} type="button" disabled={busy}
+            onClick={() => setPendingElementDeletion(null)}>Отмена</button>
+          <button type="button" className="danger" disabled={busy} onClick={() => {
+            if (pendingElementDeletion.kind === "wall") {
+              void command({ type: "deleteWall", wallId: pendingElementDeletion.wallId });
+              chooseWall(null);
+            } else {
+              void command({ type: "deleteDoorOpening", openingId: pendingElementDeletion.openingId });
+              chooseDoor(null);
+            }
+            setPendingElementDeletion(null);
+          }}>{pendingElementDeletion.kind === "wall" ? "Удалить стену" : "Удалить проём"}</button>
+        </div>
+      </section>
+    </div>}
   </div>;
 }

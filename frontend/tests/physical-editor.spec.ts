@@ -5,7 +5,7 @@ import { physicalBasisKey } from "../src/domain/plan/physical-basis";
 import { parseV6Import } from "../src/domain/plan/migration";
 import { splitWallDimensions } from "../src/domain/plan/physical-dimensions";
 import { openingCorners, openingOffset } from "../src/domain/plan/physical-openings";
-import { alignCubeAttachmentToGuides, centeredWallGeometry, immediateJointAngles,
+import { alignCubeAttachmentToGuides, alignToWallEndProjection, centeredWallGeometry, immediateJointAngles,
   nearestCubeAttachment } from "../src/domain/plan/physical-draw";
 import { newRoom } from "../src/domain/plan/rooms";
 import { readFile } from "node:fs/promises";
@@ -87,6 +87,20 @@ test("a wall face attachment preserves an exact 90 degree guide", () => {
   const geometry = centeredWallGeometry(graph, start, aligned.center, 100,
     [null, aligned])!;
   expect(geometry.edge[0].y).toBe(geometry.edge[1].y);
+});
+
+test("a free wall end aligns across the gap with a neighboring wall end", () => {
+  const graph = { walls: [{ id: "neighbor", drawnEdge: [{ x: 0, y: 0 }, { x: 0, y: 1000 }],
+    side: "right" as const, thicknessMm: 100,
+    corners: [{ x: 0, y: 0 }, { x: 0, y: 1000 }, { x: 100, y: 1000 }, { x: 100, y: 0 }],
+  }], junctions: [] };
+  const alignment = alignToWallEndProjection(graph, { x: 1000, y: 1000 },
+    { x: 1006, y: 14 }, [{ x: 1, y: 0 }, { x: 0, y: 1 }], 20);
+
+  expect(alignment).not.toBeNull();
+  expect(alignment?.point).toEqual({ x: 1000, y: 0 });
+  expect(alignment?.from).toEqual({ x: 50, y: 0 });
+  expect(alignment?.to).toEqual({ x: 1000, y: 0 });
 });
 
 test("a free wall begins at the cursor boundary opposite its draw direction", () => {
@@ -699,8 +713,11 @@ test("physical v6 creates, resizes, persists, and deletes a door opening", async
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.openings[0].widthMm)).toBe(600);
   await page.reload();
   await expect(page.locator("[data-door-id]")).toHaveCount(1);
+  await page.getByRole("button", { name: "Удалить элемент" }).click();
   await page.locator("[data-door-id]").click();
-  await page.getByRole("button", { name: "Удалить проём" }).click();
+  const deleteDoor = page.getByRole("alertdialog", { name: "Удалить дверной проём?" });
+  await expect(deleteDoor).toBeVisible();
+  await deleteDoor.getByRole("button", { name: "Удалить проём" }).click();
   await expect(page.locator("[data-door-id]")).toHaveCount(0);
 });
 
@@ -768,8 +785,8 @@ test("physical v6 commits a snapped wall near a host end as a junction", async (
     return { walls: graph.walls.length, junctions: graph.junctions.length,
       start: graph.walls[1]?.drawnEdge[0],
       startCap: graph.walls[1] ? [graph.walls[1].corners[0], graph.walls[1].corners[3]] : null };
-  })).toEqual({ walls: 2, junctions: 1, start: { x: 100, y: 0 },
-    startCap: [{ x: 100, y: 0 }, { x: 100, y: 100 }] });
+  })).toEqual({ walls: 2, junctions: 1, start: { x: 0, y: 0 },
+    startCap: [{ x: 0, y: 0 }, { x: 100, y: 100 }] });
 });
 
 test("physical v6 keeps a face-to-face wall exactly perpendicular", async ({ page }) => {
@@ -1003,10 +1020,19 @@ test("physical v6 previews and deletes a selected wall", async ({ page }) => {
   await expect(canvas.locator("[data-wall-id]")).toHaveCount(1);
   await page.getByRole("button", { name: "Раскрыть меню" }).click();
   await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const selectTool = page.getByRole("button", { name: "Выбрать элемент" });
+  const deleteTool = page.getByRole("button", { name: "Удалить элемент" });
+  await expect(selectTool).toHaveAttribute("aria-pressed", "true");
   await canvas.locator("[data-wall-id]").click();
-  await page.getByRole("button", { name: "Удалить стену" }).first().click();
-  await expect(page.getByRole("dialog", { name: "Удалить стену" })).toBeVisible();
-  await page.getByRole("dialog", { name: "Удалить стену" }).getByRole("button", { name: "Удалить стену" }).click();
+  await expect(page.getByRole("heading", { name: "Стена" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Удалить стену" })).toHaveCount(0);
+  await deleteTool.click();
+  await expect(deleteTool).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("heading", { name: "Стена" })).toHaveCount(0);
+  await canvas.locator("[data-wall-id]").click();
+  const deleteWall = page.getByRole("alertdialog", { name: "Удалить стену?" });
+  await expect(deleteWall).toBeVisible();
+  await deleteWall.getByRole("button", { name: "Удалить стену" }).click();
   await expect(canvas.locator("[data-wall-id]")).toHaveCount(0);
   await expect.poll(() => page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls.length)).toBe(0);
@@ -1107,6 +1133,47 @@ test("physical v6 diagonal wall ruler offers a precise perpendicular target", as
     expect(Math.abs(dx + dy)).toBeLessThanOrEqual(.1);
     await expect(canvas.getByText("100,0 мм · 90,0°").first()).toBeVisible();
   } finally { await context.close(); }
+});
+
+test("physical v6 aligns a descending wall with a neighboring end and shows a ruler", async ({ page }) => {
+  const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
+  document.plan.draft = { walls: [{ id: "left-neighbor",
+    drawnEdge: [{ x: 0, y: 0 }, { x: 0, y: 1000 }], side: "right", thicknessMm: 100,
+    corners: [{ x: 0, y: 0 }, { x: 0, y: 1000 }, { x: 100, y: 1000 }, { x: 100, y: 0 }],
+  }], junctions: [], openings: [] };
+  document.plan.pendingEdit = null;
+  document.plan.restorePoint = null;
+  document.rooms = [];
+  document.selectedRoomId = null;
+  document.viewport = { centerX: 500, centerY: 500, zoom: 5, gridStepMm: 100 };
+  await page.goto("/");
+  await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
+    JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
+  await page.goto("/#project/physical-v6-fixture");
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const canvas = page.locator("[data-physical-canvas]");
+  const clientPoint = (x: number, y: number) => canvas.evaluate((svg, point) => {
+    const client = new DOMPoint(point.x, -point.y)
+      .matrixTransform((svg as SVGSVGElement).getScreenCTM()!);
+    return { x: client.x, y: client.y };
+  }, { x, y });
+  const start = await clientPoint(1000, 1000);
+  const nearNeighborEnd = await clientPoint(1006, 14);
+  await page.mouse.click(start.x, start.y);
+  await page.mouse.move(nearNeighborEnd.x, nearNeighborEnd.y);
+
+  const ruler = canvas.locator("[data-wall-alignment-guide]");
+  await expect(ruler).toBeVisible();
+  await expect(ruler.locator("[data-wall-alignment-distance]")).toHaveText("950,0 мм");
+  const line = ruler.locator("line");
+  await expect(line).toHaveAttribute("y1", "0");
+  await expect(line).toHaveAttribute("y2", "0");
+
+  await page.mouse.click(nearNeighborEnd.x, nearNeighborEnd.y);
+  await expect.poll(() => page.evaluate(() => {
+    const wall = JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls[1];
+    return wall ? (wall.corners[1].y + wall.corners[2].y) / 2 : null;
+  })).toBe(0);
 });
 
 for (const width of [320, 430]) test(`physical v6 controls fit a ${width}px phone`, async ({ browser }) => {

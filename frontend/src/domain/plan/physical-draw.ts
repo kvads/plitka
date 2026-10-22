@@ -3,6 +3,7 @@ import { roundTenth } from "./precision";
 
 export type PhysicalFace = { point: Point; normal: Point; from: Point; to: Point; distance: number };
 export type PhysicalAttachment = PhysicalFace & { center: Point; tangentialShift: number };
+export type WallEndAlignment = { point: Point; from: Point; to: Point; distance: number };
 
 const rounded = (point: Point): Point => ({ x: roundTenth(point.x), y: roundTenth(point.y) });
 const dot = (a: Point, b: Point) => a.x * b.x + a.y * b.y;
@@ -112,6 +113,37 @@ export function alignCubeAttachmentToGuides(start: Point, pointer: Point,
   return { ...attachment, point: contact, center,
     tangentialShift: Math.hypot(contact.x - attachment.point.x,
       contact.y - attachment.point.y) };
+}
+
+export function alignToWallEndProjection(graph: PhysicalGraphV5, start: Point, pointer: Point,
+                                         directions: readonly Point[], snapDistance: number
+                                         ): WallEndAlignment | null {
+  const ends = graph.walls.flatMap(wall => [
+    rounded({ x: (wall.corners[0].x + wall.corners[3].x) / 2,
+      y: (wall.corners[0].y + wall.corners[3].y) / 2 }),
+    rounded({ x: (wall.corners[1].x + wall.corners[2].x) / 2,
+      y: (wall.corners[1].y + wall.corners[2].y) / 2 }),
+  ]).filter((point, index, all) =>
+    all.findIndex(other => other.x === point.x && other.y === point.y) === index);
+  let best: WallEndAlignment | null = null;
+  for (const rawDirection of directions) {
+    const length = Math.hypot(rawDirection.x, rawDirection.y);
+    if (length < .001) continue;
+    const direction = { x: rawDirection.x / length, y: rawDirection.y / length };
+    for (const end of ends) {
+      const along = dot(difference(end, start), direction);
+      if (Math.abs(along) < .1) continue;
+      const point = rounded(add(start, direction, along));
+      const guideLength = Math.hypot(end.x - point.x, end.y - point.y);
+      if (guideLength < .1) continue;
+      const distance = Math.hypot(pointer.x - point.x, pointer.y - point.y);
+      if (distance > snapDistance || (best && (distance > best.distance + 1e-7 ||
+          Math.abs(distance - best.distance) <= 1e-7 && guideLength >=
+            Math.hypot(best.from.x - best.to.x, best.from.y - best.to.y)))) continue;
+      best = { point, from: end, to: point, distance };
+    }
+  }
+  return best;
 }
 
 export function centeredWallGeometry(graph: PhysicalGraphV5, start: Point, end: Point,

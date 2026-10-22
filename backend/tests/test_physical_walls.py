@@ -274,6 +274,67 @@ def test_draw_wall_forms_one_l_outline_at_the_outer_corner():
     assert body["graph"]["walls"][1]["drawnEdge"][1] == {"x": 100, "y": 0}
 
 
+def test_l_junction_redefines_both_wall_caps_on_one_shared_miter():
+    graph = saved_wall()
+    body = client.post("/api/v5/plan/command", json={
+        **command_request(graph), "commandId": "shared-l-miter",
+        "command": {"type": "drawWall", "drawnEdge": [
+            {"x": 1000, "y": 0}, {"x": 1000, "y": 500}],
+            "side": "left", "thicknessMm": 100},
+    }).json()
+
+    assert body["status"] == "applied", body["issues"]
+    horizontal, vertical = body["graph"]["walls"]
+    shared_cap = [{"x": 1000, "y": 0}, {"x": 900, "y": 100}]
+    assert [horizontal["corners"][1], horizontal["corners"][2]] == shared_cap
+    assert [vertical["corners"][0], vertical["corners"][3]] == shared_cap
+    assert horizontal["drawnEdge"][1] == {"x": 1000, "y": 0}
+    assert vertical["drawnEdge"][0] == {"x": 1000, "y": 0}
+    assert [part["edge"] for part in body["graph"]["junctions"][0]["participants"]] == [
+        "endCap", "startCap"]
+    assert len(body["wallArea"]) == 1
+
+
+def test_l_junction_rebuilds_both_caps_after_thickness_change():
+    joined = client.post("/api/v5/plan/command", json={
+        **command_request(saved_wall()), "commandId": "resize-l-source",
+        "command": {"type": "drawWall", "drawnEdge": [
+            {"x": 1000, "y": 0}, {"x": 1000, "y": 500}],
+            "side": "left", "thicknessMm": 100},
+    }).json()["graph"]
+
+    for wall_id in ("w1", "wall-resize-l-source"):
+        changed = client.post("/api/v5/plan/command", json={
+            **command_request(joined), "commandId": "resize-l-" + wall_id,
+            "command": {"type": "setWallThickness", "wallId": wall_id,
+                        "thicknessMm": 150},
+        }).json()
+        assert changed["status"] == "applied", changed["issues"]
+        first, second = changed["graph"]["walls"]
+        assert [first["corners"][1], first["corners"][2]] == [
+            second["corners"][0], second["corners"][3]]
+        assert first["corners"][1] != first["corners"][2]
+
+
+def test_validation_normalizes_saved_square_l_caps_to_shared_miter():
+    horizontal = create_wall("old-horizontal", [PhysicalPoint(x=0, y=0),
+        PhysicalPoint(x=1000, y=0)], "left", 100)
+    vertical = create_wall("old-vertical", [PhysicalPoint(x=1000, y=100),
+        PhysicalPoint(x=1000, y=500)], "left", 100)
+    joint = simple_contact(horizontal, vertical, "old-square-corner")
+    assert joint is not None
+    old = PhysicalGraphV5(walls=[horizontal, vertical], junctions=[joint])
+
+    body = client.post("/api/v5/plan/validate", json=request(old.model_dump())).json()
+
+    assert body["status"] == "valid"
+    first, second = body["normalizedGraph"]["walls"]
+    assert [first["corners"][1], first["corners"][2]] == [
+        second["corners"][0], second["corners"][3]]
+    assert first["corners"][1] != first["corners"][2]
+    assert body["normalizedGraph"]["junctions"][0]["id"] == "old-square-corner"
+
+
 def test_collinear_wall_continuation_joins_both_physical_end_caps():
     graph = saved_wall()
     result = client.post("/api/v5/plan/command", json={

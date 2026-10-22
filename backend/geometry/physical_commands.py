@@ -225,12 +225,11 @@ def _miter_end_caps(first: PhysicalWallV5, second: PhysicalWallV5
             shared_cap = first_cap_line.intersection(second_cap_line)
             eligible = False
             if isinstance(shared_cap, ShapelyPoint):
-                host_ends = [ShapelyPoint(second.corners[index].x, second.corners[index].y)
-                             for index in second_indices]
-                # A cap merely touching a host corner is still a regular
-                # cap-to-long-edge junction. A point inside the host cap is an
-                # explicit end-to-end snap and needs the shared miter.
-                eligible = min(shared_cap.distance(point) for point in host_ends) > .15
+                # Even a single shared cap corner is an end-to-end wall
+                # junction.  Both walls must therefore finish on the same
+                # miter: leaving the original square caps makes the inner
+                # corner of each wall visibly too long.
+                eligible = True
             elif not shared_cap.is_empty and shared_cap.length >= .1:
                 eligible = True
             if not eligible and shared_cap.is_empty:
@@ -311,11 +310,18 @@ def _miter_end_caps(first: PhysicalWallV5, second: PhysicalWallV5
 
 
 def normalize_mitered_contacts(graph: PhysicalGraphV5) -> PhysicalGraphV5:
-    """Repair old rectangular cap overlaps without moving the host walls."""
+    """Repair old square or overlapping contacts with canonical shared caps."""
     repaired = deepcopy(graph)
     walls = {wall.id: index for index, wall in enumerate(repaired.walls)}
     for joint in graph.junctions:
         if len(joint.participants) != 2:
+            continue
+        first_index = walls[joint.participants[0].wallId]
+        second_index = walls[joint.participants[1].wallId]
+        cap_miter = _miter_end_caps(repaired.walls[first_index],
+                                    repaired.walls[second_index])
+        if cap_miter:
+            repaired.walls[first_index], repaired.walls[second_index] = cap_miter
             continue
         for cap, host in ((joint.participants[0], joint.participants[1]),
                           (joint.participants[1], joint.participants[0])):
@@ -430,10 +436,15 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
         old = next_graph.walls[index]
         replacement = create_wall(old.id, old.drawnEdge, old.side,
                                   _new_thickness(command["thicknessMm"]))
-        for neighbor in next_graph.walls:
-            if neighbor.id != old.id:
-                replacement = _miter_contact(replacement, neighbor)
         next_graph.walls[index] = replacement
+        for neighbor_index, neighbor in enumerate(next_graph.walls):
+            if neighbor_index == index:
+                continue
+            cap_miter = _miter_end_caps(next_graph.walls[index], neighbor)
+            if cap_miter:
+                next_graph.walls[index], next_graph.walls[neighbor_index] = cap_miter
+            else:
+                next_graph.walls[index] = _miter_contact(next_graph.walls[index], neighbor)
         next_graph = rebuild_simple_contacts(next_graph, graph)
         validate_physical_graph(next_graph)
         return next_graph, [old.id]
@@ -479,13 +490,22 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
                                   y=point.y + (dy if i in endpoints else 0))
                     for i, point in enumerate(wall.drawnEdge)]
             next_graph.walls[index] = create_wall(wall.id, edge, wall.side, wall.thicknessMm)
-        for index, wall in enumerate(next_graph.walls):
-            if wall.id not in moves:
-                continue
-            for neighbor in next_graph.walls:
-                if neighbor.id != wall.id:
-                    wall = _miter_contact(wall, neighbor)
-            next_graph.walls[index] = wall
+        for first_index, first in enumerate(next_graph.walls):
+            for second_index in range(first_index + 1, len(next_graph.walls)):
+                second = next_graph.walls[second_index]
+                first_moved, second_moved = first.id in moves, second.id in moves
+                if not first_moved and not second_moved:
+                    continue
+                cap_miter = _miter_end_caps(first, second)
+                if cap_miter:
+                    first, second = cap_miter
+                else:
+                    if first_moved:
+                        first = _miter_contact(first, second)
+                    if second_moved:
+                        second = _miter_contact(second, first)
+                next_graph.walls[first_index] = first
+                next_graph.walls[second_index] = second
         next_graph = rebuild_simple_contacts(next_graph, graph)
         validate_physical_graph(next_graph)
         return next_graph, list(moves)

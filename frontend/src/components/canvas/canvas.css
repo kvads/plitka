@@ -417,6 +417,61 @@
   outline: 3px solid #ce894b;
   outline-offset: 2px;
 }
+.physical-interaction-tools {
+  position: absolute;
+  z-index: 6;
+  right: max(12px, env(safe-area-inset-right, 0px));
+  bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  display: flex;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid #aaa;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 4px 18px #0002;
+}
+.physical-interaction-tools button {
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #39453f;
+  display: grid;
+  place-items: center;
+}
+.physical-interaction-tools button svg { width: 22px; height: 22px; }
+.physical-interaction-tools .is-loading { animation: physical-tool-spin .8s linear infinite; }
+@keyframes physical-tool-spin { to { transform: rotate(360deg); } }
+.physical-interaction-tools button:hover { background: #edf2ee; }
+.physical-interaction-tools button[aria-pressed="true"] {
+  background: #294f3e;
+  color: #fff;
+  box-shadow: 0 2px 7px #17342633;
+}
+.physical-interaction-tools .physical-delete-tool[aria-pressed="true"] {
+  background: #9c3328;
+}
+.physical-interaction-tools button:focus-visible {
+  outline: 3px solid #ce894b;
+  outline-offset: 2px;
+}
+.physical-delete-error {
+  position: absolute;
+  z-index: 7;
+  right: max(12px, env(safe-area-inset-right, 0px));
+  bottom: calc(max(12px, env(safe-area-inset-bottom, 0px)) + 68px);
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 10px 12px;
+  border: 1px solid #c9877d;
+  border-radius: 9px;
+  background: #fff0ed;
+  color: #812b23;
+  box-shadow: 0 4px 18px #0002;
+}
+.physical-delete-confirmation h2,
+.physical-delete-confirmation p { margin: 0; }
 .physical-handle-controls, .physical-nudge-controls {
   display: flex;
   flex-wrap: wrap;
@@ -464,6 +519,8 @@
 }
 .physical-editor [data-door-tool] [data-wall-id] { cursor: crosshair; }
 .physical-editor [data-door-id] { cursor: pointer; }
+.physical-editor [data-delete-tool] [data-wall-id],
+.physical-editor [data-delete-tool] [data-door-id] { cursor: not-allowed; }
 @media (max-width: 600px) {
   .physical-mode-switch {
     top: max(8px, env(safe-area-inset-top, 0px));
@@ -475,12 +532,12 @@
   .physical-mode-switch button { padding-inline: 10px; }
   .physical-editor > .canvas-panel {
     top: auto !important;
-    bottom: max(12px, env(safe-area-inset-bottom, 0px)) !important;
+    bottom: calc(max(12px, env(safe-area-inset-bottom, 0px)) + 68px) !important;
     left: 84px !important;
     right: 12px !important;
     width: auto !important;
     max-width: none !important;
-    max-height: min(240px, 42dvh) !important;
+    max-height: min(240px, calc(42dvh - 34px)) !important;
     background: #fff;
   }
   .physical-editor:has(.canvas-sidebar) > .canvas-panel {
