@@ -1,6 +1,8 @@
 import DeleteProjectDialog from "./components/canvas/DeleteProjectDialog";
 import type { DeleteProjectIntent, DeleteProjectOutcomeFor } from "./domain/plan/types";
 import { useEffect, useRef, useState } from "react";
+import { useAlert } from "react-alert";
+import { AlertContext } from "./alert-context";
 import App from "./components/canvas/PhysicalWorkflow";
 import {
   KEY_V6 as KEY,
@@ -15,6 +17,7 @@ import type { ProjectDocumentV6 as ProjectDocument } from "./domain/plan/types";
 const routeId = () =>
   location.hash.startsWith("#project/") ? location.hash.slice(9) : "";
 export default function Projects() {
+  const alert = useAlert(AlertContext);
   const [loaded, setLoaded] = useState({
     rows: [] as ProjectDocument[],
     error: "",
@@ -48,12 +51,11 @@ export default function Projects() {
     [preview, setPreview] = useState<ProjectDocument | null>(null);
   const file = useRef<HTMLInputElement>(null);
   const [deleteIntent, setDeleteIntent] = useState<DeleteProjectIntent | null>(null);
-  const [notice, setNotice] = useState('');
   const heading = useRef<HTMLHeadingElement>(null);
   function removed(outcome: DeleteProjectOutcomeFor<ProjectDocument>) {
     if (outcome.status === 'conflict') return;
     setRows(outcome.projects); setDeleteIntent(null); setEditing(null); setPreview(null);
-    setNotice(outcome.status === 'alreadyMissing' ? 'Проект уже удалён' : 'Проект удалён');
+    alert.success(outcome.status === 'alreadyMissing' ? 'Проект уже удалён' : 'Проект удалён');
     setId(''); location.hash = ''; setError('');
     requestAnimationFrame(() => heading.current?.focus());
   }
@@ -166,7 +168,6 @@ export default function Projects() {
             }}
           />
         </div>
-        {notice && <p role="status">{notice}</p>}
         {deleteIntent && <DeleteProjectDialog<ProjectDocument> key={deleteIntent.requestId} intent={deleteIntent} onCancel={() => setDeleteIntent(null)} onDone={removed}
           onConfirm={intent => deleteV6(intent.projectId, intent.expectedRevision)} />}
         {error && (

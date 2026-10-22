@@ -802,21 +802,54 @@ h3 > span {
   gap: 10px;
   align-items: center;
 }
-.toast {
-  position: fixed;
-  bottom: 25px;
-  left: 50%;
-  transform: translateX(-50%);
+.app-alert {
+  width: min(420px, calc(100vw - 32px));
+  min-height: 52px;
   background: #294f3e;
-  color: white;
-  padding: 15px 22px;
-  border-radius: 9px;
-  box-shadow: 0 8px 35px #0002;
-  font-size: 13px;
+  color: #fff;
+  padding: 10px 8px 10px 16px;
+  border: 1px solid #3f6c58;
+  border-radius: 10px;
+  box-shadow: 0 10px 35px #0003;
+  font-size: 14px;
+  line-height: 1.45;
   display: flex;
   align-items: center;
-  gap: 10px;
-  z-index: 30;
+  gap: 12px;
+}
+.app-alert--error {
+  background: #7f3826;
+  border-color: #a95a43;
+}
+.app-alert--info {
+  background: #2d5369;
+  border-color: #4c7186;
+}
+.app-alert__message {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.app-alert__close {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.app-alert__close:hover {
+  background: #ffffff1a;
+}
+.app-alert__close:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: -4px;
 }
 .coordinates {
   margin-top: 12px;
@@ -1137,9 +1170,9 @@ h3 > span {
     gap: 15px;
     font-size: 7px;
   }
-  .toast {
-    width: calc(100% - 30px);
-    font-size: 12px;
+  .app-alert {
+    width: calc(100vw - 24px);
+    font-size: 13px;
   }
   .angle-buttons {
     gap: 3px;
