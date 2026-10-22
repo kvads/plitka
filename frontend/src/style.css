@@ -1426,3 +1426,55 @@ h3 > span {
 @media (max-width: 800px) { .step-help { margin-inline: 16px; } }
 .workflow .measurement-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 16px; }
 .workflow .measurement-list > span { font-size: 13px; }
+
+.room-preview-card {
+  position: relative;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid #d9dfda;
+  border-radius: 12px;
+  background: #f1f2ef;
+}
+.room-preview-canvas { height: 460px; min-height: 340px; }
+.room-preview-canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+.room-preview-canvas canvas:active { cursor: grabbing; }
+.room-preview-caption {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 15px 17px;
+  background: #fff;
+  border-top: 1px solid #d9dfda;
+}
+.room-preview-caption strong,
+.room-preview-caption span { display: block; }
+.room-preview-caption strong { font-size: 13px; }
+.room-preview-caption span { margin-top: 4px; color: #68786f; font-size: 11px; }
+.room-preview-reset { min-height: 40px; }
+.room-preview-help {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  margin: 0;
+  padding: 8px 11px;
+  border: 1px solid #dfe4e0;
+  border-radius: 7px;
+  background: #ffffffd9;
+  color: #596a61;
+  font-size: 11px;
+  line-height: 1.4;
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+@media (max-width: 800px) {
+  .room-preview-canvas { height: 340px; }
+  .room-preview-caption { align-items: flex-start; flex-direction: column; }
+  .room-preview-reset { width: 100%; }
+}

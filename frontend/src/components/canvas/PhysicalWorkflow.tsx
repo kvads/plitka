@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Check, ChevronsLeft, ChevronsRight, DoorOpen, FolderOpen, Grid3X3, LoaderCircle, MousePointer2, PencilRuler, RotateCcw, Trash2, X } from "lucide-react";
 import PhysicalCanvas from "./PhysicalCanvas";
 import ProjectMenu from "./ProjectMenu";
@@ -14,6 +14,8 @@ import { physicalDeletionPreview, type PhysicalDeletionImpact } from "../../doma
 import { exportResult } from "../../domain/project/result-export";
 import { activeSharedGrid, roomLayoutBasis, roomLayoutKey, roomLayoutRequest } from "../../domain/plan/shared-grid";
 import "./canvas.css";
+
+const RoomPreview3D = lazy(() => import("./RoomPreview3D"));
 
 const displayTenth = (value: number) => value.toLocaleString("ru-RU", {
   minimumFractionDigits: 1, maximumFractionDigits: 1,
@@ -406,7 +408,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     {deleteWallError && <div className="physical-delete-error" role="alert" data-overlay>
       {deleteWallError}
     </div>}
-    {(wallTool || doorTool || selected || selectedDoor || projectMenu || layoutMode || doc.plan.pendingEdit) && <aside className="canvas-panel" data-overlay
+    {(wallTool || doorTool || selected || selectedDoor || projectMenu || layoutMode || doc.plan.pendingEdit) && <aside className="canvas-panel" data-overlay data-layout-mode={layoutMode || undefined}
       style={{ position: "absolute", right: 12, top: 62, maxWidth: "min(340px, calc(100vw - 72px))", maxHeight: "calc(100dvh - 138px)", overflowY: "auto" }}>
       {wallTool && !layoutMode && <button type="button" className="physical-reset-wall-tool"
         onClick={() => setWallTool(false)} title="Также можно нажать Esc без начатой стены">
@@ -466,6 +468,12 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         </div>}
       </> : layoutMode ? <>
         <h2>Раскладка</h2>
+        {room && selectedFace?.polygon ? <Suspense fallback={
+          <div className="room-preview-loading" role="status">Загружаем 3D-просмотр…</div>
+        }>
+          <RoomPreview3D polygon={selectedFace.polygon} layout={activeLayout}
+            roomName={room.name} tileSize={sharedGrid?.tile ?? room.material.tile} />
+        </Suspense> : null}
         {room && selectedFace ? <>
           <fieldset className="layout-scope">
             <legend><span className="layout-step-number">1</span> Выберите способ</legend>
