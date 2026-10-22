@@ -2,7 +2,7 @@ import type { OpenJointAngleV5, PhysicalGraphV5, Point } from "./types";
 import { roundTenth } from "./precision";
 
 export type PhysicalFace = { point: Point; normal: Point; from: Point; to: Point; distance: number };
-export type PhysicalAttachment = PhysicalFace & { center: Point };
+export type PhysicalAttachment = PhysicalFace & { center: Point; tangentialShift: number };
 
 const rounded = (point: Point): Point => ({ x: roundTenth(point.x), y: roundTenth(point.y) });
 const dot = (a: Point, b: Point) => a.x * b.x + a.y * b.y;
@@ -54,12 +54,23 @@ export function nearestCubeAttachment(graph: PhysicalGraphV5, point: Point,
   const face = nearestPhysicalFace(graph, point,
     pointerInsideWall ? Number.POSITIVE_INFINITY : reach + .001);
   if (!face) return null;
-  const center = rounded(add(face.point, face.normal, thicknessMm / 2));
+  const segment = difference(face.to, face.from);
+  const faceLength = Math.hypot(segment.x, segment.y);
+  const tangent = { x: segment.x / faceLength, y: segment.y / faceLength };
+  const along = dot(difference(face.point, face.from), tangent);
+  // Keep the complete touching side of the cursor on the selected face. Close
+  // to either end this acts as a corner alignment: the cursor moves inward by
+  // just enough for its outer corner to coincide with the host corner instead
+  // of creating a small protrusion or notch in the joined outline.
+  const inset = Math.min(thicknessMm / 2, faceLength / 2);
+  const alignedAlong = Math.max(inset, Math.min(faceLength - inset, along));
+  const contact = rounded(add(face.from, tangent, alignedAlong));
+  const center = rounded(add(contact, face.normal, thicknessMm / 2));
   // Once the cursor square touches a wall, it belongs on the nearest exposed
   // face. Comparing with the future center left thick host walls with a dead
   // zone where the cursor could remain inside their surface.
   return pointerInsideWall || Math.hypot(point.x - face.point.x, point.y - face.point.y) <= reach
-    ? { ...face, center } : null;
+    ? { ...face, point: contact, center, tangentialShift: Math.abs(alignedAlong - along) } : null;
 }
 
 function intersectionOnFace(origin: Point, direction: Point, face: PhysicalFace,

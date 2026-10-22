@@ -48,18 +48,18 @@ test("wall cube cannot remain inside a host wall and chooses its nearest face", 
     .toEqual({ x: 200, y: 1050 });
 });
 
-test("a wall snapped near a host end keeps the selected face and closes the cube-centre gap", () => {
+test("a wall snapped near a host end aligns its outer corner and closes the cube-centre gap", () => {
   const graph = { walls: [{ id: "host", drawnEdge: [{ x: 0, y: 0 }, { x: 0, y: 1000 }],
     side: "right" as const, thicknessMm: 100,
     corners: [{ x: 0, y: 0 }, { x: 0, y: 1000 }, { x: 100, y: 1000 }, { x: 100, y: 0 }],
   }], junctions: [] };
   const attachment = nearestCubeAttachment(graph, { x: 150, y: 10 }, 2, 100)!;
-  expect(attachment.center).toEqual({ x: 150, y: 10 });
-  const geometry = centeredWallGeometry(graph, attachment.center, { x: 1000, y: 10 }, 100,
+  expect(attachment.center).toEqual({ x: 150, y: 50 });
+  const geometry = centeredWallGeometry(graph, attachment.center, { x: 1000, y: 50 }, 100,
     [attachment, null])!;
   expect(geometry.edge[0].x).toBe(100);
-  expect(geometry.corners[0].x).toBe(100);
-  expect(geometry.corners[3].x).toBe(100);
+  expect(geometry.corners[0]).toEqual({ x: 100, y: 0 });
+  expect(geometry.corners[3]).toEqual({ x: 100, y: 100 });
 });
 
 test("a free wall begins at the cursor boundary opposite its draw direction", () => {
@@ -487,8 +487,10 @@ test("physical v6 commits a snapped wall near a host end as a junction", async (
   await expect.poll(() => page.evaluate(() => {
     const graph = JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft;
     return { walls: graph.walls.length, junctions: graph.junctions.length,
-      startX: graph.walls[1]?.drawnEdge[0].x };
-  })).toEqual({ walls: 2, junctions: 1, startX: 100 });
+      start: graph.walls[1]?.drawnEdge[0],
+      startCap: graph.walls[1] ? [graph.walls[1].corners[0], graph.walls[1].corners[3]] : null };
+  })).toEqual({ walls: 2, junctions: 1, start: { x: 100, y: 0 },
+    startCap: [{ x: 100, y: 0 }, { x: 100, y: 100 }] });
 });
 
 test("physical v6 snaps a diagonal wall to a face and previews the joint angle", async ({ page }) => {

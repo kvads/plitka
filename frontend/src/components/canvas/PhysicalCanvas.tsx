@@ -254,7 +254,11 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     if (nearest) return { point: nearest.point, attachment: null };
     if (start) {
       let aligned: Point | null = null;
-      let bestDistance = (mobile ? 18 : 12) / Math.max(pixelScale, .01);
+      // If the first cube was shifted along a face to align its outer corner,
+      // absorb the same displacement while choosing a guide. The user can
+      // continue the original pointer motion without introducing a tiny slope.
+      let bestDistance = (mobile ? 18 : 12) / Math.max(pixelScale, .01) +
+        (startFace?.tangentialShift ?? 0);
       for (const direction of guideDirections) {
         const distanceAlong = (point.x - start.x) * direction.x +
           (point.y - start.y) * direction.y;
