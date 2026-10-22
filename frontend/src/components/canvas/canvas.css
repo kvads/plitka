@@ -147,6 +147,58 @@
   min-height: 44px;
 }
 .canvas-panel .layout-scope p { margin: 0; line-height: 1.45; }
+.layout-step {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #d7ded4;
+  border-radius: 10px;
+  background: #fffefa;
+}
+.layout-step-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.layout-step-heading h3 { margin: 0; font-size: 16px; }
+.layout-step-heading p { margin: 3px 0 0; color: #647367; font-size: 13px; line-height: 1.45; }
+.layout-step-number {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #284e3f;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.layout-scope legend { padding: 0 4px; font-weight: 600; }
+.layout-scope legend .layout-step-number { margin-right: 6px; vertical-align: middle; }
+.layout-room-choice {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #e8efe9;
+}
+.layout-room-choice span, .layout-room-choice small { color: #526358; font-size: 12px; }
+.layout-room-choice .layout-room-change {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #c9d7cc;
+  color: #70431f;
+}
+.layout-success {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid #9bb8a2;
+  border-radius: 10px;
+  background: #edf5ee;
+}
+.layout-success span, .layout-success small { line-height: 1.4; }
 .canvas-panel .compact-row,
 .stage-actions {
   display: flex;

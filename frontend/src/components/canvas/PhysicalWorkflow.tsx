@@ -18,6 +18,13 @@ import "./canvas.css";
 const displayTenth = (value: number) => value.toLocaleString("ru-RU", {
   minimumFractionDigits: 1, maximumFractionDigits: 1,
 });
+const roomCountText = (count: number) => {
+  const mod100 = count % 100;
+  const mod10 = count % 10;
+  const noun = mod100 >= 11 && mod100 <= 14 ? "помещений"
+    : mod10 === 1 ? "помещение" : mod10 >= 2 && mod10 <= 4 ? "помещения" : "помещений";
+  return `${count} ${noun}`;
+};
 
 type Removal =
   | { status: "deleted" | "alreadyMissing"; projectId: string; projects: ProjectDocumentV6[] }
@@ -131,7 +138,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const optimizeThrough = async () => {
     if (!room || !selectedFace?.polygon) return;
     const generation = ++layoutGeneration.current;
-    const capturedKey = roomLayoutKey(doc, room, selectedFace, null);
+    const capturedKey = roomLayoutKey({ ...doc, sharedGrid: null }, room, selectedFace, null);
     setLayoutLoading(true);
     setLayoutError("");
     try {
@@ -335,7 +342,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         <h2>Раскладка</h2>
         {room && selectedFace ? <>
           <fieldset className="layout-scope">
-            <legend>Область расчёта</legend>
+            <legend><span className="layout-step-number">1</span> Выберите способ</legend>
             <div role="group" aria-label="Область расчёта раскладки">
               <button type="button" aria-pressed={layoutScope === "room"} onClick={() => {
                 setLayoutScope("room");
@@ -348,69 +355,66 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
               ? "Одна сетка для всех помещений: швы продолжаются через стены, а стены исключаются из площади плитки."
               : "Каждое помещение получает независимую сетку и может иметь собственное положение швов."}</p>
           </fieldset>
-          <label>Помещение<input aria-label="Название помещения" value={room.name}
-            onChange={event => update(current => ({ ...current,
-              rooms: current.rooms.map(item => item.id === room.id ? { ...item, name: event.target.value } : item) }))} /></label>
-          <p>Полезная площадь: {selectedFace.areaMm2 === null ? "—" : displayTenth(selectedFace.areaMm2)} мм²</p>
+          <section className="layout-step" aria-labelledby="layout-room-step">
+            <div className="layout-step-heading">
+              <span className="layout-step-number">2</span>
+              <div><h3 id="layout-room-step">{layoutScope === "through" ? "Выберите начало сетки" : "Выберите помещение"}</h3>
+                <p>{layoutScope === "through"
+                  ? "Нажмите на плане помещение, откуда должны начинаться линии швов."
+                  : "Нажмите нужное помещение на плане."}</p></div>
+            </div>
+            <div className="layout-room-choice">
+              <span>{layoutScope === "through" ? "Начало сетки" : "Помещение"}</span>
+              <strong>{room.name}</strong>
+              {layoutScope === "through" && <small>Будут рассчитаны все замкнутые помещения: {
+                roomCountText(doc.rooms.filter(item => item.binding === "attached").length)}</small>}
+              {layoutScope === "through" && sharedGrid && room.id !== sharedGrid.referenceRoomId &&
+                <small className="layout-room-change">Вы выбрали новое начало. Сейчас раскладка построена от «{referenceRoom?.name}».</small>}
+            </div>
+          </section>
+          <section className="layout-step" aria-labelledby="layout-params-step">
+            <div className="layout-step-heading">
+              <span className="layout-step-number">3</span>
+              <div><h3 id="layout-params-step">Задайте параметры</h3>
+                <p>{layoutScope === "through"
+                  ? `Плитка, шов и угол — для всей сетки. Отступ и подрезка — для «${room.name}».`
+                  : `Для помещения «${room.name}».`}</p></div>
+            </div>
+            <label>Название помещения<input aria-label="Название помещения" value={room.name}
+              onChange={event => update(current => ({ ...current,
+                rooms: current.rooms.map(item => item.id === room.id ? { ...item, name: event.target.value } : item) }))} /></label>
+            <p>Полезная площадь: {selectedFace.areaMm2 === null ? "—" : displayTenth(selectedFace.areaMm2)} мм²</p>
           {doc.sharedGrid && !sharedGrid && <p role="status">
             Опорная раскладка устарела. Выберите {referenceRoom?.name ?? "опорное помещение"} и рассчитайте её заново.
           </p>}
-          {sharedGrid && room.id === sharedGrid.referenceRoomId && <div role="group" aria-label="Общая сетка раскладки">
-            <p>Это опорное помещение. В подключённых помещениях линии плитки сохраняют положение; площадь стен исключена из укладки.</p>
-            <button onClick={() => {
-              setLayoutScope("room");
-              update(current => ({ ...current, sharedGrid: null }));
-            }}>
-              Отключить общую сетку
-            </button>
-          </div>}
-          {sharedGrid && room.id !== sharedGrid.referenceRoomId && <div role="group" aria-label="Общая сетка раскладки">
-            <p>{linked ? `Линии плитки продолжаются из помещения «${referenceRoom?.name}».` :
-              `Можно продолжить линии плитки из помещения «${referenceRoom?.name}».`}</p>
-            <button onClick={() => update(current => {
-              if (!current.sharedGrid) return current;
-              const linkedRoomIds = linked
-                ? current.sharedGrid.linkedRoomIds.filter(id => id !== room.id)
-                : [...current.sharedGrid.linkedRoomIds, room.id];
-              return { ...current, sharedGrid: { ...current.sharedGrid, linkedRoomIds } };
-            })}>{linked ? "Отвязать от общей сетки" : `Продолжить из «${referenceRoom?.name}»`}</button>
-          </div>}
-          {linked && sharedGrid ? <p>
-            Плитка {displayTenth(sharedGrid.tile)} мм, шов {displayTenth(sharedGrid.grout)} мм,
-            угол {displayTenth(sharedGrid.angle)}° — как в опорном помещении.
-          </p> : <>
+          {layoutScope === "through" || !linked ? <>
             {roomField("material", "tile", "Сторона плитки", 50, 2000, "мм")}
             {roomField("material", "grout", "Ширина шва", 0, 20, "мм")}
-          </>}
+          </> : <p>Плитка {displayTenth(sharedGrid?.tile ?? room.material.tile)} мм, шов {
+            displayTenth(sharedGrid?.grout ?? room.material.grout)} мм — как в помещении «{referenceRoom?.name}».</p>}
           {roomField("rules", "gap", "Отступ", 0, 100, "мм")}
           {roomField("rules", "threshold", "Минимальный размер подрезки", 1, 1000, "мм")}
-          {!linked && roomField("rules", "angle", "Угол раскладки", 0, 89.9, "°")}
+          {(layoutScope === "through" || !linked) && roomField("rules", "angle", "Угол раскладки", 0, 89.9, "°")}
+          </section>
           <button disabled={layoutLoading || !selectedFace.validation.valid ||
               (layoutScope === "through" && doc.rooms.filter(item => item.binding === "attached").length < 2) ||
               (layoutScope === "room" && linked && !sharedGrid)}
-            onClick={() => void (layoutScope === "through" && !sharedGrid ? optimizeThrough() : optimize())}>
+            onClick={() => void (layoutScope === "through" ? optimizeThrough() : optimize())}>
             {layoutLoading ? "Рассчитываем…" : layoutScope === "through"
-              ? !sharedGrid ? "Рассчитать все помещения одной сеткой"
-                : room.id === sharedGrid.referenceRoomId ? "Пересчитать сквозную раскладку"
-                  : "Пересчитать это помещение в общей сетке"
+              ? `${sharedGrid ? "Пересчитать" : "Рассчитать"} ${
+                roomCountText(doc.rooms.filter(item => item.binding === "attached").length)} от «${room.name}»`
               : linked ? "Рассчитать с общей сеткой" : "Подобрать раскладку"}
           </button>
           {sharedLoading && <p role="status">Переносим линии плитки в подключённые помещения…</p>}
           {layoutError && <p role="alert" className="error">{layoutError}</p>}
           {cachedLayout && cachedLayout.key !== layoutKey && <p role="status">Раскладка требует пересчёта.</p>}
+          {layoutScope === "through" && sharedGrid && <div className="layout-success" role="status">
+            <strong>Сквозная раскладка готова</strong>
+            <span>{roomCountText(1 + sharedGrid.linkedRoomIds.length)} одной сеткой. Начало — «{referenceRoom?.name}».</span>
+            <small>Швы продолжаются через стены; площадь стен в плитку не включена.</small>
+          </div>}
           {cachedLayout?.key === layoutKey && <>
             <p>Плиток: {activeLayout?.metrics.tiles ?? 0}; отход: {activeLayout?.metrics.waste_percent ?? 0}%</p>
-            {activeLayout && !linked && room.id !== doc.sharedGrid?.referenceRoomId &&
-              <button onClick={() => {
-                setLayoutScope("through");
-                update(current => ({ ...current, sharedGrid: {
-                  referenceRoomId: room.id,
-                  referenceBasis: roomLayoutBasis(room, selectedFace),
-                  tile: room.material.tile, grout: room.material.grout,
-                  angle: activeLayout.angle, offsetX: activeLayout.offset_x,
-                  offsetY: activeLayout.offset_y, linkedRoomIds: [],
-                } }));
-              }}>Сделать опорной раскладкой</button>}
             <div className="variant-list">{cachedLayout.variants.map((variant, index) =>
               <button key={index} aria-pressed={cachedLayout.selected === index}
                 onClick={() => {
