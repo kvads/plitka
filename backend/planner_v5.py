@@ -73,9 +73,9 @@ def _snap_geometry(geometry):
 def _area(value: float, label: str, *, allow_zero: bool = False) -> float:
     if value < -1e-8:
         raise ValueError(f'{label}: отрицательная площадь после округления.')
-    value = max(value, 0)
+    value = 0 if abs(value) <= 1e-8 else value
     rounded = tenth(value)
-    if value > 0 and rounded == 0:
+    if value > 0 and rounded == 0 and not allow_zero:
         raise ValueError(f'{label}: положительная площадь меньше шага отображения.')
     if not allow_zero and rounded == 0:
         raise ValueError(f'{label}: нет пригодной площади.')
@@ -95,19 +95,34 @@ def _canonical_region(project, region):
 def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
     validate_input(project)
     try:
-        region, local = prepare(project)
+        region, _ = prepare(project)
     except ValueError as exc:
         raise ValueError('Некорректная область помещения или параметры раскладки.') from exc
     room, canonical_region, room_area = _canonical_region(project, region)
     step = project.tile + project.grout
     dx = offset_ticks(dx, step) / 10
     dy = offset_ticks(dy, step) / 10
-    x0, y0, x1, y1 = local.bounds
+    # Generate the grid in layout space, but clip the rotated, complete tile
+    # cells against the already rounded canonical region. Clipping first and
+    # rounding each fragment afterwards can move a vertex to the other side
+    # of a diagonal boundary even though both came from the same intersection.
+    canonical_local = rotate(canonical_region, -project.angle, origin=(0, 0))
+    x0, y0, x1, y1 = canonical_local.bounds
     xs = np.arange(math.floor((x0-dx)/step), math.ceil((x1-dx)/step)) * step + dx
     ys = np.arange(math.floor((y0-dy)/step), math.ceil((y1-dy)/step)) * step + dy
     xx, yy = np.meshgrid(xs, ys)
-    cells = shapely.box(xx.ravel(), yy.ravel(), xx.ravel()+project.tile, yy.ravel()+project.tile)
-    clipped = shapely.intersection(cells, local)
+    cell_x, cell_y = xx.ravel(), yy.ravel()
+    local_x = np.stack((cell_x, cell_x + project.tile,
+                        cell_x + project.tile, cell_x), axis=1)
+    local_y = np.stack((cell_y, cell_y,
+                        cell_y + project.tile, cell_y + project.tile), axis=1)
+    radians = math.radians(project.angle)
+    cosine, sine = math.cos(radians), math.sin(radians)
+    world_cells = shapely.polygons(np.stack((
+        local_x * cosine - local_y * sine,
+        local_x * sine + local_y * cosine,
+    ), axis=2))
+    clipped = shapely.intersection(world_cells, canonical_region, grid_size=.1)
     parts = []
     polygons = []
     full = cuts = warnings = fragments = tiles = 0
@@ -117,12 +132,14 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
         if not source_parts:
             continue
         canonical_parts = []
-        for sub, source in enumerate(source_parts):
-            world = rotate(source, project.angle, origin=(0, 0))
-            poly = _snap_polygon(world)
+        for sub, poly in enumerate(source_parts):
             _area(poly.area, 'Фрагмент плитки')
-            if not canonical_region.covers(poly):
-                raise ValueError('После округления фрагмент выходит за область укладки.')
+            # GEOS can leave an area around 1e-10 mm² in a predicate when a
+            # diagonal edge is represented by different binary floats. The
+            # fragment was produced by the canonical intersection itself;
+            # only a material difference would indicate a broken invariant.
+            if poly.difference(canonical_region).area > 1e-7:
+                raise ValueError('Фрагмент выходит за каноническую область укладки.')
             canonical_parts.append((sub, poly))
         whole = len(canonical_parts) == 1 and math.isclose(
             canonical_parts[0][1].area, project.tile ** 2, rel_tol=0, abs_tol=1e-7)
@@ -156,7 +173,8 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
     purchased = tiles * project.tile**2
     waste = _area(purchased - covered.area, 'Площадь отходов', allow_zero=True)
     symmetry = None
-    if len(_polys(local)) == 1 and not local.interiors and abs(local.area-shapely.box(*local.bounds).area)<EPS:
+    if (len(_polys(canonical_local)) == 1 and not canonical_local.interiors and
+            abs(canonical_local.area - shapely.box(*canonical_local.bounds).area) < EPS):
         def opposite(lo, hi, offset):
             left = max(0, project.tile-((lo-offset) % step))
             right = (hi-offset) % step

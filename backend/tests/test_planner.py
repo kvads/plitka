@@ -213,15 +213,19 @@ def test_v5_offset_rounding_uses_symmetric_tenths_and_one_periodic_key():
     assert offset_ticks(0, 602) == offset_ticks(602, 602) == offset_ticks(-602, 602)
 
 
-def test_v5_rejects_rounded_fragment_outside_region_without_partial_layout():
-    payload = project(outline=[(0, 0), (1200.1, 0), (0, 1200.1)]).model_dump()
+def test_v5_clips_fragments_against_the_canonical_region():
+    payload = project(outline=[(0, 0), (1200.1, 0), (0, 1200.1)],
+                      gap=10, grout=2).model_dump()
     for route in ('/api/v5/layout', '/api/v5/optimize'):
         response = client.post(route, json=payload)
-        assert response.status_code == 422
+        assert response.status_code == 200
         body = response.json()
-        assert list(body) == ['detail']
-        assert 'фрагмент' in body['detail'].lower()
-        assert '(' not in body['detail']
+        variants = body['variants'] if route.endswith('optimize') else [body]
+        assert variants
+        canonical = Polygon(payload['outline']).buffer(-payload['gap'], join_style=2)
+        for variant in variants:
+            for part in variant['parts']:
+                assert canonical.buffer(.1).covers(Polygon(part['rings'][0], part['rings'][1:]))
 
 
 def test_v5_rejects_self_intersection_and_colliding_fragments_after_rounding():
