@@ -137,6 +137,16 @@
   display: grid;
   gap: 8px;
 }
+.canvas-panel .layout-scope > div {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.canvas-panel .layout-scope button {
+  min-width: 0;
+  min-height: 44px;
+}
+.canvas-panel .layout-scope p { margin: 0; line-height: 1.45; }
 .canvas-panel .compact-row,
 .stage-actions {
   display: flex;

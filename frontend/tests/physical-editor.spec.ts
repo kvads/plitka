@@ -273,15 +273,11 @@ test("physical v6 continues one tile grid through three separate rooms after rel
     JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
   await page.goto("/#project/physical-v6-fixture");
   await page.getByRole("button", { name: "Раскладка", exact: true }).click();
-  await page.getByRole("button", { name: "Подобрать раскладку" }).click();
-  await expect(page.getByText(/Плиток:/)).toBeVisible();
-  await page.getByRole("button", { name: "Сделать опорной раскладкой" }).click();
-  for (const index of [1, 2]) {
-    await page.locator(`[data-room-key="${ordered[index].topologyKey}"]`).click();
-    await page.getByRole("button", { name: `Продолжить из «Коридор»` }).click();
-    await expect(page.locator(`[data-layout-room-id="${rooms[index].id}"]`).first()).toBeVisible();
-    await expect(page.getByText(/Плитка 600,0 мм, шов 2,0 мм/)).toBeVisible();
-  }
+  await page.getByRole("button", { name: "Сквозная раскладка" }).click();
+  await expect(page.getByText(/швы продолжаются через стены/)).toBeVisible();
+  await page.getByRole("button", { name: "Рассчитать все помещения одной сеткой" }).click();
+  for (const room of rooms)
+    await expect(page.locator(`[data-layout-room-id="${room.id}"]`).first()).toBeVisible();
   await expect(page.locator('[data-layout-room-id="shared-room-0"]').first()).toBeVisible();
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0]);
   expect(saved.sharedGrid.referenceRoomId).toBe(rooms[0].id);

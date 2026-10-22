@@ -51,6 +51,8 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const [layoutLoading, setLayoutLoading] = useState(false);
   const [layoutError, setLayoutError] = useState("");
   const [sharedLoading, setSharedLoading] = useState(false);
+  const [layoutScope, setLayoutScope] = useState<"room" | "through">(
+    () => initial.sharedGrid ? "through" : "room");
   const layoutGeneration = useRef(0);
   const failedAutomaticLayouts = useRef(new Set<string>());
   const thickness = Number(thicknessInput.replace(",", "."));
@@ -120,6 +122,39 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           sharedGrid: { ...current.sharedGrid, referenceBasis: roomLayoutBasis(room, selectedFace),
             tile: room.material.tile, grout: room.material.grout, angle: variants[0].angle,
             offsetX: variants[0].offset_x, offsetY: variants[0].offset_y } }) : current);
+    } catch (cause) {
+      if (generation === layoutGeneration.current) setLayoutError((cause as Error).message);
+    } finally {
+      if (generation === layoutGeneration.current) setLayoutLoading(false);
+    }
+  };
+  const optimizeThrough = async () => {
+    if (!room || !selectedFace?.polygon) return;
+    const generation = ++layoutGeneration.current;
+    const capturedKey = roomLayoutKey(doc, room, selectedFace, null);
+    setLayoutLoading(true);
+    setLayoutError("");
+    try {
+      const variants = (await api<{ variants: Layout[] }>("v5/optimize",
+        roomLayoutRequest(room, selectedFace, null))).variants;
+      if (generation !== layoutGeneration.current) return;
+      if (!variants.length) throw new Error("Варианты раскладки не найдены.");
+      const selected = variants[0];
+      const linkedRoomIds = doc.rooms.flatMap(candidate => {
+        if (candidate.id === room.id || candidate.binding !== "attached") return [];
+        const face = response?.faces.find(item => item.topologyKey === candidate.topologyKey);
+        return face?.polygon && face.validation.valid ? [candidate.id] : [];
+      });
+      setLayoutCache(cache => ({ ...cache, [room.id]: {
+        key: capturedKey, variants, selected: 0,
+      } }));
+      update(current => ({ ...current, sharedGrid: {
+        referenceRoomId: room.id,
+        referenceBasis: roomLayoutBasis(room, selectedFace),
+        tile: room.material.tile, grout: room.material.grout,
+        angle: selected.angle, offsetX: selected.offset_x, offsetY: selected.offset_y,
+        linkedRoomIds,
+      } }));
     } catch (cause) {
       if (generation === layoutGeneration.current) setLayoutError((cause as Error).message);
     } finally {
@@ -299,6 +334,20 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       </> : layoutMode ? <>
         <h2>Раскладка</h2>
         {room && selectedFace ? <>
+          <fieldset className="layout-scope">
+            <legend>Область расчёта</legend>
+            <div role="group" aria-label="Область расчёта раскладки">
+              <button type="button" aria-pressed={layoutScope === "room"} onClick={() => {
+                setLayoutScope("room");
+                if (doc.sharedGrid) update(current => ({ ...current, sharedGrid: null }));
+              }}>Одно помещение</button>
+              <button type="button" aria-pressed={layoutScope === "through"} onClick={() =>
+                setLayoutScope("through")}>Сквозная раскладка</button>
+            </div>
+            <p className="muted">{layoutScope === "through"
+              ? "Одна сетка для всех помещений: швы продолжаются через стены, а стены исключаются из площади плитки."
+              : "Каждое помещение получает независимую сетку и может иметь собственное положение швов."}</p>
+          </fieldset>
           <label>Помещение<input aria-label="Название помещения" value={room.name}
             onChange={event => update(current => ({ ...current,
               rooms: current.rooms.map(item => item.id === room.id ? { ...item, name: event.target.value } : item) }))} /></label>
@@ -308,7 +357,10 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           </p>}
           {sharedGrid && room.id === sharedGrid.referenceRoomId && <div role="group" aria-label="Общая сетка раскладки">
             <p>Это опорное помещение. В подключённых помещениях линии плитки сохраняют положение; площадь стен исключена из укладки.</p>
-            <button onClick={() => update(current => ({ ...current, sharedGrid: null }))}>
+            <button onClick={() => {
+              setLayoutScope("room");
+              update(current => ({ ...current, sharedGrid: null }));
+            }}>
               Отключить общую сетку
             </button>
           </div>}
@@ -333,22 +385,32 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           {roomField("rules", "gap", "Отступ", 0, 100, "мм")}
           {roomField("rules", "threshold", "Минимальный размер подрезки", 1, 1000, "мм")}
           {!linked && roomField("rules", "angle", "Угол раскладки", 0, 89.9, "°")}
-          <button disabled={layoutLoading || !selectedFace.validation.valid || (linked && !sharedGrid)}
-            onClick={() => void optimize()}>{layoutLoading ? "Рассчитываем…" :
-              linked ? "Рассчитать с общей сеткой" : "Подобрать раскладку"}</button>
+          <button disabled={layoutLoading || !selectedFace.validation.valid ||
+              (layoutScope === "through" && doc.rooms.filter(item => item.binding === "attached").length < 2) ||
+              (layoutScope === "room" && linked && !sharedGrid)}
+            onClick={() => void (layoutScope === "through" && !sharedGrid ? optimizeThrough() : optimize())}>
+            {layoutLoading ? "Рассчитываем…" : layoutScope === "through"
+              ? !sharedGrid ? "Рассчитать все помещения одной сеткой"
+                : room.id === sharedGrid.referenceRoomId ? "Пересчитать сквозную раскладку"
+                  : "Пересчитать это помещение в общей сетке"
+              : linked ? "Рассчитать с общей сеткой" : "Подобрать раскладку"}
+          </button>
           {sharedLoading && <p role="status">Переносим линии плитки в подключённые помещения…</p>}
           {layoutError && <p role="alert" className="error">{layoutError}</p>}
           {cachedLayout && cachedLayout.key !== layoutKey && <p role="status">Раскладка требует пересчёта.</p>}
           {cachedLayout?.key === layoutKey && <>
             <p>Плиток: {activeLayout?.metrics.tiles ?? 0}; отход: {activeLayout?.metrics.waste_percent ?? 0}%</p>
             {activeLayout && !linked && room.id !== doc.sharedGrid?.referenceRoomId &&
-              <button onClick={() => update(current => ({ ...current, sharedGrid: {
-                referenceRoomId: room.id,
-                referenceBasis: roomLayoutBasis(room, selectedFace),
-                tile: room.material.tile, grout: room.material.grout,
-                angle: activeLayout.angle, offsetX: activeLayout.offset_x,
-                offsetY: activeLayout.offset_y, linkedRoomIds: [],
-              } }))}>Сделать опорной раскладкой</button>}
+              <button onClick={() => {
+                setLayoutScope("through");
+                update(current => ({ ...current, sharedGrid: {
+                  referenceRoomId: room.id,
+                  referenceBasis: roomLayoutBasis(room, selectedFace),
+                  tile: room.material.tile, grout: room.material.grout,
+                  angle: activeLayout.angle, offsetX: activeLayout.offset_x,
+                  offsetY: activeLayout.offset_y, linkedRoomIds: [],
+                } }));
+              }}>Сделать опорной раскладкой</button>}
             <div className="variant-list">{cachedLayout.variants.map((variant, index) =>
               <button key={index} aria-pressed={cachedLayout.selected === index}
                 onClick={() => {
