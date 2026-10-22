@@ -24,6 +24,7 @@ export function deletionPreview(
 export type PhysicalDeletionImpact = {
   wallIds: string[];
   junctionIds: string[];
+  openingIds: string[];
   affectedRoomKeys: string[];
   disappearedRoomKeys: string[];
 };

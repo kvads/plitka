@@ -332,7 +332,7 @@ export function createV6(name: string, address = "", id = crypto.randomUUID()): 
     name,
     address,
     documentRevision: 0,
-    plan: { draft: { walls: [], junctions: [] }, draftRevision: 0, pendingEdit: null, restorePoint: null },
+    plan: { draft: { walls: [], junctions: [], openings: [] }, draftRevision: 0, pendingEdit: null, restorePoint: null },
     rooms: [],
     sharedGrid: null,
     selectedRoomId: null,

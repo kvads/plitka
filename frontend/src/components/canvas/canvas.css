@@ -457,10 +457,13 @@
   color: #fff;
 }
 .physical-editor [data-wall-id]:focus-visible,
-.physical-editor [data-wall-handle]:focus-visible {
+.physical-editor [data-wall-handle]:focus-visible,
+.physical-editor [data-door-id]:focus-visible {
   outline: 3px solid #333;
   outline-offset: 3px;
 }
+.physical-editor [data-door-tool] [data-wall-id] { cursor: crosshair; }
+.physical-editor [data-door-id] { cursor: pointer; }
 @media (max-width: 600px) {
   .physical-mode-switch {
     top: max(8px, env(safe-area-inset-top, 0px));

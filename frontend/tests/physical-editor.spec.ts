@@ -4,6 +4,7 @@ import type { Point, ProjectDocumentV6 } from "../src/domain/plan/types";
 import { physicalBasisKey } from "../src/domain/plan/physical-basis";
 import { parseV6Import } from "../src/domain/plan/migration";
 import { splitWallDimensions } from "../src/domain/plan/physical-dimensions";
+import { openingCorners, openingOffset } from "../src/domain/plan/physical-openings";
 import { alignCubeAttachmentToGuides, centeredWallGeometry, immediateJointAngles,
   nearestCubeAttachment } from "../src/domain/plan/physical-draw";
 import { newRoom } from "../src/domain/plan/rooms";
@@ -19,6 +20,15 @@ test("physical v6 measures both exposed spans of a wall touched by a branch", ()
   const dimensions = splitWallDimensions(graph, area, 20);
   expect(dimensions.map(item => item.lengthMm)).toEqual([450, 450]);
   expect(dimensions.every(item => item.wallId === "host" && item.anchor.x > 100)).toBe(true);
+});
+
+test("door placement projects to a wall and spans its full thickness", () => {
+  const graph = v6SavedWallGraph();
+  expect(openingOffset(graph, "wall-horizontal", { x: 500, y: 50 }, 800)).toBe(500);
+  expect(openingOffset(graph, "wall-horizontal", { x: 0, y: 50 }, 800)).toBe(410);
+  expect(openingCorners(graph.walls[0], { offsetMm: 500, widthMm: 800 })).toEqual([
+    { x: 100, y: 0 }, { x: 900, y: 0 }, { x: 900, y: 100 }, { x: 100, y: 100 },
+  ]);
 });
 
 test("wall cube attaches by its rotated side to a diagonal end cap", () => {
@@ -654,6 +664,44 @@ test("physical v6 desktop wall cursor matches wall thickness", async ({ page }) 
   await expect.poll(async () => (await footprint()).height).toBe(200);
   await page.getByRole("spinbutton", { name: "Толщина, мм" }).fill("55");
   await expect(page.getByRole("alert")).toContainText("шагом 10 мм");
+});
+
+test("physical v6 creates, resizes, persists, and deletes a door opening", async ({ page }) => {
+  const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
+  document.plan.pendingEdit = null;
+  document.plan.restorePoint = null;
+  document.rooms = [];
+  document.selectedRoomId = null;
+  document.viewport = { centerX: 500, centerY: 50, zoom: 5, gridStepMm: 100 };
+  await page.goto("/");
+  await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
+    JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
+  await page.goto("/#project/physical-v6-fixture");
+  await page.getByRole("button", { name: "Дверной проём" }).click();
+  await expect(page.getByRole("heading", { name: "Новая дверь" })).toBeVisible();
+  const canvas = page.locator("[data-physical-canvas]");
+  const center = await canvas.evaluate(svg => {
+    const point = new DOMPoint(500, -50).matrixTransform((svg as SVGSVGElement).getScreenCTM()!);
+    return { x: point.x, y: point.y };
+  });
+  await page.mouse.move(center.x, center.y);
+  await expect(page.locator("[data-door-preview]")).toBeVisible();
+  await page.mouse.click(center.x, center.y);
+  await expect(page.locator("[data-door-id]")).toHaveCount(1);
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.openings?.[0]?.widthMm)).toBe(800);
+  await page.getByRole("button", { name: "Завершить инструмент «Дверь»" }).click();
+  await page.locator("[data-door-id]").click();
+  await expect(page.getByRole("heading", { name: "Дверной проём" })).toBeVisible();
+  await page.getByRole("spinbutton", { name: "Ширина проёма, мм" }).fill("600");
+  await page.getByRole("button", { name: "Применить ширину" }).click();
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.openings[0].widthMm)).toBe(600);
+  await page.reload();
+  await expect(page.locator("[data-door-id]")).toHaveCount(1);
+  await page.locator("[data-door-id]").click();
+  await page.getByRole("button", { name: "Удалить проём" }).click();
+  await expect(page.locator("[data-door-id]")).toHaveCount(0);
 });
 
 test("physical v6 moves an intersecting wall cursor onto the nearest host face", async ({ page }) => {

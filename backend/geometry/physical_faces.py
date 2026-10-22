@@ -9,6 +9,7 @@ from shapely.ops import unary_union
 from .physical_junctions import polygon
 from .physical_models import PhysicalGraphV5
 from .physical_measurements import face_measurements
+from .physical_openings import opening_parts
 
 
 def _hash(value) -> str:
@@ -36,7 +37,7 @@ def derive_physical_faces(graph: PhysicalGraphV5) -> list[dict]:
         return []
     union = unary_union([polygon(wall) for wall in graph.walls])
     areas = list(union.geoms) if isinstance(union, MultiPolygon) else [union]
-    faces = []
+    candidates = []
     for area in areas:
         if not isinstance(area, Polygon):
             continue
@@ -50,14 +51,50 @@ def derive_physical_faces(graph: PhysicalGraphV5) -> list[dict]:
                               if polygon(wall).boundary.intersection(boundary).length > 0.1)
             joint_ids = sorted(joint.id for joint in graph.junctions
                                if {part.wallId for part in joint.participants}.issubset(wall_ids))
+            topology_key = _hash({"walls": wall_ids, "junctions": joint_ids})
             inner_angles, free_dimensions = face_measurements(outline)
-            faces.append({
-                "topologyKey": _hash({"walls": wall_ids, "junctions": joint_ids}),
-                "geometryKey": _hash(_canonical_ring(outline)),
-                "polygon": {"outline": outline, "holes": []},
-                "areaMm2": round(floor.area * 10) / 10,
-                "validation": {"valid": True, "issues": []},
+            candidates.append({
+                "topologyKey": topology_key,
+                "floor": floor,
+                "shape": floor,
                 "innerAngles": inner_angles,
                 "freeDimensions": free_dimensions,
+                "connectedRoomKeys": set(),
+                "doorIds": [],
             })
+
+    walls = {wall.id: wall for wall in graph.walls}
+    for opening in graph.openings:
+        _, drawn_half, opposite_half = opening_parts(walls[opening.wallId], opening)
+        sides = []
+        for half in (drawn_half, opposite_half):
+            matches = sorted(((candidate["floor"].boundary.intersection(half.boundary).length,
+                               candidate) for candidate in candidates),
+                             key=lambda item: item[0], reverse=True)
+            sides.append(matches[0][1] if matches and matches[0][0] > opening.widthMm / 2 else None)
+        first, second = sides
+        if first is None or second is None or first is second:
+            continue
+        for candidate, half, other in ((first, drawn_half, second),
+                                       (second, opposite_half, first)):
+            candidate["shape"] = candidate["shape"].union(half)
+            candidate["connectedRoomKeys"].add(other["topologyKey"])
+            candidate["doorIds"].append(opening.id)
+
+    faces = []
+    for candidate in candidates:
+        shape = candidate.pop("shape")
+        candidate.pop("floor")
+        connected = sorted(candidate.pop("connectedRoomKeys"))
+        outline = _ring(shape.exterior.coords)
+        holes = [_ring(interior.coords) for interior in shape.interiors]
+        faces.append({
+            **candidate,
+            "geometryKey": _hash({"outline": _canonical_ring(outline),
+                                  "holes": sorted(_canonical_ring(hole) for hole in holes)}),
+            "polygon": {"outline": outline, "holes": holes},
+            "areaMm2": round(shape.area * 10) / 10,
+            "validation": {"valid": True, "issues": []},
+            "connectedRoomKeys": connected,
+        })
     return sorted(faces, key=lambda face: face["topologyKey"])

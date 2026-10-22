@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, ChevronsLeft, ChevronsRight, FolderOpen, Grid3X3, PencilRuler, RotateCcw, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronsLeft, ChevronsRight, DoorOpen, FolderOpen, Grid3X3, PencilRuler, RotateCcw, X } from "lucide-react";
 import PhysicalCanvas from "./PhysicalCanvas";
 import ProjectMenu from "./ProjectMenu";
 import { usePhysicalProject } from "../../domain/plan/usePhysicalProject";
@@ -42,7 +42,11 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const [menuOpen, setMenuOpen] = useState(() => !window.matchMedia("(hover: none) and (pointer: coarse)").matches);
   const [projectMenu, setProjectMenu] = useState(false);
   const [wallTool, setWallTool] = useState(false);
+  const [doorTool, setDoorTool] = useState(false);
   const [thicknessInput, setThicknessInput] = useState("100");
+  const [doorWidthInput, setDoorWidthInput] = useState("800");
+  const [selectedDoorWidthInput, setSelectedDoorWidthInput] = useState("");
+  const [selectedDoorId, setSelectedDoorId] = useState<string | null>(null);
   const [selectedThicknessInput, setSelectedThicknessInput] = useState("");
   const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
   const [selectedHandle, setSelectedHandle] = useState<"start" | "center" | "end" | null>(null);
@@ -66,9 +70,15 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const thickness = Number(thicknessInput.replace(",", "."));
   const thicknessValid = Number.isInteger(thickness / 10) && thickness >= 10 && thickness <= 100000;
   const selected = doc.plan.draft.walls.find(wall => wall.id === selectedWallId);
+  const selectedDoor = (doc.plan.draft.openings ?? []).find(opening => opening.id === selectedDoorId);
+  const doorWidth = Number(doorWidthInput.replace(",", "."));
+  const doorWidthValid = Number.isInteger(doorWidth / 10) && doorWidth >= 300 && doorWidth <= 3000;
+  const selectedDoorWidth = Number(selectedDoorWidthInput.replace(",", "."));
+  const selectedDoorWidthValid = Number.isInteger(selectedDoorWidth / 10) && selectedDoorWidth >= 300 && selectedDoorWidth <= 3000;
   useEffect(() => { if (selectedWallId && !selected) {
     setSelectedWallId(null); setSelectedHandle(null); setDeleteWallImpact(null);
   } }, [selectedWallId, selected]);
+  useEffect(() => { if (selectedDoorId && !selectedDoor) setSelectedDoorId(null); }, [selectedDoorId, selectedDoor]);
   const room = doc.rooms.find(item => item.id === doc.selectedRoomId);
   const selectedFace = response?.faces.find(face => face.topologyKey === room?.topologyKey);
   const sharedGrid = activeSharedGrid(doc, response?.faces ?? []);
@@ -86,11 +96,19 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const selectedThickness = Number(selectedThicknessInput.replace(",", "."));
   const selectedThicknessValid = Number.isInteger(selectedThickness / 10) && selectedThickness >= 10 && selectedThickness <= 100000;
   const chooseWall = (wallId: string | null) => {
+    setSelectedDoorId(null);
     setSelectedWallId(wallId);
     setSelectedHandle(null);
     setDeleteWallImpact(null);
     setDeleteWallError("");
     setSelectedThicknessInput(String(doc.plan.draft.walls.find(wall => wall.id === wallId)?.thicknessMm ?? ""));
+  };
+  const chooseDoor = (openingId: string | null) => {
+    setSelectedDoorId(openingId);
+    setSelectedWallId(null);
+    setSelectedHandle(null);
+    setSelectedDoorWidthInput(String((doc.plan.draft.openings ?? [])
+      .find(opening => opening.id === openingId)?.widthMm ?? ""));
   };
   const layoutMode = doc.workflow.requestedStage === "variants";
   useEffect(() => {
@@ -263,6 +281,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     setMenuOpen(false);
     setProjectMenu(false);
     setWallTool(false);
+    setDoorTool(false);
   };
   return <div className="app physical-editor" style={{ position: "relative", height: "100dvh", overflow: "hidden" }}>
     <PhysicalCanvas graph={doc.plan.draft} draftRevision={doc.plan.draftRevision}
@@ -275,6 +294,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         selectedRoomId: current.rooms.find(item => item.topologyKey === key)?.id ?? null }))}
       viewport={doc.viewport} onViewport={viewport => update(current => ({ ...current, viewport }))}
       selectedWallId={selectedWallId} onSelectWall={chooseWall}
+      selectedDoorId={selectedDoorId} onSelectDoor={chooseDoor}
       selectedHandle={selectedHandle} onSelectHandle={setSelectedHandle}
       onNudge={(handle, axis, direction) => {
         if (selectedWallId && !busy) void command({ type: "nudgeWallHandle",
@@ -282,7 +302,13 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       }}
       wallTool={wallTool && !layoutMode} thicknessMm={thicknessValid ? thickness : 100}
       onDrawWall={edge => { if (thicknessValid && !busy) void drawWall(edge, "left", thickness); }}
-      onResetWallTool={() => setWallTool(false)} />
+      onResetWallTool={() => setWallTool(false)}
+      doorTool={doorTool && !layoutMode} doorWidthMm={doorWidthValid ? doorWidth : 800}
+      onPlaceDoor={(wallId, offsetMm) => {
+        if (doorWidthValid && !busy) void command({ type: "addDoorOpening", wallId, offsetMm,
+          widthMm: doorWidth });
+      }}
+      onResetDoorTool={() => setDoorTool(false)} />
     <div className="canvas-sidebar-shell" data-overlay style={{ position: "absolute", top: 12, left: 12 }}>
       <button className="canvas-sidebar-toggle" aria-label={menuOpen ? "Свернуть меню" : "Раскрыть меню"}
         aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}>
@@ -292,7 +318,11 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         <div className="canvas-title"><strong>{doc.name}</strong><small>{doc.address || "Адрес не указан"}</small></div>
         <button aria-label="Проекты" title="Проекты" onClick={onBack}><ArrowLeft /></button>
         {!layoutMode && <button aria-label="Стена" title="Стена" aria-pressed={wallTool}
-          onClick={() => { setWallTool(value => !value); setMenuOpen(false); setProjectMenu(false); }}><PencilRuler /></button>}
+          onClick={() => { setWallTool(value => !value); setDoorTool(false); chooseDoor(null);
+            setMenuOpen(false); setProjectMenu(false); }}><PencilRuler /></button>}
+        {!layoutMode && <button aria-label="Дверной проём" title="Дверной проём" aria-pressed={doorTool}
+          onClick={() => { setDoorTool(value => !value); setWallTool(false); chooseWall(null);
+            setMenuOpen(false); setProjectMenu(false); }}><DoorOpen /></button>}
         <button aria-label="Проект" title="Проект" onClick={() => { setProjectMenu(value => !value); setMenuOpen(false); }}><FolderOpen /></button>
         <button aria-label="Отменить правку" title="Отменить правку" disabled={!project.canUndo || busy}
           onClick={() => project.undo()}><RotateCcw /></button>
@@ -308,12 +338,17 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         <span>Раскладка</span>
       </button>
     </div>
-    {(wallTool || selected || projectMenu || layoutMode || doc.plan.pendingEdit) && <aside className="canvas-panel" data-overlay
+    {(wallTool || doorTool || selected || selectedDoor || projectMenu || layoutMode || doc.plan.pendingEdit) && <aside className="canvas-panel" data-overlay
       style={{ position: "absolute", right: 12, top: 62, maxWidth: "min(340px, calc(100vw - 72px))", maxHeight: "calc(100dvh - 74px)", overflowY: "auto" }}>
       {wallTool && !layoutMode && <button type="button" className="physical-reset-wall-tool"
         onClick={() => setWallTool(false)} title="Также можно нажать Esc без начатой стены">
         <X aria-hidden="true" />
         <span>Завершить инструмент «Стена»</span>
+      </button>}
+      {doorTool && !layoutMode && <button type="button" className="physical-reset-wall-tool"
+        onClick={() => setDoorTool(false)} title="Также можно нажать Esc">
+        <X aria-hidden="true" />
+        <span>Завершить инструмент «Дверь»</span>
       </button>}
       {projectMenu ? <>
         <ProjectMenu doc={doc} embedded onUpdate={update} onClose={() => setProjectMenu(false)}
@@ -335,13 +370,14 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           <button onClick={() => setConfirmClear(false)}>Отмена</button>
           <button className="danger" onClick={() => {
             update(current => ({ ...current, plan: { ...current.plan,
-              draft: { walls: [], junctions: [] }, draftRevision: current.plan.draftRevision + 1,
+              draft: { walls: [], junctions: [], openings: [] }, draftRevision: current.plan.draftRevision + 1,
               pendingEdit: null, restorePoint: { graph: current.plan.draft,
                 bindings: current.rooms.map(room => ({ roomId: room.id, topologyKey: room.topologyKey })),
                 selectedRoomId: current.selectedRoomId } },
               rooms: current.rooms.map(room => ({ ...room, binding: "detached" as const })),
               selectedRoomId: null }));
             setSelectedWallId(null);
+            setSelectedDoorId(null);
             setConfirmClear(false);
           }}>Очистить проект</button>
         </div>}
@@ -449,6 +485,29 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           : "Полезный контур помещения разомкнут или разделён. Соедините стены, чтобы рассчитать раскладку."}</p>
           : <p>Выберите замкнутое помещение на полотне.</p>}
       </> : <>
+        {selectedDoor || doorTool ? <>
+          <h2>{selectedDoor ? "Дверной проём" : "Новая дверь"}</h2>
+          <label>Ширина проёма, мм<input type="number" min="300" max="3000" step="10"
+            value={selectedDoor ? selectedDoorWidthInput : doorWidthInput}
+            onChange={event => selectedDoor
+              ? setSelectedDoorWidthInput(event.target.value) : setDoorWidthInput(event.target.value)} /></label>
+          {!(selectedDoor ? selectedDoorWidthValid : doorWidthValid) && <p role="alert">
+            Введите ширину от 300 до 3000 мм с шагом 10 мм.
+          </p>}
+          {selectedDoor ? <>
+            <button disabled={busy || !selectedDoorWidthValid} onClick={() => void command({
+              type: "setDoorWidth", openingId: selectedDoor.id, widthMm: selectedDoorWidth,
+            })}>Применить ширину</button>
+            <button onClick={() => chooseDoor(null)}>Снять выделение</button>
+            <button className="danger" disabled={busy} onClick={() => {
+              void command({ type: "deleteDoorOpening", openingId: selectedDoor.id });
+              chooseDoor(null);
+            }}>Удалить проём</button>
+          </> : <>
+            <p>Нажмите на стену — проём разместится по центру указанной точки.</p>
+            <small className="muted">У торцов и сочленений сохраняется необходимый участок стены.</small>
+          </>}
+        </> : <>
         <h2>{selected ? "Стена" : "Новая стена"}</h2>
         <label>Толщина, мм<input type="number" min="10" max="100000" step="10"
           value={selected ? selectedThicknessInput : thicknessInput}
@@ -488,7 +547,8 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           }}>{deleteWallLoading ? "Проверяем удаление…" : "Удалить стену"}</button>
           {deleteWallError && <p className="error" role="alert">{deleteWallError}</p>}
           {deleteWallImpact && <div role="dialog" aria-label="Удалить стену">
-            <p>Будет удалена стена и {deleteWallImpact.junctionIds.length} связанных стыков.
+            <p>Будет удалена стена, {deleteWallImpact.junctionIds.length} связанных стыков
+              {deleteWallImpact.openingIds.length ? ` и дверных проёмов: ${deleteWallImpact.openingIds.length}` : ""}.
               Затронутых помещений: {deleteWallImpact.affectedRoomKeys.length}.</p>
             <button onClick={() => setDeleteWallImpact(null)}>Отмена</button>
             <button className="danger" disabled={busy} onClick={() => {
@@ -499,6 +559,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         </> : <>
           {!thicknessValid && <p role="alert">Введите толщину от 10 до 100000 мм с шагом 10 мм.</p>}
           <p>Укажите начало и конец стены на полотне.</p>
+        </>}
         </>}
       </>}
       {error && <div className="error" role="alert">

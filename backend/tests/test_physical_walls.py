@@ -43,6 +43,7 @@ def saved_wall():
             ],
         }],
         "junctions": [],
+        "openings": [],
     }
 
 
@@ -91,7 +92,8 @@ def test_open_partition_keeps_one_room_and_excludes_wall_from_tile_layout():
 
 
 def test_saved_physical_wall_validates_before_draw_wall_exists():
-    for graph, area_count in [({"walls": [], "junctions": []}, 0), (saved_wall(), 1)]:
+    for graph, area_count in [({"walls": [], "junctions": [], "openings": []}, 0),
+                              (saved_wall(), 1)]:
         result = client.post("/api/v5/plan/validate", json=request(graph))
         assert result.status_code == 200
         body = result.json()
@@ -102,6 +104,73 @@ def test_saved_physical_wall_validates_before_draw_wall_exists():
         assert body["basisKey"] == request(graph)["basisKey"]
         assert len(body["wallArea"]) == area_count
         assert body["faces"] == body["openJointAngles"] == []
+
+
+def test_door_opening_cuts_only_its_wall_and_can_be_resized_and_deleted():
+    graph = saved_wall()
+    added = client.post("/api/v5/plan/command", json={
+        **command_request(graph), "commandId": "front-door",
+        "command": {"type": "addDoorOpening", "wallId": "w1",
+                    "offsetMm": 500, "widthMm": 800},
+    }).json()
+    assert added["status"] == "applied", added["issues"]
+    assert added["graph"]["openings"] == [{
+        "id": "door-front-door", "wallId": "w1", "offsetMm": 500, "widthMm": 800,
+    }]
+    assert len(added["wallArea"]) == 2
+    assert sum(Polygon(area["outline"], area["holes"]).area
+               for area in added["wallArea"]) == 20000
+
+    resized = client.post("/api/v5/plan/command", json={
+        **command_request(added["graph"]), "commandId": "resize-door",
+        "command": {"type": "setDoorWidth", "openingId": "door-front-door",
+                    "widthMm": 600},
+    }).json()
+    assert resized["status"] == "applied", resized["issues"]
+    assert resized["graph"]["openings"][0]["widthMm"] == 600
+
+    deleted = client.post("/api/v5/plan/command", json={
+        **command_request(resized["graph"]), "commandId": "delete-door",
+        "command": {"type": "deleteDoorOpening", "openingId": "door-front-door"},
+    }).json()
+    assert deleted["status"] == "applied"
+    assert deleted["graph"]["openings"] == []
+    assert len(deleted["wallArea"]) == 1
+
+
+def test_internal_door_connects_two_rooms_and_splits_threshold_area_between_them():
+    graph = {"walls": [], "junctions": [], "openings": []}
+    walls = [
+        ([(0, 0), (1200, 0)], "right"),
+        ([(1200, 0), (1200, 1000)], "left"),
+        ([(1200, 1000), (0, 1000)], "right"),
+        ([(0, 1000), (0, 0)], "left"),
+        ([(600, 0), (600, 1000)], "left"),
+    ]
+    for index, (edge, side) in enumerate(walls):
+        result = client.post("/api/v5/plan/command", json={
+            **command_request(graph), "commandId": f"door-room-{index}",
+            "command": {"type": "drawWall", "drawnEdge": [
+                {"x": x, "y": y} for x, y in edge],
+                "side": side, "thicknessMm": 100},
+        }).json()
+        assert result["status"] == "applied", result["issues"]
+        graph = result["graph"]
+    before = sorted(face["areaMm2"] for face in result["faces"])
+    opened = client.post("/api/v5/plan/command", json={
+        **command_request(graph), "commandId": "between-rooms",
+        "command": {"type": "addDoorOpening", "wallId": "wall-door-room-4",
+                    "offsetMm": 500, "widthMm": 800},
+    }).json()
+    assert opened["status"] == "applied", opened["issues"]
+    assert len(opened["faces"]) == 2
+    assert sorted(face["areaMm2"] for face in opened["faces"]) == [
+        before[0] + 40000, before[1] + 40000]
+    assert all(len(face["connectedRoomKeys"]) == 1 and
+               face["doorIds"] == ["door-between-rooms"]
+               for face in opened["faces"])
+    assert {face["connectedRoomKeys"][0] for face in opened["faces"]} == {
+        face["topologyKey"] for face in opened["faces"]}
 
 
 def test_physical_model_rejects_axes_and_invalid_stored_corners():

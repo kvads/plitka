@@ -8,7 +8,7 @@ from shapely.geometry import LineString, Point as ShapelyPoint
 from .physical_geometry import create_wall
 from .physical_junctions import (simple_contact, polygon, rebuild_simple_contacts,
                                  rounded_contact_overlap_limit)
-from .physical_models import PhysicalGraphV5, PhysicalPoint, PhysicalWallV5
+from .physical_models import DoorOpeningV5, PhysicalGraphV5, PhysicalPoint, PhysicalWallV5
 from .physical_validation import validate_physical_graph
 
 
@@ -22,6 +22,13 @@ def _new_thickness(value: object) -> float:
             not math.isfinite(value) or not 10 <= value <= 100000 or
             value % 10 != 0):
         raise ValueError("Толщина стены должна быть от 10 до 100000 мм с шагом 10 мм.")
+    return value
+
+
+def _door_width(value: object) -> float:
+    if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+            not math.isfinite(value) or not 300 <= value <= 3000 or value % 10 != 0):
+        raise ValueError("Ширина дверного проёма должна быть от 300 до 3000 мм с шагом 10 мм.")
     return value
 
 
@@ -332,6 +339,49 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
     """Return a new graph or raise without mutating the input graph."""
     validate_physical_graph(graph)
     kind = command.get("type") if isinstance(command, dict) else None
+    if kind == "addDoorOpening":
+        _fields(command, {"type", "wallId", "offsetMm", "widthMm"})
+        if len(command_id) > 92:
+            raise ValueError("Идентификатор команды слишком длинный.")
+        wall_id, offset = command["wallId"], command["offsetMm"]
+        if (not isinstance(wall_id, str) or
+                not any(wall.id == wall_id for wall in graph.walls)):
+            raise ValueError("Выберите стену для дверного проёма.")
+        if (isinstance(offset, bool) or not isinstance(offset, (int, float)) or
+                not math.isfinite(offset)):
+            raise ValueError("Выберите положение дверного проёма на стене.")
+        next_graph = deepcopy(graph)
+        opening = DoorOpeningV5(id="door-" + command_id, wallId=wall_id,
+                                offsetMm=round(offset * 10) / 10,
+                                widthMm=_door_width(command["widthMm"]))
+        next_graph.openings.append(opening)
+        validate_physical_graph(next_graph)
+        return next_graph, [wall_id]
+    if kind == "setDoorWidth":
+        _fields(command, {"type", "openingId", "widthMm"})
+        if not isinstance(command["openingId"], str):
+            raise ValueError("Выберите дверной проём.")
+        next_graph = deepcopy(graph)
+        index = next((i for i, opening in enumerate(next_graph.openings)
+                      if opening.id == command["openingId"]), None)
+        if index is None:
+            raise ValueError("Дверной проём не найден.")
+        old = next_graph.openings[index]
+        next_graph.openings[index] = old.model_copy(update={
+            "widthMm": _door_width(command["widthMm"]),
+        })
+        validate_physical_graph(next_graph)
+        return next_graph, [old.wallId]
+    if kind == "deleteDoorOpening":
+        _fields(command, {"type", "openingId"})
+        opening_id = command["openingId"]
+        opening = next((item for item in graph.openings if item.id == opening_id), None)
+        if not isinstance(opening_id, str) or opening is None:
+            raise ValueError("Дверной проём не найден.")
+        next_graph = deepcopy(graph)
+        next_graph.openings = [item for item in next_graph.openings if item.id != opening_id]
+        validate_physical_graph(next_graph)
+        return next_graph, [opening.wallId]
     if kind == "drawWall":
         _fields(command, {"type", "drawnEdge", "side"}, {"thicknessMm"})
         if len(command_id) > 94:
@@ -448,6 +498,7 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
             walls=[wall for wall in graph.walls if wall.id != wall_id],
             junctions=[joint for joint in graph.junctions
                        if all(part.wallId != wall_id for part in joint.participants)],
+            openings=[opening for opening in graph.openings if opening.wallId != wall_id],
         )
         validate_physical_graph(next_graph)
         return next_graph, [wall_id]

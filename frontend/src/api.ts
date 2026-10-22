@@ -167,7 +167,9 @@ export async function api<T>(
           record(angle) && isTenth(angle.valueDeg as number) && point(angle.anchor)) &&
         Array.isArray(face.freeDimensions) && face.freeDimensions.every(dimension =>
           record(dimension) && isTenth(dimension.valueMm as number) &&
-          point(dimension.from) && point(dimension.to) && point(dimension.anchor))) &&
+          point(dimension.from) && point(dimension.to) && point(dimension.anchor)) &&
+        (face.connectedRoomKeys === undefined || strings(face.connectedRoomKeys)) &&
+        (face.doorIds === undefined || strings(face.doorIds))) &&
       Array.isArray(object.openJointAngles) &&
       object.openJointAngles.every(angle => record(angle) &&
         [angle.junctionId, angle.wallId, angle.adjacentWallId].every(v => typeof v === "string") &&
@@ -176,9 +178,10 @@ export async function api<T>(
       Array.isArray(object.issues) && object.issues.every(issue);
     if (valid) {
       try {
-        physicalGraphSchema(object.graph);
+        const responseGraph = physicalGraphSchema(object.graph);
         if (object.status === "invalid")
-          valid = canonicalJson(object.graph) === canonicalJson((project as { graph: unknown }).graph);
+          valid = canonicalJson(responseGraph) === canonicalJson(
+            physicalGraphSchema((project as { graph: unknown }).graph));
       } catch {
         valid = false;
       }
@@ -187,7 +190,7 @@ export async function api<T>(
       valid = valid && record(object.target) &&
         ((object.status === "invalid" && object.impact === null) ||
           (object.status === "ready" && record(object.impact) &&
-            ["wallIds", "junctionIds", "affectedRoomKeys", "disappearedRoomKeys"]
+            ["wallIds", "junctionIds", "openingIds", "affectedRoomKeys", "disappearedRoomKeys"]
               .every(key => strings((object.impact as Record<string, unknown>)[key]))));
     }
   } else if (object && route === "plan/deletion-preview") {

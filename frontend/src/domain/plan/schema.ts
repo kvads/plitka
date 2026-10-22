@@ -568,7 +568,7 @@ const pointV6 = (value: unknown) => {
 /** Strict stored physical graph, independent of the retired axial schema. */
 export function physicalGraphSchema(value: unknown): PhysicalGraphV5 {
   const graph = obj(value);
-  exact(graph, ["walls", "junctions"]);
+  exact(graph, ["walls", "junctions", "openings"]);
   const ids = new Set<string>(), walls = new Map<string, Obj>();
   for (const raw of arr(graph.walls, 6300)) {
     const wall = obj(raw);
@@ -625,7 +625,27 @@ export function physicalGraphSchema(value: unknown): PhysicalGraphV5 {
     }
     if (positions.slice(1).some(p => Math.hypot(p.x-positions[0].x,p.y-positions[0].y) > 0.1000001)) fail();
   }
-  return structuredClone(value) as PhysicalGraphV5;
+  const openingIds = new Set<string>();
+  const openingIntervals = new Map<string, [number, number][]>();
+  for (const raw of arr(graph.openings ?? [], 6300)) {
+    const opening = obj(raw);
+    exact(opening, ["id", "wallId", "offsetMm", "widthMm"]);
+    const id = str(opening.id, 1, 100), wallId = str(opening.wallId, 1, 100);
+    if (ids.has(id) || openingIds.has(id) || !walls.has(wallId)) fail();
+    openingIds.add(id);
+    const offset = requireTenth(num(opening.offsetMm));
+    const width = requireTenth(num(opening.widthMm));
+    if (offset < 0 || width < 300 || width > 3000 || width % 10 !== 0) fail();
+    const wall = walls.get(wallId)!, [start, end] = (wall.drawnEdge as unknown[]).map(pointV6);
+    const length = Math.hypot(end.x - start.x, end.y - start.y);
+    const interval: [number, number] = [offset - width / 2, offset + width / 2];
+    if (interval[0] < 10 || interval[1] > length - 10) fail();
+    const existing = openingIntervals.get(wallId) ?? [];
+    if (existing.some(other => interval[0] < other[1] + 10 && interval[1] > other[0] - 10)) fail();
+    existing.push(interval);
+    openingIntervals.set(wallId, existing);
+  }
+  return { ...(structuredClone(value) as PhysicalGraphV5), openings: structuredClone(graph.openings ?? []) as PhysicalGraphV5["openings"] };
 }
 
 /** Validate all persisted v6 graph snapshots and subject values. */
@@ -724,6 +744,20 @@ export function parseV6(value: unknown): ProjectDocumentV6 {
       if (!graph.walls.some(w => w.id === str(command.wallId, 1))) fail();
       if (num(command.thicknessMm) < 10 || num(command.thicknessMm) > 100000 ||
           num(command.thicknessMm) % 10 !== 0) fail();
+    } else if (type === "addDoorOpening") {
+      exact(command, ["type", "wallId", "offsetMm", "widthMm"]);
+      if (!graph.walls.some(w => w.id === str(command.wallId, 1))) fail();
+      requireTenth(num(command.offsetMm));
+      if (num(command.widthMm) < 300 || num(command.widthMm) > 3000 ||
+          num(command.widthMm) % 10 !== 0) fail();
+    } else if (type === "setDoorWidth") {
+      exact(command, ["type", "openingId", "widthMm"]);
+      if (!(graph.openings ?? []).some(opening => opening.id === str(command.openingId, 1))) fail();
+      if (num(command.widthMm) < 300 || num(command.widthMm) > 3000 ||
+          num(command.widthMm) % 10 !== 0) fail();
+    } else if (type === "deleteDoorOpening") {
+      exact(command, ["type", "openingId"]);
+      if (!(graph.openings ?? []).some(opening => opening.id === str(command.openingId, 1))) fail();
     } else if (type === "nudgeWallHandle") {
       exact(command, ["type", "wallId", "handle", "axis", "direction"]);
       if (!graph.walls.some(w => w.id === str(command.wallId, 1))) fail();

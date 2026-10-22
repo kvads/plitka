@@ -15,6 +15,7 @@ from .physical_commands import execute_physical, normalize_mitered_contacts
 from .physical_junctions import polygon, validate_simple_contacts
 from .physical_faces import derive_physical_faces
 from .physical_measurements import derive_open_joint_angles
+from .physical_openings import opening_parts
 
 
 router = APIRouter(prefix="/api/v5/plan")
@@ -76,7 +77,13 @@ def _check_basis(req: PhysicalRequestV5) -> None:
 def _area(graph: PhysicalGraphV5) -> list[dict]:
     if not graph.walls:
         return []
+    walls = {wall.id: wall for wall in graph.walls}
     union = unary_union([polygon(wall) for wall in graph.walls])
+    if graph.openings:
+        union = union.difference(unary_union([
+            opening_parts(walls[opening.wallId], opening)[0]
+            for opening in graph.openings
+        ]))
     polygons = list(union.geoms) if isinstance(union, MultiPolygon) else [union]
     def ring(coords):
         return [[round(x * 10) / 10, round(y * 10) / 10] for x, y in list(coords)[:-1]]
@@ -168,9 +175,12 @@ async def deletion_preview_route(request: Request):
         after = {face["topologyKey"] for face in derive_physical_faces(candidate)}
         removed_joints = [joint.id for joint in req.graph.junctions
                           if any(part.wallId == req.target["wallId"] for part in joint.participants)]
+        removed_openings = [opening.id for opening in req.graph.openings
+                            if opening.wallId == req.target["wallId"]]
         return {**_base(req, "ready", []), "requestId": req.requestId,
                 "target": req.target, "impact": {
                     "wallIds": affected, "junctionIds": removed_joints,
+                    "openingIds": removed_openings,
                     "affectedRoomKeys": sorted(before | after),
                     "disappearedRoomKeys": sorted(before - after),
                 }}

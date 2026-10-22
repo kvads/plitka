@@ -8,6 +8,7 @@ export async function physicalBasisKey(graph: PhysicalGraphV5): Promise<string> 
     junctions: [...graph.junctions].sort((a, b) => compare(a.id, b.id))
       .map(joint => ({ ...joint, participants: [...joint.participants]
         .sort((a, b) => compare(a.wallId, b.wallId)) })),
+    openings: [...(graph.openings ?? [])].sort((a, b) => compare(a.id, b.id)),
   };
   const normalize = (value: unknown): unknown => {
     if (typeof value === "number") return Math.round(value * 10);

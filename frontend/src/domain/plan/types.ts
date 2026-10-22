@@ -90,12 +90,22 @@ export type WallJunctionV5 = {
     attachment: "end" | "interior";
   }[];
 };
+export type DoorOpeningV5 = {
+  id: string;
+  wallId: string;
+  offsetMm: number;
+  widthMm: number;
+};
 export type PhysicalGraphV5 = {
   walls: PhysicalWallV5[];
   junctions: WallJunctionV5[];
+  openings?: DoorOpeningV5[];
 };
 export type PhysicalCommandV5 =
   | { type: "drawWall"; drawnEdge: [Point, Point]; side: "left" | "right"; thicknessMm?: number }
+  | { type: "addDoorOpening"; wallId: string; offsetMm: number; widthMm: number }
+  | { type: "setDoorWidth"; openingId: string; widthMm: number }
+  | { type: "deleteDoorOpening"; openingId: string }
   | { type: "setWallThickness"; wallId: string; thicknessMm: number }
   | { type: "nudgeWallHandle"; wallId: string; handle: "start" | "center" | "end"; axis: "x" | "y"; direction: -1 | 1 }
   | { type: "deleteWall"; wallId: string };
@@ -108,6 +118,8 @@ export type PhysicalRoomV5 = {
   validation: { valid: boolean; issues: Issue[] };
   innerAngles: { valueDeg: number; anchor: Point }[];
   freeDimensions: { valueMm: number; from: Point; to: Point; anchor: Point }[];
+  connectedRoomKeys?: string[];
+  doorIds?: string[];
 };
 export type OpenJointAngleV5 = {
   junctionId: string;

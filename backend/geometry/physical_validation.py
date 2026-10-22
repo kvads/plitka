@@ -7,6 +7,7 @@ import math
 from shapely.geometry import Polygon, Point as ShapelyPoint, LineString
 
 from .physical_models import PhysicalGraphV5, PhysicalPoint, PhysicalWallV5
+from .physical_openings import opening_parts
 from .precision import is_tenth
 
 
@@ -58,6 +59,27 @@ def validate_physical_graph(graph: PhysicalGraphV5) -> None:
         if not polygon.is_valid or polygon.area <= 0:
             raise ValueError("Физический контур стены недопустим.")
 
+    opening_intervals: dict[str, list[tuple[float, float]]] = {}
+    for opening in graph.openings:
+        wall = walls[opening.wallId]
+        length = math.dist(_pair(wall.drawnEdge[0]), _pair(wall.drawnEdge[1]))
+        if not is_tenth(opening.offsetMm) or not is_tenth(opening.widthMm):
+            raise ValueError("Размер и положение дверного проёма должны иметь шаг 0,1 мм.")
+        if opening.widthMm % 10 != 0:
+            raise ValueError("Ширина дверного проёма должна иметь шаг 10 мм.")
+        first, last = opening.offsetMm - opening.widthMm / 2, opening.offsetMm + opening.widthMm / 2
+        if first < 10 or last > length - 10:
+            raise ValueError("Дверной проём не помещается на выбранном участке стены.")
+        intervals = opening_intervals.setdefault(wall.id, [])
+        if any(first < other_last + 10 and last > other_first - 10
+               for other_first, other_last in intervals):
+            raise ValueError("Дверные проёмы на одной стене пересекаются.")
+        intervals.append((first, last))
+        opening_shape = opening_parts(wall, opening)[0]
+        if any(opening_shape.intersection(Polygon([_pair(point) for point in other.corners])).area > .1
+               for other in graph.walls if other.id != wall.id):
+            raise ValueError("Дверной проём пересекает сочленение стен.")
+
     for joint in graph.junctions:
         positions = []
         for part in joint.participants:
@@ -85,6 +107,8 @@ def canonical_basis_key(graph: PhysicalGraphV5) -> str:
         row = joint.model_dump(mode="json")
         row["participants"].sort(key=lambda part: part["wallId"])
         joint_data.append(row)
+    opening_data = [opening.model_dump(mode="json")
+                    for opening in sorted(graph.openings, key=lambda opening: opening.id)]
     def tenths(value):
         if isinstance(value, dict):
             return {key: tenths(item) for key, item in value.items()}
@@ -93,6 +117,7 @@ def canonical_basis_key(graph: PhysicalGraphV5) -> str:
         if isinstance(value, (float, int)) and not isinstance(value, bool):
             return round(value * 10)
         return value
-    encoded = json.dumps(tenths({"walls": wall_data, "junctions": joint_data}), sort_keys=True,
+    encoded = json.dumps(tenths({"walls": wall_data, "junctions": joint_data,
+                                 "openings": opening_data}), sort_keys=True,
                          ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return "physical-v5:" + hashlib.sha256(encoded).hexdigest()

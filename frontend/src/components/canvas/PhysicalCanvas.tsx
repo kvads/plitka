@@ -7,11 +7,12 @@ import { physicalPreview, type PhysicalPreviewResponse } from "../../domain/plan
 import { splitWallDimensions } from "../../domain/plan/physical-dimensions";
 import { alignCubeAttachmentToGuides, centeredWallGeometry, immediateJointAngles, nearestCubeAttachment,
   type PhysicalAttachment } from "../../domain/plan/physical-draw";
+import { openingCorners, openingOffset } from "../../domain/plan/physical-openings";
 
 type Viewport = ProjectDocumentV6["viewport"];
 type Handle = "start" | "center" | "end";
 type Gesture = { id: number; client: Point; viewport: Viewport; moved: boolean;
-  wallId: string | null; roomKey: string | null; handle: Handle | null;
+  wallId: string | null; doorId: string | null; roomKey: string | null; handle: Handle | null;
   arrow: { axis: "x" | "y"; direction: -1 | 1 } | null };
 type WallTarget = { point: Point; attachment: PhysicalAttachment | null };
 type Props = {
@@ -37,6 +38,12 @@ type Props = {
   thicknessMm: number;
   onDrawWall: (edge: [Point, Point]) => void;
   onResetWallTool: () => void;
+  doorTool: boolean;
+  doorWidthMm: number;
+  selectedDoorId: string | null;
+  onSelectDoor: (openingId: string | null) => void;
+  onPlaceDoor: (wallId: string, offsetMm: number) => void;
+  onResetDoorTool: () => void;
 };
 
 const svgPath = (polygon: PhysicalPolygonV5) =>
@@ -58,7 +65,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   selectedRoomKey, onSelectRoom,
   highlightRooms = false, roomMissing = {}, roomNames = {}, layouts = [], viewport, onViewport,
   selectedWallId, onSelectWall, selectedHandle, onSelectHandle, onNudge,
-  wallTool, thicknessMm, onDrawWall, onResetWallTool }: Props) {
+  wallTool, thicknessMm, onDrawWall, onResetWallTool,
+  doorTool, doorWidthMm, selectedDoorId, onSelectDoor, onPlaceDoor, onResetDoorTool }: Props) {
   const svg = useRef<SVGSVGElement>(null);
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef<Gesture | null>(null);
@@ -74,6 +82,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   const [cursor, setCursor] = useState<Point | null>(null);
   const [cursorFace, setCursorFace] = useState<{ normal: Point } | null>(null);
   const [serverPreview, setServerPreview] = useState<{ key: string; response: PhysicalPreviewResponse } | null>(null);
+  const [doorCursor, setDoorCursor] = useState<{ wallId: string; offsetMm: number } | null>(null);
   const mobile = window.matchMedia("(hover: none) and (pointer: coarse)").matches;
   const shown = liveViewport ?? viewport;
   const span = 9000 / shown.zoom;
@@ -115,25 +124,25 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   useEffect(() => {
     setStart(null); setStartFace(null); setHover(null); setHoverFace(null);
     setCursor(null); setCursorFace(null);
-  }, [wallTool]);
+    setDoorCursor(null);
+  }, [wallTool, doorTool]);
   useEffect(() => {
-    if (!wallTool) return;
+    if (!wallTool && !doorTool) return;
     const cancel = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (start) {
+        if (wallTool && start) {
           setStart(null);
           setStartFace(null);
           setHover(null);
           setHoverFace(null);
           setServerPreview(null);
-        } else {
-          onResetWallTool();
-        }
+        } else if (wallTool) onResetWallTool();
+        else onResetDoorTool();
       }
     };
     window.addEventListener("keydown", cancel);
     return () => window.removeEventListener("keydown", cancel);
-  }, [start, wallTool, onResetWallTool]);
+  }, [start, wallTool, doorTool, onResetWallTool, onResetDoorTool]);
   const geometry = start && hover && wallTool
     ? centeredWallGeometry(graph, start, hover, thicknessMm, [startFace, hoverFace]) : null;
   const previewKey = JSON.stringify([graph, draftRevision, geometry?.edge, thicknessMm]);
@@ -299,13 +308,14 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       return;
     }
     const wallId = (event.target as Element).closest("[data-wall-id]")?.getAttribute("data-wall-id") ?? null;
+    const doorId = (event.target as Element).closest("[data-door-id]")?.getAttribute("data-door-id") ?? null;
     const roomKey = (event.target as Element).closest("[data-room-key]")?.getAttribute("data-room-key") ?? null;
     const handle = (event.target as Element).closest("[data-wall-handle]")?.getAttribute("data-wall-handle") as Handle | null;
     const arrowNode = (event.target as Element).closest("[data-nudge-axis]");
     const arrow = arrowNode ? { axis: arrowNode.getAttribute("data-nudge-axis") as "x" | "y",
       direction: Number(arrowNode.getAttribute("data-nudge-direction")) as -1 | 1 } : null;
     gesture.current = { id: event.pointerId, client: { x: event.clientX, y: event.clientY },
-      viewport: shown, moved: false, wallId, roomKey, handle, arrow };
+      viewport: shown, moved: false, wallId, doorId, roomKey, handle, arrow };
   };
   const move = (event: React.PointerEvent<SVGSVGElement>) => {
     if (pointers.current.has(event.pointerId))
@@ -337,6 +347,11 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       setCursorFace(snapped?.attachment ? { normal: snapped.attachment.normal } : null);
       setHover(snapped?.point ?? null);
       setHoverFace(snapped?.attachment ?? null);
+    } else if (doorTool && event.pointerType === "mouse") {
+      const point = world(event.clientX, event.clientY);
+      const wallId = (event.target as Element).closest("[data-wall-id]")?.getAttribute("data-wall-id") ?? null;
+      const offsetMm = point && wallId ? openingOffset(graph, wallId, point, doorWidthMm) : null;
+      setDoorCursor(wallId && offsetMm !== null ? { wallId, offsetMm } : null);
     }
   };
   const finish = (event: React.PointerEvent<SVGSVGElement>, cancelled = false) => {
@@ -384,8 +399,18 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         setStart(null);
         setStartFace(null);
       }
+    } else if (doorTool) {
+      if (current.doorId) {
+        onSelectDoor(current.doorId);
+        return;
+      }
+      const point = current.wallId ? world(event.clientX, event.clientY) : null;
+      const offsetMm = point && current.wallId
+        ? openingOffset(graph, current.wallId, point, doorWidthMm) : null;
+      if (current.wallId && offsetMm !== null) onPlaceDoor(current.wallId, offsetMm);
     } else {
-      if (current.roomKey) onSelectRoom?.(current.roomKey);
+      if (current.doorId) onSelectDoor(current.doorId);
+      else if (current.roomKey) onSelectRoom?.(current.roomKey);
       else onSelectWall(current.wallId);
     }
   };
@@ -447,6 +472,10 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     </g>;
   };
   const selectedWall = graph.walls.find(wall => wall.id === selectedWallId);
+  const previewDoor = doorCursor ? (() => {
+    const wall = graph.walls.find(candidate => candidate.id === doorCursor.wallId);
+    return wall ? openingCorners(wall, { offsetMm: doorCursor.offsetMm, widthMm: doorWidthMm }) : null;
+  })() : null;
   const handlePoints: Record<Handle, Point> | null = selectedWall ? {
     start: { x: (selectedWall.corners[0].x + selectedWall.corners[3].x) / 2,
       y: (selectedWall.corners[0].y + selectedWall.corners[3].y) / 2 },
@@ -468,7 +497,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         lines.push(<line key={`y${step}-${y}`} x1={left} x2={right} y1={-y} y2={-y} stroke={color} strokeWidth={width / pixelScale} />);
     return lines;
   };
-  return <><svg ref={svg} data-geometry data-physical-canvas tabIndex={0}
+  return <><svg ref={svg} data-geometry data-physical-canvas data-door-tool={doorTool || undefined} tabIndex={0}
     role="application" aria-label="Полотно проекта" viewBox={viewBox}
     style={{ width: "100%", height: "100%", touchAction: "none", display: "block", background: "#fff" }}
     onPointerDown={begin} onPointerMove={move} onPointerUp={event => finish(event)}
@@ -537,6 +566,9 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       </g>}
       {acceptedPreview?.proposedWall && <path d={wallPath(acceptedPreview.proposedWall.corners)}
         fill="#77777780" stroke="#333" strokeWidth={2 / pixelScale} />}
+      {previewDoor && <path data-door-preview d={wallPath(previewDoor)}
+        fill="#f6fbf7" fillOpacity={.92} stroke="#2d684b"
+        strokeWidth={2 / pixelScale} strokeDasharray={`${6 / pixelScale} ${4 / pixelScale}`} />}
       {previewStart && <circle data-wall-start cx={previewStart.x} cy={-previewStart.y}
         r={8 / pixelScale} fill="#333" />}
       {wallTool && !start && cursorFootprint && <g data-wall-cursor>
@@ -559,15 +591,41 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       {previewAngles.map((angle, index) => jointAngleMark(angle, `${angle.junctionId}:${index}`, true))}
     </g>
     {graph.walls.map(wall => <path key={wall.id} data-wall-id={wall.id}
-      tabIndex={wallTool ? -1 : 0} role="button" aria-label="Выбрать стену"
+      tabIndex={wallTool || doorTool ? -1 : 0} role="button" aria-label={doorTool ? "Разместить дверной проём" : "Выбрать стену"}
       aria-pressed={wall.id === selectedWallId}
-      onKeyDown={event => { if (!wallTool && (event.key === "Enter" || event.key === " ")) {
+      onKeyDown={event => { if (!wallTool && !doorTool && (event.key === "Enter" || event.key === " ")) {
         event.preventDefault(); onSelectWall(wall.id);
       } }}
       d={wallPath(wall.corners)} fill={wall.id === selectedWallId ? "#55555577" : "#00000000"}
       stroke={wall.id === selectedWallId ? "#111" : "none"}
       strokeWidth={wall.id === selectedWallId ? 2 / pixelScale : 0} />)}
-    {handlePoints && !wallTool && Object.entries(handlePoints).map(([handle, point]) =>
+    {(graph.openings ?? []).map(opening => {
+      const wall = graph.walls.find(candidate => candidate.id === opening.wallId);
+      if (!wall) return null;
+      const corners = openingCorners(wall, opening);
+      const center = { x: corners.reduce((sum, point) => sum + point.x, 0) / 4,
+        y: corners.reduce((sum, point) => sum + point.y, 0) / 4 };
+      return <g key={opening.id} data-door-id={opening.id} data-wall-id={opening.wallId}
+        role="button" tabIndex={wallTool || doorTool ? -1 : 0}
+        aria-label={`Дверной проём ${displayTenth(opening.widthMm)} мм`}
+        aria-pressed={opening.id === selectedDoorId}
+        onKeyDown={event => { if (!wallTool && !doorTool && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault(); onSelectDoor(opening.id);
+        } }}>
+        <path d={wallPath(corners)} fill={opening.id === selectedDoorId ? "#d7ebdf" : "#fff"}
+          stroke={opening.id === selectedDoorId ? "#285f43" : "transparent"}
+          strokeWidth={2 / pixelScale} />
+        {[0, 1].map(index => <line key={index}
+          x1={corners[index].x} y1={-corners[index].y}
+          x2={corners[3 - index].x} y2={-corners[3 - index].y}
+          stroke="#333" strokeWidth={2 / pixelScale} pointerEvents="none" />)}
+        {!highlightRooms && <text data-door-width x={center.x} y={-center.y + 4 / pixelScale}
+          textAnchor="middle" fontSize={12 / pixelScale} fontWeight={650}
+          fill="#24533d" stroke="#fff" strokeWidth={3 / pixelScale}
+          paintOrder="stroke" pointerEvents="none">{displayTenth(opening.widthMm)} мм</text>}
+      </g>;
+    })}
+    {handlePoints && !wallTool && !doorTool && Object.entries(handlePoints).map(([handle, point]) =>
       <g key={handle} data-wall-handle={handle} role="button" tabIndex={0}
         aria-label={`Точка стены: ${handle === "start" ? "начало" : handle === "end" ? "конец" : "середина"}`}
         onKeyDown={event => { if (event.key === "Enter" || event.key === " ") {
@@ -578,7 +636,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
           fill={selectedHandle === handle ? "#555" : "#fff"}
           stroke="#222" strokeWidth={2 / pixelScale} pointerEvents="none" />
       </g>)}
-    {handlePoints && selectedHandle && !wallTool && ([
+    {handlePoints && selectedHandle && !wallTool && !doorTool && ([
       ["x", -1, "←", -56, 0], ["x", 1, "→", 56, 0],
       ["y", 1, "↑", 0, -56], ["y", -1, "↓", 0, 56],
     ] as const).map(([axis, direction, label, offsetX, offsetY]) => {

@@ -42,19 +42,29 @@ class WallJunctionV5(Model):
         return self
 
 
+class DoorOpeningV5(Model):
+    id: Id
+    wallId: Id
+    offsetMm: float = Field(ge=0, le=10000000)
+    widthMm: float = Field(ge=300, le=3000)
+
+
 class PhysicalGraphV5(Model):
     walls: list[PhysicalWallV5] = Field(max_length=6300)
     junctions: list[WallJunctionV5] = Field(max_length=12600)
+    openings: list[DoorOpeningV5] = Field(default_factory=list, max_length=6300)
 
     @model_validator(mode="after")
     def references(self):
         wall_ids = [wall.id for wall in self.walls]
         junction_ids = [joint.id for joint in self.junctions]
-        if len(wall_ids) != len(set(wall_ids)) or len(junction_ids) != len(set(junction_ids)):
-            raise ValueError("Повтор идентификатора стены или стыка.")
+        opening_ids = [opening.id for opening in self.openings]
+        all_ids = wall_ids + junction_ids + opening_ids
+        if len(all_ids) != len(set(all_ids)):
+            raise ValueError("Повтор идентификатора стены, стыка или дверного проёма.")
         known = set(wall_ids)
         if any(part.wallId not in known for joint in self.junctions for part in joint.participants):
             raise ValueError("Стык ссылается на отсутствующую стену.")
-        if known.intersection(junction_ids):
-            raise ValueError("Идентификатор стыка совпадает с идентификатором стены.")
+        if any(opening.wallId not in known for opening in self.openings):
+            raise ValueError("Дверной проём ссылается на отсутствующую стену.")
         return self
