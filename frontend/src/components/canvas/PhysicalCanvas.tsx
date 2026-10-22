@@ -403,15 +403,11 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   const previewWallId = acceptedPreview?.affectedWallIds[0];
   const previewAngles = previewWallId ? acceptedPreview!.openJointAngles.filter(angle =>
     angle.wallId === previewWallId) : geometry ? immediateJointAngles(geometry) : [];
+  const selectedFace = faces.find(face => face.topologyKey === selectedRoomKey);
   const splitDimensions = splitWallDimensions(
     acceptedPreview?.graph ?? graph, acceptedPreview?.wallArea ?? wallArea, 17 / pixelScale);
-  const otherFaceDimensions = selectedRoomKey ? faces.find(face => face.topologyKey === selectedRoomKey)
-    ?.freeDimensions.filter(dimension => !splitDimensions.some(segment =>
-      Math.abs(dimension.valueMm - segment.lengthMm) <= .2 &&
-      ((Math.hypot(dimension.from.x - segment.from.x, dimension.from.y - segment.from.y) <= .2 &&
-        Math.hypot(dimension.to.x - segment.to.x, dimension.to.y - segment.to.y) <= .2) ||
-       (Math.hypot(dimension.from.x - segment.to.x, dimension.from.y - segment.to.y) <= .2 &&
-        Math.hypot(dimension.to.x - segment.from.x, dimension.to.y - segment.from.y) <= .2)))) ?? [] : [];
+  const shownSplitDimensions = highlightRooms ? [] : splitDimensions;
+  const selectedFaceDimensions = highlightRooms ? selectedFace?.freeDimensions ?? [] : [];
   const previewLength = previewStart && previewEnd && wallTool
     ? Math.hypot(previewEnd.x - previewStart.x, previewEnd.y - previewStart.y) : 0;
   const cursorFootprint = cursor ? (() => {
@@ -451,7 +447,6 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     </g>;
   };
   const selectedWall = graph.walls.find(wall => wall.id === selectedWallId);
-  const selectedFace = faces.find(face => face.topologyKey === selectedRoomKey);
   const handlePoints: Record<Handle, Point> | null = selectedWall ? {
     start: { x: (selectedWall.corners[0].x + selectedWall.corners[3].x) / 2,
       y: (selectedWall.corners[0].y + selectedWall.corners[3].y) / 2 },
@@ -600,21 +595,29 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
           fontSize={17 / pixelScale} fill="#333" pointerEvents="none">{label}</text>
       </g>;
     })}
-    <g pointerEvents="none" fill="#333" fontSize={12 / pixelScale} textAnchor="middle">
-      {splitDimensions.map((dimension, index) => <text key={`segment-${index}`}
+    <g pointerEvents="none" textAnchor="middle">
+      {shownSplitDimensions.map((dimension, index) => <text key={`segment-${index}`}
         data-wall-segment-length={dimension.wallId}
         x={dimension.anchor.x} y={-dimension.anchor.y}
+        fill="#333" fontSize={12 / pixelScale}
         stroke="#fff" strokeWidth={3 / pixelScale} paintOrder="stroke">
         {displayTenth(dimension.lengthMm)} мм
       </text>)}
       {selectedWallId && openJointAngles.filter(angle => angle.wallId === selectedWallId)
         .map((angle, index) => jointAngleMark(angle,
           `${angle.junctionId}:${angle.adjacentWallId}:${index}`))}
-      {selectedFace?.innerAngles.map((angle, index) => <text key={`a${index}`}
-        x={angle.anchor.x} y={-angle.anchor.y}>{displayTenth(angle.valueDeg)}°</text>)}
-      {otherFaceDimensions.map((dimension, index) => <text key={`d${index}`}
+      {highlightRooms && selectedFace?.innerAngles.map((angle, index) => <text key={`a${index}`}
+        data-room-angle x={angle.anchor.x} y={-angle.anchor.y}
+        fill="#873b2f" fontSize={13 / pixelScale} fontWeight={700}
+        stroke="#fff" strokeWidth={4 / pixelScale} paintOrder="stroke">
+        {displayTenth(angle.valueDeg)}°
+      </text>)}
+      {selectedFaceDimensions.map((dimension, index) => <text key={`d${index}`}
+        data-room-dimension
         x={dimension.anchor.x}
-        y={-dimension.anchor.y}>
+        y={-dimension.anchor.y}
+        fill="#213d33" fontSize={13 / pixelScale} fontWeight={650}
+        stroke="#fff" strokeWidth={4 / pixelScale} paintOrder="stroke">
         {displayTenth(dimension.valueMm)} мм
       </text>)}
     </g>

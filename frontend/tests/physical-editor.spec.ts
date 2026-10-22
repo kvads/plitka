@@ -273,6 +273,9 @@ test("physical v6 continues one tile grid through three separate rooms after rel
     JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
   await page.goto("/#project/physical-v6-fixture");
   await page.getByRole("button", { name: "Раскладка", exact: true }).click();
+  await expect(page.locator("[data-wall-segment-length]")).toHaveCount(0);
+  await expect(page.locator("[data-room-dimension]")).toHaveCount(4);
+  await expect(page.locator("[data-room-angle]")).toHaveCount(4);
   const singleRoom = page.getByRole("button", { name: "Одно помещение" });
   const throughRooms = page.getByRole("button", { name: "Сквозная раскладка" });
   await expect(singleRoom).toHaveAttribute("aria-pressed", "true");
