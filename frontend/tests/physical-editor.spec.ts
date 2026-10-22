@@ -72,6 +72,69 @@ test("a free wall begins at the cursor boundary opposite its draw direction", ()
     geometry.edge[1].y - geometry.edge[0].y)).toBe(1050);
 });
 
+test("an oblique snapped wall keeps a straight full-width end cap", () => {
+  const end = { x: 100, y: -700 };
+  const attachment = {
+    point: { x: 100, y: -550 }, center: end,
+    normal: { x: 0, y: -1 }, from: { x: -400, y: -800 }, to: { x: 400, y: -400 },
+    distance: 0, tangentialShift: 0,
+  };
+  const geometry = centeredWallGeometry({ walls: [], junctions: [] },
+    { x: 0, y: 0 }, end, 100, [null, attachment])!;
+  const cap = { x: geometry.corners[2].x - geometry.corners[1].x,
+    y: geometry.corners[2].y - geometry.corners[1].y };
+  expect(Math.hypot(cap.x, cap.y)).toBeCloseTo(100, 1);
+  expect(cap.x * geometry.direction.x + cap.y * geometry.direction.y).toBeCloseTo(0, 1);
+});
+
+test("an oblique wall snapped between two host faces is accepted as two junctions", async ({ request }) => {
+  let graph: ProjectDocumentV6["plan"]["draft"] = { walls: [], junctions: [] };
+  let revision = 0;
+  for (const [edge, side] of [
+    [[[-600, 0], [600, 0]], "right"],
+    [[[-500, -1000], [300, -600]], "left"],
+  ] as const) {
+    const response = await request.post("/api/v5/plan/command", { data: {
+      schemaVersion: 5, commandId: `oblique-host-${revision}`, draftRevision: revision,
+      basisKey: await physicalBasisKey(graph), graph,
+      command: { type: "drawWall", drawnEdge: edge.map(([x, y]) => ({ x, y })),
+        side, thicknessMm: 100 },
+    } });
+    const result = await response.json();
+    expect(result.status).toBe("applied");
+    graph = result.graph;
+    revision++;
+  }
+  const top = graph.walls[0];
+  const lower = graph.walls[1];
+  const startPointer = { x: (top.corners[1].x + top.corners[2].x) / 2,
+    y: (top.corners[1].y + top.corners[2].y) / 2 };
+  const endPointer = { x: (lower.corners[1].x + lower.corners[2].x) / 2,
+    y: (lower.corners[1].y + lower.corners[2].y) / 2 };
+  const startAttachment = nearestCubeAttachment(graph, startPointer, 2, 100)!;
+  const endAttachment = nearestCubeAttachment(graph, endPointer, 2, 100)!;
+  const geometry = centeredWallGeometry(graph, startAttachment.center, endAttachment.center, 100,
+    [startAttachment, endAttachment])!;
+  expect(Math.hypot(geometry.corners[2].x - geometry.corners[1].x,
+    geometry.corners[2].y - geometry.corners[1].y)).toBeCloseTo(100, 1);
+  const response = await request.post("/api/v5/plan/command", { data: {
+    schemaVersion: 5, commandId: "oblique-bridge", draftRevision: revision,
+    basisKey: await physicalBasisKey(graph), graph,
+    command: { type: "drawWall", drawnEdge: geometry.edge, side: "left", thicknessMm: 100 },
+  } });
+  const result = await response.json();
+  expect(result.status, JSON.stringify({ edge: geometry.edge, corners: geometry.corners,
+    issues: result.issues })).toBe("applied");
+  expect(result.graph.walls).toHaveLength(3);
+  expect(result.graph.junctions).toHaveLength(2);
+  const changedTop = result.graph.walls.find((wall: { id: string }) => wall.id === top.id);
+  const changedLower = result.graph.walls.find((wall: { id: string }) => wall.id === lower.id);
+  expect([changedTop.corners[1], changedTop.corners[2]])
+    .not.toEqual([top.corners[1], top.corners[2]]);
+  expect([changedLower.corners[1], changedLower.corners[2]])
+    .not.toEqual([lower.corners[1], lower.corners[2]]);
+});
+
 test("physical v6 continues one tile grid through three separate rooms after reload", async ({ page, request }) => {
   let graph: ProjectDocumentV6["plan"]["draft"] = { walls: [], junctions: [] };
   let faces: { topologyKey: string; polygon: { outline: number[][] } }[] = [];
@@ -256,6 +319,34 @@ test("physical v6 keeps a failed network command for retry after reload", async 
     const plan = JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan;
     return [plan.draft.walls.length, plan.pendingEdit];
   })).toEqual([1, null]);
+});
+
+test("physical v6 keeps a rejected wall message visible until it is dismissed", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Новый проект" }).click();
+  await page.getByRole("textbox", { name: "Название проекта" }).fill("Ошибка стены");
+  await page.getByRole("button", { name: "Создать проект" }).click();
+  await page.route("**/api/v5/plan/command", async route => {
+    const request = route.request().postDataJSON();
+    const response = await route.fetch();
+    const body = await response.json();
+    body.status = "invalid";
+    body.graph = request.graph;
+    body.issues = [{ code: "invalid_geometry", message: "Не удалось построить этот стык.",
+      entityIds: [], affectedRoomKeys: [], scope: "global" }];
+    await route.fulfill({ response, json: body });
+  });
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const canvas = page.locator("[data-physical-canvas]");
+  const box = (await canvas.boundingBox())!;
+  await canvas.click({ position: { x: box.width / 2 - 100, y: box.height / 2 } });
+  await canvas.click({ position: { x: box.width / 2 + 100, y: box.height / 2 } });
+  const error = page.getByRole("alert").filter({ hasText: "Не удалось построить этот стык." });
+  await expect(error).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect(error).toBeVisible();
+  await error.getByRole("button", { name: "Закрыть" }).click();
+  await expect(error).toHaveCount(0);
 });
 
 test("physical v6 mobile panel selects a wall point at low zoom", async ({ browser }) => {

@@ -9,7 +9,8 @@ export function usePhysicalProject(initial: ProjectDocumentV6,
   onSaved: (document: ProjectDocumentV6) => void) {
   const [doc, setDoc] = useState(initial);
   const [response, setResponse] = useState<PhysicalGraphResponseV5 | null>(null);
-  const [error, setError] = useState("");
+  const [validationError, setValidationError] = useState("");
+  const [operationError, setOperationError] = useState("");
   const [busy, setBusy] = useState(false);
   const current = useRef(initial);
   const validationEpoch = useRef(0);
@@ -39,7 +40,7 @@ export function usePhysicalProject(initial: ProjectDocumentV6,
         }
       }
     } catch (cause) {
-      if (alive.current) setError((cause as Error).message);
+      if (alive.current) setOperationError((cause as Error).message);
     } finally {
       saving.current = false;
       if (waiting.current && alive.current) void flush();
@@ -71,7 +72,8 @@ export function usePhysicalProject(initial: ProjectDocumentV6,
       if (alive.current && generation === validationEpoch.current &&
           current.current.plan.draftRevision === doc.plan.draftRevision) {
         setResponse(result);
-        setError(result.status === "invalid" ? result.issues[0]?.message ?? "Геометрия недопустима." : "");
+        setValidationError(result.status === "invalid"
+          ? result.issues[0]?.message ?? "Геометрия недопустима." : "");
         if (result.status === "valid" && result.normalizedGraph &&
             !current.current.plan.pendingEdit)
           update(document => ({ ...document, plan: { ...document.plan,
@@ -79,7 +81,7 @@ export function usePhysicalProject(initial: ProjectDocumentV6,
       }
     }).catch(cause => {
       if (alive.current && generation === validationEpoch.current && !controller.signal.aborted)
-        setError((cause as Error).message);
+        setValidationError((cause as Error).message);
     });
     return () => controller.abort();
   }, [doc.plan.draft, doc.plan.draftRevision, update]);
@@ -88,7 +90,7 @@ export function usePhysicalProject(initial: ProjectDocumentV6,
     if (commandRunning.current) return;
     commandRunning.current = true;
     setBusy(true);
-    setError("");
+    setOperationError("");
     const generation = ++commandEpoch.current;
     try {
       const basisKey = await physicalBasisKey(pending.basisGraph);
@@ -105,7 +107,7 @@ export function usePhysicalProject(initial: ProjectDocumentV6,
           current.current.plan.pendingEdit?.commandId !== pending.commandId)
         return;
       if (result.status !== "applied") {
-        setError(result.issues[0]?.message ?? "Стена не изменена.");
+        setOperationError(result.issues[0]?.message ?? "Стена не изменена.");
         update(document => ({ ...document, plan: { ...document.plan, pendingEdit: null } }));
         return;
       }
@@ -119,7 +121,8 @@ export function usePhysicalProject(initial: ProjectDocumentV6,
         pendingEdit: null,
       } }));
     } catch (cause) {
-      if (alive.current && generation === commandEpoch.current) setError((cause as Error).message);
+      if (alive.current && generation === commandEpoch.current)
+        setOperationError((cause as Error).message);
     } finally {
       commandRunning.current = false;
       if (alive.current) setBusy(false);
@@ -166,10 +169,11 @@ export function usePhysicalProject(initial: ProjectDocumentV6,
     if (commandRunning.current) return;
     commandEpoch.current++;
     update(document => ({ ...document, plan: { ...document.plan, pendingEdit: null } }));
-    setError("");
+    setOperationError("");
   }, [update]);
 
+  const error = operationError || validationError;
   return { doc, response, error, busy, update, command, drawWall,
     undo, canUndo: undoCount > 0, retryPending, discardPending,
-    clearError: () => setError("") };
+    clearError: () => { setOperationError(""); setValidationError(""); } };
 }

@@ -73,15 +73,14 @@ export function nearestCubeAttachment(graph: PhysicalGraphV5, point: Point,
     ? { ...face, point: contact, center, tangentialShift: Math.abs(alignedAlong - along) } : null;
 }
 
-function intersectionOnFace(origin: Point, direction: Point, face: PhysicalFace,
-                            extendSelectedFace = false): number | null {
+function intersectionOnFace(origin: Point, direction: Point, face: PhysicalFace): number | null {
   const segment = difference(face.to, face.from);
   const denominator = cross(direction, segment);
   if (Math.abs(denominator) < .1 * Math.hypot(segment.x, segment.y)) return null;
   const offset = difference(face.from, origin);
   const along = cross(offset, segment) / denominator;
   const ratio = cross(offset, direction) / denominator;
-  return extendSelectedFace || (ratio >= -.001 && ratio <= 1.001) ? along : null;
+  return ratio >= -.001 && ratio <= 1.001 ? along : null;
 }
 
 export function centeredWallGeometry(graph: PhysicalGraphV5, start: Point, end: Point,
@@ -109,14 +108,25 @@ export function centeredWallGeometry(graph: PhysicalGraphV5, start: Point, end: 
   for (const [index, face] of attachments.entries()) {
     if (!face) continue;
     const cap = index === 0 ? drawnStart : drawnEnd;
-    // The face was explicitly selected by the cursor. Near one of its ends a
-    // cap corner can sit just beyond the finite segment, but the whole cap
-    // still has to be brought onto the selected face instead of being left at
-    // the cursor centre with a half-thickness gap.
-    const first = intersectionOnFace(cap, direction, face, true);
-    const second = intersectionOnFace(add(cap, sideOffset), direction, face, true);
-    if (first === null || second === null) continue;
-    const adjustment = index === 0 ? Math.min(0, first, second) : Math.max(0, first, second);
+    // Only intersections with the real face segment may move the wall. Using
+    // the infinite supporting line here made one corner fly far past an
+    // oblique joint and produced a long triangular spike. A single local
+    // corner intersection is sufficient: the server completes the exact
+    // miter while the immediate preview remains a regular wall rectangle.
+    const crossings = [cap, add(cap, sideOffset)]
+      .map(point => intersectionOnFace(point, direction, face))
+      .filter((value): value is number => value !== null);
+    if (crossings.length === 0) {
+      const center = add(cap, sideOffset, .5);
+      const centerCrossing = intersectionOnFace(center, direction, face);
+      if (centerCrossing !== null) crossings.push(centerCrossing);
+    }
+    if (crossings.length === 0) continue;
+    // Move the cap to the closest real crossing regardless of sign. Depending
+    // on the drag angle the selected face can be just ahead of the cursor
+    // centre (shortening) or just behind it (extension).
+    const adjustment = crossings.reduce((best, value) =>
+      Math.abs(value) < Math.abs(best) ? value : best);
     if (Math.abs(adjustment) > thicknessMm * 10) continue;
     if (index === 0) drawnStart = rounded(add(drawnStart, direction, adjustment));
     else drawnEnd = rounded(add(drawnEnd, direction, adjustment));
@@ -124,14 +134,6 @@ export function centeredWallGeometry(graph: PhysicalGraphV5, start: Point, end: 
   const oppositeEnd = rounded(add(drawnEnd, sideOffset));
   const oppositeStart = rounded(add(drawnStart, sideOffset));
   const corners: [Point, Point, Point, Point] = [drawnStart, drawnEnd, oppositeEnd, oppositeStart];
-  for (const [index, face] of attachments.entries()) {
-    if (!face) continue;
-    for (const cornerIndex of index === 0 ? [0, 3] : [1, 2]) {
-      const crossing = intersectionOnFace(corners[cornerIndex], direction, face, true);
-      if (crossing !== null && Math.abs(crossing) < thicknessMm * 10)
-        corners[cornerIndex] = rounded(add(corners[cornerIndex], direction, crossing));
-    }
-  }
   return { edge: [drawnStart, drawnEnd] as [Point, Point],
     corners,
     attachments, direction };

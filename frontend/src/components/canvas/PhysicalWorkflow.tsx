@@ -417,7 +417,10 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           <p>Укажите начало и конец стены на полотне.</p>
         </>}
       </>}
-      {error && <p className="error" role="alert">{error}</p>}
+      {error && <div className="error" role="alert">
+        <span>{error}</span>
+        <button type="button" onClick={project.clearError}>Закрыть</button>
+      </div>}
       {doc.plan.pendingEdit && !busy && <div role="group" aria-label="Незавершённое изменение">
         <button onClick={project.retryPending}>Повторить изменение</button>
         <button onClick={project.discardPending}>Отменить изменение</button>
