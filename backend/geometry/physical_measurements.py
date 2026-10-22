@@ -12,15 +12,43 @@ def _round(value: float) -> float:
     return round(value * 10) / 10
 
 
+def _without_collinear_vertices(outline: list[list[float]]) -> list[list[float]]:
+    """Collapse measurement-only vertices that do not form a visible corner."""
+    points = [list(point) for point in outline]
+    changed = True
+    while changed and len(points) > 3:
+        changed = False
+        for index, current in enumerate(points):
+            previous = points[index - 1]
+            following = points[(index + 1) % len(points)]
+            incoming = (current[0] - previous[0], current[1] - previous[1])
+            outgoing = (following[0] - current[0], following[1] - current[1])
+            lengths = (math.hypot(*incoming), math.hypot(*outgoing))
+            if min(lengths) < .1:
+                points.pop(index)
+                changed = True
+                break
+            cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0]
+            same_direction = incoming[0] * outgoing[0] + incoming[1] * outgoing[1] > 0
+            # Physical coordinates are stored to 0.1 mm. Allow one quantization
+            # step while treating an otherwise straight boundary as one side.
+            if same_direction and abs(cross) / max(lengths) <= .11:
+                points.pop(index)
+                changed = True
+                break
+    return points
+
+
 def face_measurements(outline: list[list[float]]) -> tuple[list[dict], list[dict]]:
     floor = Polygon(outline)
     angles, dimensions = [], []
     if not floor.is_valid or floor.area <= 0:
         return angles, dimensions
+    measurement_outline = _without_collinear_vertices(outline)
     representative = floor.representative_point()
-    for index, (x, y) in enumerate(outline):
-        px, py = outline[index - 1]
-        nx, ny = outline[(index + 1) % len(outline)]
+    for index, (x, y) in enumerate(measurement_outline):
+        px, py = measurement_outline[index - 1]
+        nx, ny = measurement_outline[(index + 1) % len(measurement_outline)]
         before, after = (px - x, py - y), (nx - x, ny - y)
         lengths = (math.hypot(*before), math.hypot(*after))
         if min(lengths) < 0.1:

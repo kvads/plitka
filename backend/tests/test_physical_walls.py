@@ -9,12 +9,25 @@ from backend.geometry.physical_geometry import create_wall
 from backend.geometry.physical_commands import execute_physical
 from backend.geometry.physical_models import PhysicalPoint
 from backend.geometry.physical_junctions import simple_contact, polygon
+from backend.geometry.physical_measurements import face_measurements
 from shapely.geometry import Polygon
 from shapely.geometry import Point as ShapelyPoint
 import pytest
 
 
 client = TestClient(app)
+
+
+def test_room_measurements_ignore_straight_junction_vertices():
+    angles, dimensions = face_measurements([
+        [0, 0], [50, 0], [1000, 0], [1000, 500],
+        [1000, 1000], [0, 1000], [0, 500],
+    ])
+
+    assert len(angles) == 4
+    assert {item["valueDeg"] for item in angles} == {90}
+    assert len(dimensions) == 4
+    assert [item["valueMm"] for item in dimensions] == [1000] * 4
 
 
 def saved_wall():
