@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ChevronsLeft, ChevronsRight, FolderOpen, Grid3X3, PencilRuler, RotateCcw, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronsLeft, ChevronsRight, FolderOpen, Grid3X3, PencilRuler, RotateCcw, X } from "lucide-react";
 import PhysicalCanvas from "./PhysicalCanvas";
 import ProjectMenu from "./ProjectMenu";
 import { usePhysicalProject } from "../../domain/plan/usePhysicalProject";
@@ -369,9 +369,10 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
               <button type="button" aria-pressed={layoutScope === "room"} onClick={() => {
                 setLayoutScope("room");
                 if (doc.sharedGrid) update(current => ({ ...current, sharedGrid: null }));
-              }}>Одно помещение</button>
+              }}>{layoutScope === "room" && <Check aria-hidden="true" />}<span>Одно помещение</span></button>
               <button type="button" aria-pressed={layoutScope === "through"} onClick={() =>
-                setLayoutScope("through")}>Сквозная раскладка</button>
+                setLayoutScope("through")}>{layoutScope === "through" && <Check aria-hidden="true" />}
+                <span>Сквозная раскладка</span></button>
             </div>
             <p className="muted">{layoutScope === "through"
               ? "Одна сетка для всех помещений: швы продолжаются через стены, а стены исключаются из площади плитки."

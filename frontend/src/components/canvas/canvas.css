@@ -145,7 +145,22 @@
 .canvas-panel .layout-scope button {
   min-width: 0;
   min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #d7ded4;
+  background: #fff;
+  color: #29483b;
+  font-weight: 600;
 }
+.canvas-panel .layout-scope button[aria-pressed="true"] {
+  border-color: #284e3f;
+  background: #284e3f;
+  color: #fff;
+  box-shadow: 0 0 0 2px #b8cdbd;
+}
+.canvas-panel .layout-scope button svg { flex: 0 0 auto; width: 17px; height: 17px; }
 .canvas-panel .layout-scope p { margin: 0; line-height: 1.45; }
 .layout-step {
   display: grid;
