@@ -36,6 +36,7 @@ type Props = {
   wallTool: boolean;
   thicknessMm: number;
   onDrawWall: (edge: [Point, Point]) => void;
+  onResetWallTool: () => void;
 };
 
 const svgPath = (polygon: PhysicalPolygonV5) =>
@@ -57,7 +58,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   selectedRoomKey, onSelectRoom,
   highlightRooms = false, roomMissing = {}, roomNames = {}, layouts = [], viewport, onViewport,
   selectedWallId, onSelectWall, selectedHandle, onSelectHandle, onNudge,
-  wallTool, thicknessMm, onDrawWall }: Props) {
+  wallTool, thicknessMm, onDrawWall, onResetWallTool }: Props) {
   const svg = useRef<SVGSVGElement>(null);
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef<Gesture | null>(null);
@@ -116,19 +117,23 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     setCursor(null); setCursorFace(null);
   }, [wallTool]);
   useEffect(() => {
-    if (!start || !wallTool) return;
+    if (!wallTool) return;
     const cancel = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setStart(null);
-        setStartFace(null);
-        setHover(null);
-        setHoverFace(null);
-        setServerPreview(null);
+        if (start) {
+          setStart(null);
+          setStartFace(null);
+          setHover(null);
+          setHoverFace(null);
+          setServerPreview(null);
+        } else {
+          onResetWallTool();
+        }
       }
     };
     window.addEventListener("keydown", cancel);
     return () => window.removeEventListener("keydown", cancel);
-  }, [start, wallTool]);
+  }, [start, wallTool, onResetWallTool]);
   const geometry = start && hover && wallTool
     ? centeredWallGeometry(graph, start, hover, thicknessMm, [startFace, hoverFace]) : null;
   const previewKey = JSON.stringify([graph, draftRevision, geometry?.edge, thicknessMm]);

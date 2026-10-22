@@ -555,8 +555,35 @@ test("physical v6 cancels an unfinished wall by button or Escape", async ({ page
   await canvas.click({ position: first });
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Отменить начало стены" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Завершить инструмент «Стена»" })).toBeVisible();
   expect(await page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.walls)).toEqual([]);
+});
+
+test("physical v6 resets the wall tool by a visible action or Escape", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 740 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Новый проект" }).click();
+  await page.getByRole("textbox", { name: "Название проекта" }).fill("Сброс инструмента");
+  await page.getByRole("button", { name: "Создать проект" }).click();
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const reset = page.getByRole("button", { name: "Завершить инструмент «Стена»" });
+  await expect(reset).toBeVisible();
+  let bounds = (await reset.boundingBox())!;
+  expect(bounds.x).toBeGreaterThanOrEqual(0);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(375);
+  await reset.click();
+  await expect(reset).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Раскрыть меню" }).click();
+  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  await expect(reset).toBeVisible();
+  await page.setViewportSize({ width: 740, height: 375 });
+  bounds = (await reset.boundingBox())!;
+  expect(bounds.y).toBeGreaterThanOrEqual(0);
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(375);
+  await page.keyboard.press("Escape");
+  await expect(reset).toHaveCount(0);
 });
 
 test("physical v6 desktop wall cursor matches wall thickness", async ({ page }) => {

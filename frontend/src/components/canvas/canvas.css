@@ -357,6 +357,19 @@
   border-radius: 9px;
   padding: 6px 10px;
 }
+.physical-reset-wall-tool {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  border: 1px solid #9ba99f;
+  background: #fff;
+  color: #294f3e;
+  font-weight: 650;
+}
+.physical-reset-wall-tool:hover { background: #edf2ee; }
+.physical-reset-wall-tool svg { width: 18px; height: 18px; flex: none; }
 .physical-handle-controls button, .physical-nudge-controls button {
   min-height: 44px;
   min-width: 44px;

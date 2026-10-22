@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ChevronsLeft, ChevronsRight, FolderOpen, Grid3X3, PencilRuler, RotateCcw } from "lucide-react";
+import { ArrowLeft, ChevronsLeft, ChevronsRight, FolderOpen, Grid3X3, PencilRuler, RotateCcw, X } from "lucide-react";
 import PhysicalCanvas from "./PhysicalCanvas";
 import ProjectMenu from "./ProjectMenu";
 import { usePhysicalProject } from "../../domain/plan/usePhysicalProject";
@@ -217,7 +217,8 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           wallId: selectedWallId, handle, axis, direction });
       }}
       wallTool={wallTool && !layoutMode} thicknessMm={thicknessValid ? thickness : 100}
-      onDrawWall={edge => { if (thicknessValid && !busy) void drawWall(edge, "left", thickness); }} />
+      onDrawWall={edge => { if (thicknessValid && !busy) void drawWall(edge, "left", thickness); }}
+      onResetWallTool={() => setWallTool(false)} />
     <div className="canvas-sidebar-shell" data-overlay style={{ position: "absolute", top: 12, left: 12 }}>
       <button className="canvas-sidebar-toggle" aria-label={menuOpen ? "Свернуть меню" : "Раскрыть меню"}
         aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}>
@@ -245,6 +246,11 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     </div>
     {(wallTool || selected || projectMenu || layoutMode || doc.plan.pendingEdit) && <aside className="canvas-panel" data-overlay
       style={{ position: "absolute", right: 12, top: 62, maxWidth: "min(340px, calc(100vw - 72px))", maxHeight: "calc(100dvh - 74px)", overflowY: "auto" }}>
+      {wallTool && !layoutMode && <button type="button" className="physical-reset-wall-tool"
+        onClick={() => setWallTool(false)} title="Также можно нажать Esc без начатой стены">
+        <X aria-hidden="true" />
+        <span>Завершить инструмент «Стена»</span>
+      </button>}
       {projectMenu ? <>
         <ProjectMenu doc={doc} embedded onUpdate={update} onClose={() => setProjectMenu(false)}
           onClear={() => setConfirmClear(true)} onDelete={() => setConfirmDelete(true)}
