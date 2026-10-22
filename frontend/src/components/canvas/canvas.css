@@ -176,20 +176,6 @@
 }
 .layout-scope legend { padding: 0 4px; font-weight: 600; }
 .layout-scope legend .layout-step-number { margin-right: 6px; vertical-align: middle; }
-.layout-room-choice {
-  display: grid;
-  gap: 2px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: #e8efe9;
-}
-.layout-room-choice span, .layout-room-choice small { color: #526358; font-size: 12px; }
-.layout-room-choice .layout-room-change {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid #c9d7cc;
-  color: #70431f;
-}
 .layout-success {
   display: grid;
   gap: 4px;

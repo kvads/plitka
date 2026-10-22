@@ -281,7 +281,7 @@ test("physical v6 continues one tile grid through three separate rooms after rel
   await expect(page.locator('[data-layout-room-id="shared-room-0"]').first()).toBeVisible();
   await expect(page.getByText("3 помещения одной сеткой. Начало — «Коридор»." )).toBeVisible();
   await page.locator(`[data-room-key="${ordered[1].topologyKey}"]`).click();
-  await expect(page.getByText("Вы выбрали новое начало. Сейчас раскладка построена от «Коридор»." )).toBeVisible();
+  await expect(page.locator(".layout-room-choice")).toHaveCount(0);
   await page.getByRole("button", { name: "Пересчитать 3 помещения от «Туалет»" }).click();
   await expect(page.getByText("3 помещения одной сеткой. Начало — «Туалет»." )).toBeVisible();
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0]);

@@ -355,26 +355,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
               ? "Одна сетка для всех помещений: швы продолжаются через стены, а стены исключаются из площади плитки."
               : "Каждое помещение получает независимую сетку и может иметь собственное положение швов."}</p>
           </fieldset>
-          <section className="layout-step" aria-labelledby="layout-room-step">
-            <div className="layout-step-heading">
-              <span className="layout-step-number">2</span>
-              <div><h3 id="layout-room-step">{layoutScope === "through" ? "Выберите начало сетки" : "Выберите помещение"}</h3>
-                <p>{layoutScope === "through"
-                  ? "Нажмите на плане помещение, откуда должны начинаться линии швов."
-                  : "Нажмите нужное помещение на плане."}</p></div>
-            </div>
-            <div className="layout-room-choice">
-              <span>{layoutScope === "through" ? "Начало сетки" : "Помещение"}</span>
-              <strong>{room.name}</strong>
-              {layoutScope === "through" && <small>Будут рассчитаны все замкнутые помещения: {
-                roomCountText(doc.rooms.filter(item => item.binding === "attached").length)}</small>}
-              {layoutScope === "through" && sharedGrid && room.id !== sharedGrid.referenceRoomId &&
-                <small className="layout-room-change">Вы выбрали новое начало. Сейчас раскладка построена от «{referenceRoom?.name}».</small>}
-            </div>
-          </section>
           <section className="layout-step" aria-labelledby="layout-params-step">
             <div className="layout-step-heading">
-              <span className="layout-step-number">3</span>
+              <span className="layout-step-number">2</span>
               <div><h3 id="layout-params-step">Задайте параметры</h3>
                 <p>{layoutScope === "through"
                   ? `Плитка, шов и угол — для всей сетки. Отступ и подрезка — для «${room.name}».`
