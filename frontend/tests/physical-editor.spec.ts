@@ -316,6 +316,14 @@ test("physical v6 continues one tile grid through three separate rooms after rel
     await expect(page.locator(`[data-layout-room-id="${room.id}"]`).first()).toBeVisible();
   await expect(page.locator('[data-layout-room-id="shared-room-0"]').first()).toBeVisible();
   await expect(page.getByText("3 помещения одной сеткой. Начало — «Коридор»." )).toBeVisible();
+  await page.setViewportSize({ width: 375, height: 740 });
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await expect(page.getByRole("img", { name: /В сцене 3 помещения с общей сеткой плитки/ })).toBeVisible();
+  await expect(page.locator(".room-preview-caption strong")).toHaveText("Сквозная раскладка");
+  await expect(page.locator(".room-preview-caption span")).toContainText("3 помещения · Плитка");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
+  await page.getByRole("button", { name: "Раскладка", exact: true }).click();
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.locator(`[data-room-key="${ordered[1].topologyKey}"]`).click();
   await expect(page.locator(".layout-room-choice")).toHaveCount(0);
   await page.getByRole("button", { name: "Пересчитать 3 помещения от «Туалет»" }).click();
@@ -331,6 +339,9 @@ test("physical v6 continues one tile grid through three separate rooms after rel
   await page.reload();
   for (const room of rooms)
     await expect(page.locator(`[data-layout-room-id="${room.id}"]`).first()).toBeVisible();
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await expect(page.getByRole("img", { name: /В сцене 3 помещения с общей сеткой плитки/ })).toBeVisible();
+  await page.getByRole("button", { name: "Раскладка", exact: true }).click();
   expect(recalculations).toHaveLength(3);
   for (const request of recalculations)
     expect([request.tile, request.grout, request.angle, request.offset_x, request.offset_y])
@@ -942,6 +953,9 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.locator("[data-physical-canvas]").getByText("800,0 мм").first()).toBeVisible();
   await page.getByRole("button", { name: "Подобрать раскладку" }).click();
   await expect(page.getByText(/Плиток:/)).toBeVisible();
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await expect(page.getByRole("img", { name: /помещения «Помещение 1»/ })).toBeVisible();
+  await page.getByRole("button", { name: "Раскладка", exact: true }).click();
   const csvDownload = page.waitForEvent("download");
   await page.getByRole("button", { name: "Таблица деталей · CSV" }).click();
   const csv = await csvDownload;

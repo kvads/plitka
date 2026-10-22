@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, ChevronsLeft, ChevronsRight, Cuboid, DoorOpen, FolderOpen, Grid3X3, LoaderCircle, MousePointer2, PencilRuler, RotateCcw, Trash2, X } from "lucide-react";
 import PhysicalCanvas from "./PhysicalCanvas";
 import ProjectMenu from "./ProjectMenu";
@@ -102,6 +102,24 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     return face?.polygon && cached?.key === roomLayoutKey(doc, candidate, face, sharedGrid)
       ? [{ roomId: candidate.id, layout: cached.variants[cached.selected] }] : [];
   });
+  const previewRooms = useMemo(() => {
+    if (layoutScope !== "through") return room && selectedFace?.polygon ? [{
+      id: room.id, name: room.name, polygon: selectedFace.polygon, layout: activeLayout,
+    }] : [];
+    const ids = sharedGrid
+      ? new Set([sharedGrid.referenceRoomId, ...sharedGrid.linkedRoomIds])
+      : new Set(doc.rooms.filter(candidate => candidate.binding === "attached").map(candidate => candidate.id));
+    return doc.rooms.flatMap(candidate => {
+      if (!ids.has(candidate.id) || candidate.binding !== "attached") return [];
+      const face = response?.faces.find(item => item.topologyKey === candidate.topologyKey);
+      if (!face?.polygon || !face.validation.valid) return [];
+      const cached = layoutCache[candidate.id];
+      const key = roomLayoutKey(doc, candidate, face, sharedGrid);
+      return [{ id: candidate.id, name: candidate.name, polygon: face.polygon,
+        layout: sharedGrid && cached?.key === key ? cached.variants[cached.selected] : null }];
+    });
+  }, [layoutScope, room, selectedFace, activeLayout, sharedGrid, doc, response, layoutCache]);
+  const previewThrough = layoutScope === "through" && previewRooms.length > 1;
   const selectedThickness = Number(selectedThicknessInput.replace(",", "."));
   const selectedThicknessValid = Number.isInteger(selectedThickness / 10) && selectedThickness >= 10 && selectedThickness <= 100000;
   const chooseWall = (wallId: string | null) => {
@@ -350,11 +368,12 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   };
   return <div className="app physical-editor" style={{ position: "relative", height: "100dvh", overflow: "hidden" }}>
     {room3D ? <div className="room-preview-fullscreen">
-      {room && selectedFace?.polygon ? <Suspense fallback={
+      {previewRooms.length ? <Suspense fallback={
         <div className="room-preview-fullscreen-loading" role="status">Загружаем 3D-помещение…</div>
       }>
-        <RoomPreview3D polygon={selectedFace.polygon} layout={activeLayout}
-          roomName={room.name} tileSize={sharedGrid?.tile ?? room.material.tile} />
+        <RoomPreview3D rooms={previewRooms}
+          title={previewThrough ? "Сквозная раскладка" : previewRooms[0].name}
+          tileSize={sharedGrid?.tile ?? room?.material.tile ?? 0} through={previewThrough} />
       </Suspense> : <div className="room-preview-empty" role="status">
         <Cuboid aria-hidden="true" />
         <strong>Нет выбранного помещения</strong>

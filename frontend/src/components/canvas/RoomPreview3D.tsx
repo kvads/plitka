@@ -6,11 +6,18 @@ import textureUrl from "../../assets/tile-texture.svg";
 import type { Layout, Point } from "../../types";
 import type { PhysicalPolygonV5 } from "../../domain/plan/types";
 
-type Props = {
+export type RoomPreview3DRoom = {
+  id: string;
+  name: string;
   polygon: PhysicalPolygonV5;
   layout: Layout | null;
-  roomName: string;
+};
+
+type Props = {
+  rooms: RoomPreview3DRoom[];
+  title: string;
   tileSize: number;
+  through: boolean;
 };
 
 const ringShape = (rings: Point[][], cx: number, cy: number) => {
@@ -56,20 +63,34 @@ const normalizeUvs = (geometry: THREE.BufferGeometry) => {
   uv.needsUpdate = true;
 };
 
-export default function RoomPreview3D({ polygon, layout, roomName, tileSize }: Props) {
+const roomCountText = (count: number) => {
+  const mod100 = count % 100;
+  const mod10 = count % 10;
+  const noun = mod100 >= 11 && mod100 <= 14 ? "помещений"
+    : mod10 === 1 ? "помещение" : mod10 >= 2 && mod10 <= 4 ? "помещения" : "помещений";
+  return `${count} ${noun}`;
+};
+
+export default function RoomPreview3D({ rooms, title, tileSize, through }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const resetView = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     const container = host.current;
-    if (!container || polygon.outline.length < 3) return;
+    const visibleRooms = rooms.filter(room => room.polygon.outline.length >= 3);
+    if (!container || !visibleRooms.length) return;
 
-    const xs = polygon.outline.map((point) => point[0]);
-    const ys = polygon.outline.map((point) => point[1]);
-    const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
-    const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
-    const width = (Math.max(...xs) - Math.min(...xs)) / 1000;
-    const depth = (Math.max(...ys) - Math.min(...ys)) / 1000;
+    const points = visibleRooms.flatMap(room => room.polygon.outline);
+    const xs = points.map((point) => point[0]);
+    const ys = points.map((point) => point[1]);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const width = (maxX - minX) / 1000;
+    const depth = (maxY - minY) / 1000;
     const span = Math.max(width, depth, 2);
 
     const scene = new THREE.Scene();
@@ -88,7 +109,9 @@ export default function RoomPreview3D({ polygon, layout, roomName, tileSize }: P
     renderer.domElement.setAttribute("role", "img");
     renderer.domElement.setAttribute(
       "aria-label",
-      `Интерактивная 3D-модель помещения «${roomName}» с серой плиткой на полу.`,
+      through
+        ? `Интерактивная 3D-модель сквозной раскладки. В сцене ${roomCountText(visibleRooms.length)} с общей сеткой плитки.`
+        : `Интерактивная 3D-модель помещения «${visibleRooms[0].name}» с серой плиткой на полу.`,
     );
     container.appendChild(renderer.domElement);
 
@@ -104,22 +127,24 @@ export default function RoomPreview3D({ polygon, layout, roomName, tileSize }: P
 
     const geometries: THREE.BufferGeometry[] = [];
     const materials: THREE.Material[] = [];
-    const roomShape = ringShape(
-      [polygon.outline as Point[], ...(polygon.holes as Point[][])],
-      cx,
-      cy,
-    );
     const groutMaterial = new THREE.MeshStandardMaterial({
       color: 0xd7d8d4,
       roughness: 0.92,
     });
     materials.push(groutMaterial);
-    const floorGeometry = new THREE.ShapeGeometry(roomShape);
-    geometries.push(floorGeometry);
-    const floor = new THREE.Mesh(floorGeometry, groutMaterial);
-    floor.rotation.x = -Math.PI / 2;
-    floor.receiveShadow = true;
-    scene.add(floor);
+    visibleRooms.forEach(room => {
+      const roomShape = ringShape(
+        [room.polygon.outline as Point[], ...(room.polygon.holes as Point[][])],
+        cx,
+        cy,
+      );
+      const floorGeometry = new THREE.ShapeGeometry(roomShape);
+      geometries.push(floorGeometry);
+      const floor = new THREE.Mesh(floorGeometry, groutMaterial);
+      floor.rotation.x = -Math.PI / 2;
+      floor.receiveShadow = true;
+      scene.add(floor);
+    });
 
     const tileMaterial = new THREE.MeshStandardMaterial({
       color: 0x8f938f,
@@ -143,8 +168,8 @@ export default function RoomPreview3D({ polygon, layout, roomName, tileSize }: P
       tileMaterial.needsUpdate = true;
     });
 
-    if (layout) {
-      layout.parts.forEach((part) => {
+    visibleRooms.forEach(room => {
+      room.layout?.parts.forEach((part) => {
         if (!part.rings[0]?.length) return;
         const geometry = new THREE.ShapeGeometry(ringShape(part.rings, cx, cy));
         normalizeUvs(geometry);
@@ -166,7 +191,7 @@ export default function RoomPreview3D({ polygon, layout, roomName, tileSize }: P
           scene.add(new THREE.LineLoop(outlineGeometry, groutLineMaterial));
         });
       });
-    }
+    });
 
     const wallMaterial = new THREE.MeshStandardMaterial({
       color: 0xe9e8e2,
@@ -174,31 +199,41 @@ export default function RoomPreview3D({ polygon, layout, roomName, tileSize }: P
     });
     materials.push(wallMaterial);
     const wallHeight = Math.min(1.2, Math.max(0.65, span * 0.24));
-    const addWalls = (ring: number[][]) => {
-      ring.forEach((point, index) => {
-        const next = ring[(index + 1) % ring.length];
-        const dx = (next[0] - point[0]) / 1000;
-        const dz = -(next[1] - point[1]) / 1000;
-        const midX = ((point[0] + next[0]) / 2 - cx) / 1000;
-        const midZ = -((point[1] + next[1]) / 2 - cy) / 1000;
-        if (midX > 0.02 || midZ > 0.02) return;
-        const length = Math.hypot(dx, dz);
-        const geometry = new THREE.BoxGeometry(length, wallHeight, 0.09);
-        geometries.push(geometry);
-        const wall = new THREE.Mesh(geometry, wallMaterial);
-        wall.position.set(
-          midX,
-          wallHeight / 2,
-          midZ,
-        );
-        wall.rotation.y = Math.atan2(-dz, dx);
-        wall.castShadow = true;
-        wall.receiveShadow = true;
-        scene.add(wall);
+    const wallSegments = new Map<string, { point: number[]; next: number[] }>();
+    const pointKey = (point: number[]) => `${point[0].toFixed(3)},${point[1].toFixed(3)}`;
+    visibleRooms.forEach(room => {
+      [room.polygon.outline, ...room.polygon.holes].forEach(ring => {
+        ring.forEach((point, index) => {
+          const next = ring[(index + 1) % ring.length];
+          const keys = [pointKey(point), pointKey(next)].sort();
+          wallSegments.set(keys.join("|"), { point, next });
+        });
       });
-    };
-    addWalls(polygon.outline);
-    polygon.holes.forEach(addWalls);
+    });
+    const edgeTolerance = Math.max(5, span * 5);
+    wallSegments.forEach(({ point, next }) => {
+      const onNearRightEdge = point[0] >= maxX - edgeTolerance && next[0] >= maxX - edgeTolerance;
+      const onNearFrontEdge = point[1] <= minY + edgeTolerance && next[1] <= minY + edgeTolerance;
+      if (onNearRightEdge || onNearFrontEdge) return;
+      const dx = (next[0] - point[0]) / 1000;
+      const dz = -(next[1] - point[1]) / 1000;
+      const midX = ((point[0] + next[0]) / 2 - cx) / 1000;
+      const midZ = -((point[1] + next[1]) / 2 - cy) / 1000;
+      const length = Math.hypot(dx, dz);
+      if (length < 0.001) return;
+      const geometry = new THREE.BoxGeometry(length, wallHeight, 0.09);
+      geometries.push(geometry);
+      const wall = new THREE.Mesh(geometry, wallMaterial);
+      wall.position.set(
+        midX,
+        wallHeight / 2,
+        midZ,
+      );
+      wall.rotation.y = Math.atan2(-dz, dx);
+      wall.castShadow = true;
+      wall.receiveShadow = true;
+      scene.add(wall);
+    });
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0xa1aaa4, 1.5));
     const keyLight = new THREE.DirectionalLight(0xfff8ed, 3.1);
@@ -247,21 +282,28 @@ export default function RoomPreview3D({ polygon, layout, roomName, tileSize }: P
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [layout, polygon, roomName, tileSize]);
+  }, [rooms, through]);
+
+  const readyLayouts = rooms.filter(room => room.layout).length;
+  const details = readyLayouts === rooms.length && rooms.length
+    ? `${through ? `${roomCountText(rooms.length)} · ` : ""}Плитка ${tileSize} × ${tileSize} мм`
+    : readyLayouts
+      ? `Загружаем раскладку: ${readyLayouts} из ${rooms.length}`
+      : "Сначала рассчитайте раскладку";
 
   return (
     <figure className="room-preview-card">
       <div className="room-preview-canvas" ref={host} />
       <figcaption className="room-preview-caption">
         <div>
-          <strong>{roomName}</strong>
-          <span>{layout ? `Плитка ${tileSize} × ${tileSize} мм` : "Сначала рассчитайте раскладку"}</span>
+          <strong>{title}</strong>
+          <span>{details}</span>
         </div>
         <button
           type="button"
           className="room-preview-reset"
           onClick={() => resetView.current()}
-          aria-label="Вернуть исходный вид помещения"
+          aria-label="Вернуть исходный вид 3D-сцены"
           title="Вернуть исходный вид"
         >
           <RotateCcw size={17} aria-hidden="true" />
