@@ -503,12 +503,6 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         </div>}
       </> : layoutMode ? <>
         <h2>Раскладка</h2>
-        {room && selectedFace?.polygon ? <Suspense fallback={
-          <div className="room-preview-loading" role="status">Загружаем 3D-просмотр…</div>
-        }>
-          <RoomPreview3D polygon={selectedFace.polygon} layout={activeLayout}
-            roomName={room.name} tileSize={sharedGrid?.tile ?? room.material.tile} />
-        </Suspense> : null}
         {room && selectedFace ? <>
           <fieldset className="layout-scope">
             <legend><span className="layout-step-number">1</span> Выберите способ</legend>

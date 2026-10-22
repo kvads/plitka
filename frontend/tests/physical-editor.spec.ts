@@ -936,6 +936,7 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.locator("[data-room-key]")).toHaveAttribute("fill", "#fff4bb");
   await page.locator("[data-room-key]").click();
   await expect(page.getByRole("textbox", { name: "Название помещения" })).toHaveValue("Помещение 1");
+  await expect(page.getByRole("complementary").locator(".room-preview-card")).toHaveCount(0);
   await expect(page.getByText("800 000,0 мм²")).toBeVisible();
   await expect(page.locator("[data-physical-canvas]").getByText("90,0°").first()).toBeVisible();
   await expect(page.locator("[data-physical-canvas]").getByText("800,0 мм").first()).toBeVisible();
