@@ -1238,8 +1238,7 @@ h3 > span {
 .projects-heading h1 {
   font-size: 36px;
 }
-.projects-heading p,
-.projects-note {
+.projects-heading p {
   color: var(--muted);
   font-size: 14px;
   line-height: 1.6;
@@ -1359,10 +1358,6 @@ h3 > span {
 }
 .projects-empty p {
   font-size: 14px;
-}
-.projects-note {
-  font-size: 12px;
-  margin-top: 22px;
 }
 .project-link:focus-visible,
 .project-open:focus-visible {

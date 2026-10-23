@@ -268,10 +268,6 @@ export default function Projects({ onLogout }: { onLogout?: () => void | Promise
             <p>Создайте первый проект, укажите название и адрес.</p>
           </div>
         )}
-        <p className="projects-note">
-          Проекты хранятся в этом браузере. Скачивайте файл проекта для
-          резервной копии.
-        </p>
       </main>
     </div>
   );
