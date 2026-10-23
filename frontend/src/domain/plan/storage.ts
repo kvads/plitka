@@ -297,12 +297,17 @@ export async function saveV6(doc: ProjectDocumentV6, expected: number | null, is
     const rows = readV6(), old = rows.find(row => row.id === doc.id);
     if ((old?.documentRevision ?? null) !== expected)
       throw new Error("Конфликт: проект изменён в другой вкладке. Загрузите сохранённую версию.");
+    // A newer draft can be queued while the preceding database save is still
+    // in flight.  It was derived from the previous in-memory revision, but its
+    // CAS basis is the revision returned by that save.  Keep the document and
+    // expected revision in sync before sending them to the server.
+    const candidate = parseV6({ ...doc, documentRevision: expected ?? 0 });
     let next: ProjectDocumentV6;
     try {
-      next = await saveDatabaseV6(doc, expected);
+      next = await saveDatabaseV6(candidate, expected);
     } catch (error) {
       if (!(error instanceof DatabaseUnavailable)) throw error;
-      next = parseV6({ ...doc, documentRevision: expected === null ? 0 : expected + 1 });
+      next = parseV6({ ...candidate, documentRevision: expected === null ? 0 : expected + 1 });
     }
     writeV6(old ? rows.map(row => row.id === doc.id ? next : row) : [...rows, next]);
     return isCurrent ? { status: "saved" as const, document: next } : next;

@@ -100,6 +100,45 @@ test("v6 catalog is verified before resumable old-project cleanup and keeps CAS"
   }
 });
 
+test("v6 queued save rebases its document revision to the current CAS revision", async () => {
+  const originalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const originalFetch = globalThis.fetch;
+  const current = { ...createV6("Проект", "", "queued-project"), documentRevision: 5 };
+  const items = new Map<string, string>([[KEY_V6, JSON.stringify({
+    schemaVersion: 6, projects: [current],
+  })]]);
+  let sent: any;
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => { items.set(key, value); },
+    removeItem: (key: string) => { items.delete(key); },
+  }});
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {
+    locks: { request: async (_name: string, action: () => unknown) => action() },
+  }});
+  globalThis.fetch = async (_input, init) => {
+    sent = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ document: {
+      ...sent.document, documentRevision: 6,
+    }}), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const staleQueuedDraft = { ...current, name: "Изменённый проект", documentRevision: 4 };
+    const saved = await saveV6(staleQueuedDraft, 5);
+    expect(sent.expectedRevision).toBe(5);
+    expect(sent.document.documentRevision).toBe(5);
+    expect(saved.documentRevision).toBe(6);
+    expect(readV6()[0]).toEqual(saved);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalStorage) Object.defineProperty(globalThis, "localStorage", originalStorage);
+    else delete (globalThis as any).localStorage;
+    if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
+    else delete (globalThis as any).navigator;
+  }
+});
+
 test("old project catalog is removed when the v5 editor opens", async ({ page }) => {
   await page.addInitScript(catalog => {
     if (sessionStorage.getItem("seed-old-project")) return;
