@@ -16,7 +16,7 @@ import { createV6 as createDocument } from "./domain/plan/migration";
 import type { ProjectDocumentV6 as ProjectDocument } from "./domain/plan/types";
 const routeId = () =>
   location.hash.startsWith("#project/") ? location.hash.slice(9) : "";
-export default function Projects() {
+export default function Projects({ onLogout }: { onLogout?: () => void | Promise<void> }) {
   const alert = useAlert(AlertContext);
   const [loaded, setLoaded] = useState({
     rows: [] as ProjectDocument[],
@@ -127,6 +127,7 @@ export default function Projects() {
           плитка.
         </a>
         <span>Планировщик раскладки</span>
+        {onLogout && <button className="auth-logout-inline" onClick={onLogout}>Выйти</button>}
       </header>
       <main className="projects-main">
         <div className="projects-heading">

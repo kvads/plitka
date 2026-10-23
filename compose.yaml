@@ -23,6 +23,7 @@ services:
       target: backend
     command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     environment:
+      APP_PASSWORD: ${APP_PASSWORD:?Set an 8-character APP_PASSWORD in .env}
       PGHOST: db
       PGPORT: 5432
       PGDATABASE: ${POSTGRES_DB:-plitka}

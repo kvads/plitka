@@ -8,6 +8,7 @@ services:
       target: production
     restart: unless-stopped
     environment:
+      APP_PASSWORD: ${APP_PASSWORD:?Set an 8-character APP_PASSWORD}
       PGHOST: ${PGHOST:?Set PGHOST to the PostgreSQL network alias}
       PGPORT: ${PGPORT:-5432}
       PGDATABASE: ${PGDATABASE:?Set PGDATABASE}

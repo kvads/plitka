@@ -422,6 +422,11 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
             if joint:
                 next_graph.junctions.append(joint)
         next_graph.walls.append(wall)
+        # Mitring the new wall can also move a cap of an existing wall. Any
+        # junction already stored for that cap must follow the new physical
+        # edge; otherwise a valid branch drawn into an occupied corner is
+        # rejected as a stale saved junction.
+        next_graph = rebuild_simple_contacts(next_graph, next_graph)
         validate_physical_graph(next_graph)
         return next_graph, [wall_id]
     if kind == "setWallThickness":

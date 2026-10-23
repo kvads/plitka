@@ -8,7 +8,7 @@ import {
 } from "react-alert";
 import { AlertContext } from "./alert-context";
 import AlertTemplate from "./components/AlertTemplate";
-import Projects from "./Projects";
+import AuthGate from "./AuthGate";
 import "./style.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
@@ -23,7 +23,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       containerStyle={{ zIndex: 1000 }}
       context={AlertContext}
     >
-      <Projects />
+      <AuthGate />
     </AlertProvider>
   </React.StrictMode>,
 );

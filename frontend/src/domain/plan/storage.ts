@@ -187,6 +187,54 @@ export async function deleteV5(projectId: string, expectedRevision: number): Pro
 
 export const KEY_V6 = "plitka-projects-v6";
 const V6_OLD_KEYS = [...V5_OLD_KEYS, KEY];
+const V6_DATABASE_MIGRATED = "plitka-projects-v6-database-migrated";
+
+class DatabaseUnavailable extends Error {}
+
+function writeV6(projects: ProjectDocumentV6[]) {
+  localStorage.setItem(KEY_V6, JSON.stringify({ schemaVersion: 6, projects }));
+}
+
+async function projectRequest(path = "", init?: RequestInit): Promise<Record<string, unknown>> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/projects${path}`, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...init?.headers },
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch {
+    throw new Error("Нет связи с сервером. Проект не сохранён.");
+  }
+  let value: unknown;
+  try { value = await response.json(); } catch { value = null; }
+  if (response.status === 503) throw new DatabaseUnavailable();
+  if (response.status === 409)
+    throw new Error("Конфликт: проект изменён в другой вкладке. Загрузите сохранённую версию.");
+  if (!response.ok)
+    throw new Error(`Сервер не сохранил проект (HTTP ${response.status}).`);
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Сервер вернул некорректный ответ.");
+  return value as Record<string, unknown>;
+}
+
+async function readDatabaseV6(): Promise<ProjectDocumentV6[]> {
+  const value = await projectRequest();
+  if (!Array.isArray(value.projects))
+    throw new Error("Сервер вернул некорректный каталог проектов.");
+  const rows = value.projects.map(parseV6);
+  if (new Set(rows.map(row => row.id)).size !== rows.length)
+    throw new Error("Сервер вернул повтор проекта.");
+  return rows;
+}
+
+async function saveDatabaseV6(doc: ProjectDocumentV6, expected: number | null) {
+  const value = await projectRequest(`/${encodeURIComponent(doc.id)}`, {
+    method: "PUT",
+    body: JSON.stringify({ document: doc, expectedRevision: expected }),
+  });
+  return parseV6(value.document);
+}
 
 export function readV6(): ProjectDocumentV6[] {
   const raw = localStorage.getItem(KEY_V6);
@@ -202,13 +250,37 @@ export function readV6(): ProjectDocumentV6[] {
 }
 
 export async function initializeV6(): Promise<ProjectDocumentV6[]> {
-  return lock(() => {
+  return lock(async () => {
     if (localStorage.getItem(KEY_V6) === null) {
-      localStorage.setItem(KEY_V6, JSON.stringify({ schemaVersion: 6, projects: [] }));
+      writeV6([]);
       if (localStorage.getItem(KEY_V6) === null)
         throw new Error("Новый каталог не сохранён. Прежние проекты не удалены.");
     }
-    const rows = readV6();
+    const local = readV6();
+    let rows: ProjectDocumentV6[];
+    try {
+      rows = await readDatabaseV6();
+      // First database-backed launch migrates the browser catalog without
+      // overwriting projects that may already have been created elsewhere.
+      if (localStorage.getItem(V6_DATABASE_MIGRATED) !== "yes") {
+        for (const document of local) {
+          if (!rows.some(row => row.id === document.id)) {
+            try {
+              rows.push(await saveDatabaseV6({ ...document, documentRevision: 0 }, null));
+            } catch (error) {
+              if (!(error instanceof Error) || !error.message.startsWith("Конфликт:")) throw error;
+              rows = await readDatabaseV6();
+            }
+          }
+        }
+        localStorage.setItem(V6_DATABASE_MIGRATED, "yes");
+      }
+      writeV6(rows);
+    } catch (error) {
+      if (!(error instanceof DatabaseUnavailable)) throw error;
+      // Running without PGHOST remains supported for geometry development.
+      rows = local;
+    }
     // Each launch resumes a partially interrupted cleanup after validating v6.
     for (const key of V6_OLD_KEYS) localStorage.removeItem(key);
     return rows;
@@ -220,14 +292,19 @@ export function saveV6(doc: ProjectDocumentV6, expected: number | null,
                        isCurrent: () => boolean): Promise<{status:"saved";document:ProjectDocumentV6}|{status:"skipped"}>;
 export async function saveV6(doc: ProjectDocumentV6, expected: number | null, isCurrent?: () => boolean) {
   if (isCurrent && !isCurrent()) return { status: "skipped" as const };
-  return lock(() => {
+  return lock(async () => {
     if (isCurrent && !isCurrent()) return { status: "skipped" as const };
     const rows = readV6(), old = rows.find(row => row.id === doc.id);
     if ((old?.documentRevision ?? null) !== expected)
       throw new Error("Конфликт: проект изменён в другой вкладке. Загрузите сохранённую версию.");
-    const next = parseV6({ ...doc, documentRevision: expected === null ? 0 : expected + 1 });
-    localStorage.setItem(KEY_V6, JSON.stringify({ schemaVersion: 6,
-      projects: old ? rows.map(row => row.id === doc.id ? next : row) : [...rows, next] }));
+    let next: ProjectDocumentV6;
+    try {
+      next = await saveDatabaseV6(doc, expected);
+    } catch (error) {
+      if (!(error instanceof DatabaseUnavailable)) throw error;
+      next = parseV6({ ...doc, documentRevision: expected === null ? 0 : expected + 1 });
+    }
+    writeV6(old ? rows.map(row => row.id === doc.id ? next : row) : [...rows, next]);
     return isCurrent ? { status: "saved" as const, document: next } : next;
   });
 }
@@ -238,13 +315,35 @@ export async function deleteV6(projectId: string, expectedRevision: number): Pro
 > {
   if (!projectId.trim() || !Number.isInteger(expectedRevision) || expectedRevision < 0)
     throw new Error("Некорректное подтверждение удаления проекта.");
-  return lock(() => {
+  return lock(async () => {
     const projects = readV6(), current = projects.find(row => row.id === projectId);
     if (!current) return { status: "alreadyMissing", projectId, projects };
     if (current.documentRevision !== expectedRevision)
       return { status: "conflict", projectId, projects, current };
+    try {
+      const value = await projectRequest(
+        `/${encodeURIComponent(projectId)}?expectedRevision=${expectedRevision}`,
+        { method: "DELETE" },
+      );
+      if (value.status === "alreadyMissing") {
+        const remaining = projects.filter(row => row.id !== projectId);
+        writeV6(remaining);
+        return { status: "alreadyMissing", projectId, projects: remaining };
+      }
+      if (value.status !== "deleted")
+        throw new Error("Сервер вернул некорректный результат удаления.");
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Конфликт:")) {
+        const latest = await readDatabaseV6();
+        writeV6(latest);
+        const serverCurrent = latest.find(row => row.id === projectId);
+        if (!serverCurrent) return { status: "alreadyMissing", projectId, projects: latest };
+        return { status: "conflict", projectId, projects: latest, current: serverCurrent };
+      }
+      if (!(error instanceof DatabaseUnavailable)) throw error;
+    }
     const remaining = projects.filter(row => row.id !== projectId);
-    localStorage.setItem(KEY_V6, JSON.stringify({ schemaVersion: 6, projects: remaining }));
+    writeV6(remaining);
     return { status: "deleted", projectId, projects: remaining };
   });
 }

@@ -295,6 +295,39 @@ def test_l_junction_redefines_both_wall_caps_on_one_shared_miter():
     assert len(body["wallArea"]) == 1
 
 
+def test_wall_can_join_an_existing_l_corner_without_stale_junction_data():
+    graph = {"walls": [], "junctions": [], "openings": []}
+    for command_id, edge in [
+        ("occupied-corner-vertical", [(450, 150), (450, 950)]),
+        ("occupied-corner-bottom", [(450, 950), (900, 950)]),
+    ]:
+        result = client.post("/api/v5/plan/command", json={
+            **command_request(graph), "commandId": command_id,
+            "command": {"type": "drawWall", "drawnEdge": [
+                {"x": x, "y": y} for x, y in edge],
+                "side": "right", "thicknessMm": 50},
+        }).json()
+        assert result["status"] == "applied", result["issues"]
+        graph = result["graph"]
+
+    old_joint_id = graph["junctions"][0]["id"]
+    joined = client.post("/api/v5/plan/command", json={
+        **command_request(graph), "commandId": "join-occupied-corner",
+        "command": {"type": "drawWall", "drawnEdge": [
+            {"x": 100, "y": 900}, {"x": 500, "y": 900}],
+            "side": "left", "thicknessMm": 50},
+    }).json()
+
+    assert joined["status"] == "applied", joined["issues"]
+    assert len(joined["graph"]["junctions"]) == 3
+    repaired = next(item for item in joined["graph"]["junctions"]
+                    if item["id"] == old_joint_id)
+    assert {part["point"]["y"] for part in repaired["participants"]} == {900}
+    validated = client.post("/api/v5/plan/validate",
+                            json=request(joined["graph"])).json()
+    assert validated["status"] == "valid", validated["issues"]
+
+
 def test_l_junction_rebuilds_both_caps_after_thickness_change():
     joined = client.post("/api/v5/plan/command", json={
         **command_request(saved_wall()), "commandId": "resize-l-source",
