@@ -672,6 +672,26 @@ def test_physical_deletion_preview_and_command_remove_wall_and_joint_atomically(
     assert applied["graph"] == initial
 
 
+def test_deleting_corner_wall_restores_square_cap_of_remaining_wall():
+    initial = saved_wall()
+    joined = client.post("/api/v5/plan/command", json={
+        **command_request(initial), "commandId": "corner-for-delete",
+        "command": {"type": "drawWall", "drawnEdge": [
+            {"x": 1000, "y": 0}, {"x": 1000, "y": 1000}],
+            "side": "left", "thicknessMm": 100},
+    }).json()
+    assert joined["status"] == "applied", joined["issues"]
+    assert joined["graph"]["walls"][0]["corners"][2] == {"x": 900, "y": 100}
+
+    deleted = client.post("/api/v5/plan/command", json={
+        **command_request(joined["graph"]), "commandId": "delete-corner",
+        "command": {"type": "deleteWall", "wallId": "wall-corner-for-delete"},
+    }).json()
+
+    assert deleted["status"] == "applied", deleted["issues"]
+    assert deleted["graph"] == initial
+
+
 def test_four_physical_walls_can_form_one_closed_free_area():
     specs = [
         ("bottom", ((0, 0), (1000, 0)), "right"),

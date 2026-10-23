@@ -196,6 +196,19 @@ def _replace_cap(wall: PhysicalWallV5, cap_index: int,
     return wall.model_copy(update={"drawnEdge": edge, "corners": corners})
 
 
+def _restore_square_cap(wall: PhysicalWallV5, cap_index: int) -> PhysicalWallV5:
+    """Remove a joint miter from one cap while preserving the drawn edge.
+
+    A cap-to-cap joint may move either or both cap corners.  The drawn edge is
+    the wall's user-authored baseline, so its canonical perpendicular offset
+    is also the canonical free cap after that joint is removed.
+    """
+    canonical = create_wall(wall.id, wall.drawnEdge, wall.side, wall.thicknessMm)
+    opposite_index = 3 if cap_index == 0 else 2
+    return _replace_cap(wall, cap_index, canonical.corners[cap_index],
+                        canonical.corners[opposite_index])
+
+
 def _miter_end_caps(first: PhysicalWallV5, second: PhysicalWallV5
                     ) -> tuple[PhysicalWallV5, PhysicalWallV5] | None:
     """Join two nearby wall ends by moving both caps to one shared miter.
@@ -519,12 +532,30 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
         wall_id = command["wallId"]
         if not isinstance(wall_id, str) or not any(wall.id == wall_id for wall in graph.walls):
             raise ValueError("Стена не найдена.")
+        surviving_joints = [joint for joint in graph.junctions
+                            if all(part.wallId != wall_id for part in joint.participants)]
+        occupied_caps = {(part.wallId, part.edge) for joint in surviving_joints
+                         for part in joint.participants
+                         if part.edge in ("startCap", "endCap")}
+        freed_caps = {(part.wallId, part.edge) for joint in graph.junctions
+                      if any(part.wallId == wall_id for part in joint.participants)
+                      for part in joint.participants
+                      if (part.wallId != wall_id and
+                          part.edge in ("startCap", "endCap") and
+                          (part.wallId, part.edge) not in occupied_caps)}
+        remaining_walls = deepcopy([wall for wall in graph.walls if wall.id != wall_id])
+        for index, wall in enumerate(remaining_walls):
+            if (wall.id, "startCap") in freed_caps:
+                wall = _restore_square_cap(wall, 0)
+            if (wall.id, "endCap") in freed_caps:
+                wall = _restore_square_cap(wall, 1)
+            remaining_walls[index] = wall
         next_graph = PhysicalGraphV5(
-            walls=[wall for wall in graph.walls if wall.id != wall_id],
-            junctions=[joint for joint in graph.junctions
-                       if all(part.wallId != wall_id for part in joint.participants)],
+            walls=remaining_walls,
+            junctions=deepcopy(surviving_joints),
             openings=[opening for opening in graph.openings if opening.wallId != wall_id],
         )
+        next_graph = rebuild_simple_contacts(next_graph, next_graph)
         validate_physical_graph(next_graph)
         return next_graph, [wall_id]
     raise ValueError("Неизвестная команда стены.")
