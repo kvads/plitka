@@ -53,6 +53,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const [doorWidthInput, setDoorWidthInput] = useState("800");
   const [selectedDoorWidthInput, setSelectedDoorWidthInput] = useState("");
   const [selectedDoorRevealInput, setSelectedDoorRevealInput] = useState("");
+  const [selectedDoorOppositeRevealInput, setSelectedDoorOppositeRevealInput] = useState("");
   const [selectedDoorId, setSelectedDoorId] = useState<string | null>(null);
   const [selectedThicknessInput, setSelectedThicknessInput] = useState("");
   const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
@@ -87,8 +88,10 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const selectedDoorWidth = Number(selectedDoorWidthInput.replace(",", "."));
   const selectedDoorWidthValid = Number.isInteger(selectedDoorWidth / 10) && selectedDoorWidth >= 300 && selectedDoorWidth <= 3000;
   const selectedDoorReveal = Number(selectedDoorRevealInput.replace(",", "."));
+  const selectedDoorOppositeReveal = Number(selectedDoorOppositeRevealInput.replace(",", "."));
   const selectedDoorRevealValid = !!selectedDoorWall && isTenth(selectedDoorReveal) &&
-    selectedDoorReveal >= 0 && selectedDoorReveal <= selectedDoorWall.thicknessMm;
+    isTenth(selectedDoorOppositeReveal) && selectedDoorReveal >= 0 && selectedDoorOppositeReveal >= 0 &&
+    Math.abs(selectedDoorReveal + selectedDoorOppositeReveal - selectedDoorWall.thicknessMm) < 0.05;
   useEffect(() => { if (selectedWallId && !selected) {
     setSelectedWallId(null); setSelectedHandle(null);
   } }, [selectedWallId, selected]);
@@ -108,23 +111,18 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       ? [{ roomId: candidate.id, layout: cached.variants[cached.selected] }] : [];
   });
   const previewRooms = useMemo(() => {
-    if (layoutScope !== "through") return room && selectedFace?.polygon ? [{
-      id: room.id, name: room.name, polygon: selectedFace.polygon, layout: activeLayout,
-    }] : [];
-    const ids = sharedGrid
-      ? new Set([sharedGrid.referenceRoomId, ...sharedGrid.linkedRoomIds])
-      : new Set(doc.rooms.filter(candidate => candidate.binding === "attached").map(candidate => candidate.id));
     return doc.rooms.flatMap(candidate => {
-      if (!ids.has(candidate.id) || candidate.binding !== "attached") return [];
+      if (candidate.binding !== "attached") return [];
       const face = response?.faces.find(item => item.topologyKey === candidate.topologyKey);
       if (!face?.polygon || !face.validation.valid) return [];
       const cached = layoutCache[candidate.id];
       const key = roomLayoutKey(doc, candidate, face, sharedGrid);
       return [{ id: candidate.id, name: candidate.name, polygon: face.polygon,
-        layout: sharedGrid && cached?.key === key ? cached.variants[cached.selected] : null }];
+        layout: cached?.key === key ? cached.variants[cached.selected] : null }];
     });
-  }, [layoutScope, room, selectedFace, activeLayout, sharedGrid, doc, response, layoutCache]);
-  const previewThrough = layoutScope === "through" && previewRooms.length > 1;
+  }, [sharedGrid, doc, response, layoutCache]);
+  const previewMultiple = previewRooms.length > 1;
+  const previewThrough = layoutScope === "through" && previewMultiple;
   const selectedThickness = Number(selectedThicknessInput.replace(",", "."));
   const selectedThicknessValid = Number.isInteger(selectedThickness / 10) && selectedThickness >= 10 && selectedThickness <= 100000;
   const chooseWall = (wallId: string | null) => {
@@ -141,9 +139,21 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     const opening = (doc.plan.draft.openings ?? []).find(opening => opening.id === openingId);
     const wall = doc.plan.draft.walls.find(wall => wall.id === opening?.wallId);
     setSelectedDoorWidthInput(String(opening?.widthMm ?? ""));
-    setSelectedDoorRevealInput(String(opening
-      ? opening.revealDepthMm ?? (wall?.thicknessMm ?? 0) / 2
-      : ""));
+    const reveal = opening ? opening.revealDepthMm ?? (wall?.thicknessMm ?? 0) / 2 : null;
+    setSelectedDoorRevealInput(reveal === null ? "" : String(reveal));
+    setSelectedDoorOppositeRevealInput(reveal === null ? "" : String((wall?.thicknessMm ?? 0) - reveal));
+  };
+  const setDoorRevealFromOpeningSide = (value: string) => {
+    setSelectedDoorRevealInput(value);
+    const parsed = Number(value.replace(",", "."));
+    if (selectedDoorWall && isTenth(parsed) && parsed >= 0 && parsed <= selectedDoorWall.thicknessMm)
+      setSelectedDoorOppositeRevealInput(String(Math.round((selectedDoorWall.thicknessMm - parsed) * 10) / 10));
+  };
+  const setDoorRevealFromOppositeSide = (value: string) => {
+    setSelectedDoorOppositeRevealInput(value);
+    const parsed = Number(value.replace(",", "."));
+    if (selectedDoorWall && isTenth(parsed) && parsed >= 0 && parsed <= selectedDoorWall.thicknessMm)
+      setSelectedDoorRevealInput(String(Math.round((selectedDoorWall.thicknessMm - parsed) * 10) / 10));
   };
   const layoutMode = doc.workflow.requestedStage === "variants";
   useEffect(() => {
@@ -381,8 +391,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         <div className="room-preview-fullscreen-loading" role="status">Загружаем 3D-помещение…</div>
       }>
         <RoomPreview3D rooms={previewRooms}
-          title={previewThrough ? "Сквозная раскладка" : previewRooms[0].name}
+          title={previewThrough ? "Сквозная раскладка" : previewMultiple ? "Все помещения" : previewRooms[0].name}
           tileSize={sharedGrid?.tile ?? room?.material.tile ?? 0} through={previewThrough}
+          multiRoom={previewMultiple}
           graph={doc.plan.draft} />
       </Suspense> : <div className="room-preview-empty" role="status">
         <Cuboid aria-hidden="true" />
@@ -629,17 +640,20 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
             Введите ширину от 300 до 3000 мм с шагом 10 мм.
           </p>}
           {selectedDoor ? <>
-            <label>Глубина откоса, мм<input type="number" min="0"
+            <label>Откос со стороны открывания, мм<input type="number" min="0"
               max={selectedDoorWall?.thicknessMm ?? 0} step="0.1"
               value={selectedDoorRevealInput}
-              onChange={event => setSelectedDoorRevealInput(event.target.value)} /></label>
+              onChange={event => setDoorRevealFromOpeningSide(event.target.value)} /></label>
+            <label>Откос с противоположной стороны, мм<input type="number" min="0"
+              max={selectedDoorWall?.thicknessMm ?? 0} step="0.1"
+              value={selectedDoorOppositeRevealInput}
+              onChange={event => setDoorRevealFromOppositeSide(event.target.value)} /></label>
             {!selectedDoorRevealValid && <p role="alert">
-              Введите глубину от 0 до {displayTenth(selectedDoorWall?.thicknessMm ?? 0)} мм
-              с шагом 0,1 мм.
+              Введите два откоса от 0 до {displayTenth(selectedDoorWall?.thicknessMm ?? 0)} мм.
+              Их сумма должна совпадать с толщиной стены, шаг — 0,1 мм.
             </p>}
-            <small className="muted">Отсчитывается от линии, по которой была построена стена.
-              С другой стороны остаётся {displayTenth(Math.max(0,
-                (selectedDoorWall?.thicknessMm ?? 0) - (selectedDoorRevealValid ? selectedDoorReveal : 0)))} мм.</small>
+            <small className="muted">Положение коробки внутри стены. Измените любой откос — второй
+              пересчитается автоматически. Вместе: {displayTenth(selectedDoorWall?.thicknessMm ?? 0)} мм.</small>
             <button disabled={busy || !selectedDoorWidthValid || !selectedDoorRevealValid}
               onClick={() => void command({
                 type: "setDoorProperties", openingId: selectedDoor.id,
@@ -648,7 +662,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
             <button onClick={() => chooseDoor(null)}>Снять выделение</button>
           </> : <>
             <p>Нажмите на стену — проём разместится по центру указанной точки.</p>
-            <small className="muted">Новый откос занимает половину толщины стены. Точную глубину можно задать после размещения.</small>
+            <small className="muted">Новая коробка ставится по центру стены. После размещения можно отдельно задать откос с каждой стороны.</small>
           </>}
         </> : <>
         <h2>{selected ? "Стена" : "Новая стена"}</h2>

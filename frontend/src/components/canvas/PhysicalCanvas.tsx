@@ -647,8 +647,11 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       const ux = (end.x - start.x) / length, uy = (end.y - start.y) / length;
       const sign = wall.side === "left" ? 1 : -1;
       const wallNormal = { x: -uy * sign, y: ux * sign };
-      const hinge = corners[0];
-      const closed = corners[1];
+      const revealDepth = opening.revealDepthMm ?? wall.thicknessMm / 2;
+      const hinge = { x: corners[0].x + wallNormal.x * revealDepth,
+        y: corners[0].y + wallNormal.y * revealDepth };
+      const closed = { x: corners[1].x + wallNormal.x * revealDepth,
+        y: corners[1].y + wallNormal.y * revealDepth };
       const opened = { x: hinge.x - wallNormal.x * opening.widthMm,
         y: hinge.y - wallNormal.y * opening.widthMm };
       const closedSvg = { x: closed.x, y: -closed.y };

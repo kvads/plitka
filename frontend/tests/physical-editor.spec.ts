@@ -304,6 +304,11 @@ test("physical v6 continues one tile grid through three separate rooms after rel
   const throughRooms = page.getByRole("button", { name: "Сквозная раскладка" });
   await expect(singleRoom).toHaveAttribute("aria-pressed", "true");
   await expect(singleRoom.locator("svg")).toHaveCount(1);
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await expect(page.getByRole("img", { name: /3D-модель всех помещений. В сцене 3 помещения/ })).toBeVisible();
+  await expect(page.locator(".room-preview-caption strong")).toHaveText("Все помещения");
+  await expect(page.getByRole("button", { name: "Показать стены" })).toHaveAttribute("aria-pressed", "false");
+  await page.getByRole("button", { name: "Раскладка", exact: true }).click();
   await page.getByRole("button", { name: "Сквозная раскладка" }).click();
   await expect(throughRooms).toHaveAttribute("aria-pressed", "true");
   await expect(throughRooms.locator("svg")).toHaveCount(1);
@@ -725,8 +730,13 @@ test("physical v6 creates, resizes, persists, and deletes a door opening", async
   await page.locator("[data-door-id]").click();
   await expect(page.getByRole("heading", { name: "Дверной проём" })).toBeVisible();
   await page.getByRole("spinbutton", { name: "Ширина проёма, мм" }).fill("600");
-  await expect(page.getByRole("spinbutton", { name: "Глубина откоса, мм" })).toHaveValue("50");
-  await page.getByRole("spinbutton", { name: "Глубина откоса, мм" }).fill("30");
+  await expect(page.getByRole("spinbutton", { name: "Откос со стороны открывания, мм" })).toHaveValue("50");
+  await expect(page.getByRole("spinbutton", { name: "Откос с противоположной стороны, мм" })).toHaveValue("50");
+  await page.getByRole("spinbutton", { name: "Откос со стороны открывания, мм" }).fill("30");
+  await expect(page.getByRole("spinbutton", { name: "Откос с противоположной стороны, мм" })).toHaveValue("70");
+  await page.getByRole("spinbutton", { name: "Откос с противоположной стороны, мм" }).fill("100");
+  await expect(page.getByRole("spinbutton", { name: "Откос со стороны открывания, мм" })).toHaveValue("0");
+  await page.getByRole("spinbutton", { name: "Откос со стороны открывания, мм" }).fill("30");
   await page.getByRole("button", { name: "Применить параметры" }).click();
   await expect.poll(() => page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.openings[0].widthMm)).toBe(600);

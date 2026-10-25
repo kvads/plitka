@@ -18,6 +18,7 @@ type Props = {
   title: string;
   tileSize: number;
   through: boolean;
+  multiRoom: boolean;
   graph: PhysicalGraphV5;
 };
 
@@ -72,12 +73,12 @@ const roomCountText = (count: number) => {
   return `${count} ${noun}`;
 };
 
-export default function RoomPreview3D({ rooms, title, tileSize, through, graph }: Props) {
+export default function RoomPreview3D({ rooms, title, tileSize, through, multiRoom, graph }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const resetView = useRef<() => void>(() => undefined);
-  const [showWalls, setShowWalls] = useState(() => !through);
+  const [showWalls, setShowWalls] = useState(() => !multiRoom);
 
-  useEffect(() => setShowWalls(!through), [through]);
+  useEffect(() => setShowWalls(!multiRoom), [multiRoom]);
 
   useEffect(() => {
     const container = host.current;
@@ -115,7 +116,9 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, graph }
       "aria-label",
       through
         ? `Интерактивная 3D-модель сквозной раскладки. В сцене ${roomCountText(visibleRooms.length)} с общей сеткой плитки.`
-        : `Интерактивная 3D-модель помещения «${visibleRooms[0].name}» с серой плиткой на полу.`,
+        : multiRoom
+          ? `Интерактивная 3D-модель всех помещений. В сцене ${roomCountText(visibleRooms.length)}.`
+          : `Интерактивная 3D-модель помещения «${visibleRooms[0].name}» с серой плиткой на полу.`,
     );
     container.appendChild(renderer.domElement);
 
@@ -299,14 +302,18 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, graph }
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [rooms, through, graph, showWalls]);
+  }, [rooms, through, multiRoom, graph, showWalls]);
 
   const readyLayouts = rooms.filter(room => room.layout).length;
   const details = readyLayouts === rooms.length && rooms.length
-    ? `${through ? `${roomCountText(rooms.length)} · ` : ""}Плитка ${tileSize} × ${tileSize} мм`
+    ? through
+      ? `${roomCountText(rooms.length)} · Плитка ${tileSize} × ${tileSize} мм`
+      : multiRoom
+        ? `${roomCountText(rooms.length)} · раскладки рассчитаны`
+        : `Плитка ${tileSize} × ${tileSize} мм`
     : readyLayouts
-      ? `Загружаем раскладку: ${readyLayouts} из ${rooms.length}`
-      : "Сначала рассчитайте раскладку";
+      ? `Рассчитано раскладок: ${readyLayouts} из ${rooms.length}`
+      : multiRoom ? "Рассчитайте раскладку хотя бы одного помещения" : "Сначала рассчитайте раскладку";
 
   return (
     <figure className="room-preview-card">
