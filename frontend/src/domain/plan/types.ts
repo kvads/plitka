@@ -95,6 +95,7 @@ export type DoorOpeningV5 = {
   wallId: string;
   offsetMm: number;
   widthMm: number;
+  revealDepthMm?: number;
 };
 export type PhysicalGraphV5 = {
   walls: PhysicalWallV5[];
@@ -105,6 +106,7 @@ export type PhysicalCommandV5 =
   | { type: "drawWall"; drawnEdge: [Point, Point]; side: "left" | "right"; thicknessMm?: number }
   | { type: "addDoorOpening"; wallId: string; offsetMm: number; widthMm: number }
   | { type: "setDoorWidth"; openingId: string; widthMm: number }
+  | { type: "setDoorProperties"; openingId: string; widthMm: number; revealDepthMm: number }
   | { type: "deleteDoorOpening"; openingId: string }
   | { type: "setWallThickness"; wallId: string; thicknessMm: number }
   | { type: "nudgeWallHandle"; wallId: string; handle: "start" | "center" | "end"; axis: "x" | "y"; direction: -1 | 1 }

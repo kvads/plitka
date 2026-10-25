@@ -3,7 +3,7 @@
 import hashlib
 import json
 
-from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry import LineString, MultiPolygon, Polygon
 from shapely.ops import unary_union
 
 from .physical_junctions import polygon
@@ -65,21 +65,37 @@ def derive_physical_faces(graph: PhysicalGraphV5) -> list[dict]:
 
     walls = {wall.id: wall for wall in graph.walls}
     for opening in graph.openings:
-        _, drawn_half, opposite_half = opening_parts(walls[opening.wallId], opening)
+        wall = walls[opening.wallId]
+        opening_shape, drawn_half, opposite_half = opening_parts(wall, opening)
+        drawn_edge = opening_shape.boundary.intersection(LineString([
+            (wall.corners[0].x, wall.corners[0].y),
+            (wall.corners[1].x, wall.corners[1].y),
+        ]))
+        opposite_edge = opening_shape.boundary.intersection(LineString([
+            (wall.corners[3].x, wall.corners[3].y),
+            (wall.corners[2].x, wall.corners[2].y),
+        ]))
         sides = []
-        for half in (drawn_half, opposite_half):
-            matches = sorted(((candidate["floor"].boundary.intersection(half.boundary).length,
+        for edge in (drawn_edge, opposite_edge):
+            matches = sorted(((candidate["floor"].boundary.intersection(edge).length,
                                candidate) for candidate in candidates),
                              key=lambda item: item[0], reverse=True)
             sides.append(matches[0][1] if matches and matches[0][0] > opening.widthMm / 2 else None)
         first, second = sides
-        if first is None or second is None or first is second:
-            continue
-        for candidate, half, other in ((first, drawn_half, second),
-                                       (second, opposite_half, first)):
+        # The door frame normally sits inside the wall thickness rather than
+        # flush with the room face.  Keep the reveal/threshold half belonging
+        # to every room even when the other side of the opening is outdoors or
+        # otherwise has no derived room.  Previously those one-sided reveals
+        # were discarded, so the layout stopped at the wall face.
+        for candidate, half in ((first, drawn_half), (second, opposite_half)):
+            if candidate is None:
+                continue
             candidate["shape"] = candidate["shape"].union(half)
-            candidate["connectedRoomKeys"].add(other["topologyKey"])
-            candidate["doorIds"].append(opening.id)
+            if opening.id not in candidate["doorIds"]:
+                candidate["doorIds"].append(opening.id)
+        if first is not None and second is not None and first is not second:
+            first["connectedRoomKeys"].add(second["topologyKey"])
+            second["connectedRoomKeys"].add(first["topologyKey"])
 
     faces = []
     for candidate in candidates:

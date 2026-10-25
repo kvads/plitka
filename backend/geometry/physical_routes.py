@@ -60,7 +60,7 @@ def _base(req: PhysicalRequestV5, status: str, issues: list[dict]) -> dict:
         "draftRevision": req.draftRevision,
         "basisKey": req.basisKey,
         "status": status,
-        "graph": req.graph.model_dump(mode="json"),
+        "graph": req.graph.model_dump(mode="json", exclude_none=True),
         "affectedWallIds": [],
         "wallArea": [],
         "faces": [],
@@ -111,7 +111,7 @@ async def validate_route(request: Request):
     result["openJointAngles"] = derive_open_joint_angles(req.graph)
     normalized = normalize_mitered_contacts(req.graph)
     if normalized != req.graph:
-        result["normalizedGraph"] = normalized.model_dump(mode="json")
+        result["normalizedGraph"] = normalized.model_dump(mode="json", exclude_none=True)
     return result
 
 
@@ -128,7 +128,7 @@ async def preview_route(request: Request):
         }, req.requestId)
         validate_simple_contacts(candidate)
         result = {**_base(req, "valid", []), "requestId": req.requestId,
-                  "graph": candidate.model_dump(mode="json"),
+                  "graph": candidate.model_dump(mode="json", exclude_none=True),
                   "affectedWallIds": affected, "wallArea": _area(candidate),
                   "faces": derive_physical_faces(candidate),
                   "openJointAngles": derive_open_joint_angles(candidate)}
@@ -149,7 +149,7 @@ async def command_route(request: Request):
         candidate, affected = execute_physical(req.graph, req.command, req.commandId)
         validate_simple_contacts(candidate)
         return {**_base(req, "applied", []), "commandId": req.commandId,
-                "graph": candidate.model_dump(mode="json"),
+                "graph": candidate.model_dump(mode="json", exclude_none=True),
                 "affectedWallIds": affected, "wallArea": _area(candidate),
                 "faces": derive_physical_faces(candidate),
                 "openJointAngles": derive_open_joint_angles(candidate)}

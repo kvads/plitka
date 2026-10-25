@@ -319,6 +319,9 @@ test("physical v6 continues one tile grid through three separate rooms after rel
   await page.setViewportSize({ width: 375, height: 740 });
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await expect(page.getByRole("img", { name: /В сцене 3 помещения с общей сеткой плитки/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Показать стены" })).toHaveAttribute("aria-pressed", "false");
+  await page.getByRole("button", { name: "Показать стены" }).click();
+  await expect(page.getByRole("button", { name: "Скрыть стены" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".room-preview-caption strong")).toHaveText("Сквозная раскладка");
   await expect(page.locator(".room-preview-caption span")).toContainText("3 помещения · Плитка");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
@@ -350,6 +353,8 @@ test("physical v6 continues one tile grid through three separate rooms after rel
   await page.getByRole("button", { name: "Сбросить раскладку" }).click();
   await expect(page.getByText("Сквозная раскладка сброшена. Параметры и стены сохранены.")).toBeVisible();
   await expect(page.locator("[data-layout-room-id]")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].sharedGrid)).toBeNull();
   const reset = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0]);
   expect(reset.sharedGrid).toBeNull();
   expect(reset.plan.draft.walls).toHaveLength(saved.plan.draft.walls.length);
@@ -713,15 +718,20 @@ test("physical v6 creates, resizes, persists, and deletes a door opening", async
   await expect(page.locator("[data-door-preview]")).toBeVisible();
   await page.mouse.click(center.x, center.y);
   await expect(page.locator("[data-door-id]")).toHaveCount(1);
+  await expect(page.locator("[data-door-id] [data-door-swing]")).toHaveCount(1);
   await expect.poll(() => page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.openings?.[0]?.widthMm)).toBe(800);
   await page.getByRole("button", { name: "Завершить инструмент «Дверь»" }).click();
   await page.locator("[data-door-id]").click();
   await expect(page.getByRole("heading", { name: "Дверной проём" })).toBeVisible();
   await page.getByRole("spinbutton", { name: "Ширина проёма, мм" }).fill("600");
-  await page.getByRole("button", { name: "Применить ширину" }).click();
+  await expect(page.getByRole("spinbutton", { name: "Глубина откоса, мм" })).toHaveValue("50");
+  await page.getByRole("spinbutton", { name: "Глубина откоса, мм" }).fill("30");
+  await page.getByRole("button", { name: "Применить параметры" }).click();
   await expect.poll(() => page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.openings[0].widthMm)).toBe(600);
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan.draft.openings[0].revealDepthMm)).toBe(30);
   await page.reload();
   await expect(page.locator("[data-door-id]")).toHaveCount(1);
   await page.getByRole("button", { name: "Удалить элемент" }).click();
@@ -955,6 +965,7 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.getByText(/Плиток:/)).toBeVisible();
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await expect(page.getByRole("img", { name: /помещения «Помещение 1»/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Скрыть стены" })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "Раскладка", exact: true }).click();
   const csvDownload = page.waitForEvent("download");
   await page.getByRole("button", { name: "Таблица деталей · CSV" }).click();

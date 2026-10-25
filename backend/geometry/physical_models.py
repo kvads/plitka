@@ -47,6 +47,9 @@ class DoorOpeningV5(Model):
     wallId: Id
     offsetMm: float = Field(ge=0, le=10000000)
     widthMm: float = Field(ge=300, le=3000)
+    # Distance from the wall's drawn edge to the door-frame plane.  None keeps
+    # legacy openings centred and lets them follow later wall-thickness edits.
+    revealDepthMm: float | None = Field(default=None, ge=0, le=100000)
 
 
 class PhysicalGraphV5(Model):

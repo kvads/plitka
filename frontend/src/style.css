@@ -1452,7 +1452,9 @@ h3 > span {
 .room-preview-caption span { display: block; }
 .room-preview-caption strong { font-size: 13px; }
 .room-preview-caption span { margin-top: 4px; color: #68786f; font-size: 11px; }
-.room-preview-reset { min-height: 40px; }
+.room-preview-actions { display: flex; align-items: center; gap: 8px; }
+.room-preview-reset,
+.room-preview-walls { min-height: 40px; white-space: nowrap; }
 .room-preview-help {
   position: absolute;
   top: 14px;
@@ -1471,7 +1473,9 @@ h3 > span {
 @media (max-width: 800px) {
   .room-preview-canvas { height: 340px; }
   .room-preview-caption { align-items: flex-start; flex-direction: column; }
-  .room-preview-reset { width: 100%; }
+  .room-preview-actions { width: 100%; flex-wrap: wrap; }
+  .room-preview-reset,
+  .room-preview-walls { flex: 1; }
 }
 /* Password gate */
 .auth-page {

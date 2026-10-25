@@ -32,6 +32,14 @@ def _door_width(value: object) -> float:
     return value
 
 
+def _reveal_depth(value: object, thickness: float) -> float:
+    if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+            not math.isfinite(value) or not 0 <= value <= thickness or
+            abs(round(value * 10) - value * 10) > 1e-7):
+        raise ValueError("Глубина откоса должна быть от 0 до толщины стены с шагом 0,1 мм.")
+    return round(value * 10) / 10
+
+
 def _trim_to_first_face(points: list[PhysicalPoint], existing) -> list[PhysicalPoint]:
     """Stop a drawn edge on the first physical boundary it reaches."""
     line = LineString([(point.x, point.y) for point in points])
@@ -391,6 +399,23 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
         })
         validate_physical_graph(next_graph)
         return next_graph, [old.wallId]
+    if kind == "setDoorProperties":
+        _fields(command, {"type", "openingId", "widthMm", "revealDepthMm"})
+        if not isinstance(command["openingId"], str):
+            raise ValueError("Выберите дверной проём.")
+        next_graph = deepcopy(graph)
+        index = next((i for i, opening in enumerate(next_graph.openings)
+                      if opening.id == command["openingId"]), None)
+        if index is None:
+            raise ValueError("Дверной проём не найден.")
+        old = next_graph.openings[index]
+        wall = next(wall for wall in next_graph.walls if wall.id == old.wallId)
+        next_graph.openings[index] = old.model_copy(update={
+            "widthMm": _door_width(command["widthMm"]),
+            "revealDepthMm": _reveal_depth(command["revealDepthMm"], wall.thicknessMm),
+        })
+        validate_physical_graph(next_graph)
+        return next_graph, [old.wallId]
     if kind == "deleteDoorOpening":
         _fields(command, {"type", "openingId"})
         opening_id = command["openingId"]
@@ -455,6 +480,11 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
         replacement = create_wall(old.id, old.drawnEdge, old.side,
                                   _new_thickness(command["thicknessMm"]))
         next_graph.walls[index] = replacement
+        for opening_index, opening in enumerate(next_graph.openings):
+            if opening.wallId == old.id and opening.revealDepthMm is not None:
+                next_graph.openings[opening_index] = opening.model_copy(update={
+                    "revealDepthMm": min(opening.revealDepthMm, replacement.thicknessMm),
+                })
         for neighbor_index, neighbor in enumerate(next_graph.walls):
             if neighbor_index == index:
                 continue

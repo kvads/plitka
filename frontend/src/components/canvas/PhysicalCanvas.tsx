@@ -642,7 +642,23 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       const corners = openingCorners(wall, opening);
       const center = { x: corners.reduce((sum, point) => sum + point.x, 0) / 4,
         y: corners.reduce((sum, point) => sum + point.y, 0) / 4 };
+      const [start, end] = wall.drawnEdge;
+      const length = Math.hypot(end.x - start.x, end.y - start.y);
+      const ux = (end.x - start.x) / length, uy = (end.y - start.y) / length;
+      const sign = wall.side === "left" ? 1 : -1;
+      const wallNormal = { x: -uy * sign, y: ux * sign };
+      const hinge = corners[0];
+      const closed = corners[1];
+      const opened = { x: hinge.x - wallNormal.x * opening.widthMm,
+        y: hinge.y - wallNormal.y * opening.widthMm };
+      const closedSvg = { x: closed.x, y: -closed.y };
+      const openedSvg = { x: opened.x, y: -opened.y };
+      const hingeSvg = { x: hinge.x, y: -hinge.y };
+      const closedVector = { x: closedSvg.x - hingeSvg.x, y: closedSvg.y - hingeSvg.y };
+      const openedVector = { x: openedSvg.x - hingeSvg.x, y: openedSvg.y - hingeSvg.y };
+      const sweep = closedVector.x * openedVector.y - closedVector.y * openedVector.x > 0 ? 1 : 0;
       return <g key={opening.id} data-door-id={opening.id} data-wall-id={opening.wallId}
+        pointerEvents="bounding-box"
         role="button" tabIndex={wallTool || doorTool ? -1 : 0}
         aria-label={`Дверной проём ${displayTenth(opening.widthMm)} мм`}
         aria-pressed={opening.id === selectedDoorId}
@@ -656,6 +672,12 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
           x1={corners[index].x} y1={-corners[index].y}
           x2={corners[3 - index].x} y2={-corners[3 - index].y}
           stroke="#333" strokeWidth={2 / pixelScale} pointerEvents="none" />)}
+        <g data-door-swing pointerEvents="none" fill="none" stroke="#285f43"
+          strokeWidth={1.6 / pixelScale}>
+          <line x1={hingeSvg.x} y1={hingeSvg.y} x2={openedSvg.x} y2={openedSvg.y} />
+          <path d={`M${closedSvg.x} ${closedSvg.y} A${opening.widthMm} ${opening.widthMm} 0 0 ${sweep} ${openedSvg.x} ${openedSvg.y}`}
+            strokeDasharray={`${5 / pixelScale} ${4 / pixelScale}`} />
+        </g>
         {!highlightRooms && <text data-door-width x={center.x} y={-center.y + 4 / pixelScale}
           textAnchor="middle" fontSize={12 / pixelScale} fontWeight={650}
           fill="#24533d" stroke="#fff" strokeWidth={3 / pixelScale}

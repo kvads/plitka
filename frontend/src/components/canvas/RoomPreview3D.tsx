@@ -1,10 +1,10 @@
-import { RotateCcw } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { Eye, EyeOff, RotateCcw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import textureUrl from "../../assets/tile-texture.svg";
 import type { Layout, Point } from "../../types";
-import type { PhysicalPolygonV5 } from "../../domain/plan/types";
+import type { PhysicalGraphV5, PhysicalPolygonV5 } from "../../domain/plan/types";
 
 export type RoomPreview3DRoom = {
   id: string;
@@ -18,6 +18,7 @@ type Props = {
   title: string;
   tileSize: number;
   through: boolean;
+  graph: PhysicalGraphV5;
 };
 
 const ringShape = (rings: Point[][], cx: number, cy: number) => {
@@ -71,9 +72,12 @@ const roomCountText = (count: number) => {
   return `${count} ${noun}`;
 };
 
-export default function RoomPreview3D({ rooms, title, tileSize, through }: Props) {
+export default function RoomPreview3D({ rooms, title, tileSize, through, graph }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const resetView = useRef<() => void>(() => undefined);
+  const [showWalls, setShowWalls] = useState(() => !through);
+
+  useEffect(() => setShowWalls(!through), [through]);
 
   useEffect(() => {
     const container = host.current;
@@ -199,40 +203,53 @@ export default function RoomPreview3D({ rooms, title, tileSize, through }: Props
     });
     materials.push(wallMaterial);
     const wallHeight = Math.min(1.2, Math.max(0.65, span * 0.24));
-    const wallSegments = new Map<string, { point: number[]; next: number[] }>();
-    const pointKey = (point: number[]) => `${point[0].toFixed(3)},${point[1].toFixed(3)}`;
-    visibleRooms.forEach(room => {
-      [room.polygon.outline, ...room.polygon.holes].forEach(ring => {
-        ring.forEach((point, index) => {
-          const next = ring[(index + 1) % ring.length];
-          const keys = [pointKey(point), pointKey(next)].sort();
-          wallSegments.set(keys.join("|"), { point, next });
-        });
-      });
-    });
     const edgeTolerance = Math.max(5, span * 5);
-    wallSegments.forEach(({ point, next }) => {
-      const onNearRightEdge = point[0] >= maxX - edgeTolerance && next[0] >= maxX - edgeTolerance;
-      const onNearFrontEdge = point[1] <= minY + edgeTolerance && next[1] <= minY + edgeTolerance;
-      if (onNearRightEdge || onNearFrontEdge) return;
-      const dx = (next[0] - point[0]) / 1000;
-      const dz = -(next[1] - point[1]) / 1000;
-      const midX = ((point[0] + next[0]) / 2 - cx) / 1000;
-      const midZ = -((point[1] + next[1]) / 2 - cy) / 1000;
-      const length = Math.hypot(dx, dz);
-      if (length < 0.001) return;
-      const geometry = new THREE.BoxGeometry(length, wallHeight, 0.09);
-      geometries.push(geometry);
-      const wall = new THREE.Mesh(geometry, wallMaterial);
-      wall.position.set(
-        midX,
-        wallHeight / 2,
-        midZ,
-      );
-      wall.rotation.y = Math.atan2(-dz, dx);
-      wall.castShadow = true;
-      wall.receiveShadow = true;
-      scene.add(wall);
+    if (showWalls) graph.walls.forEach(sourceWall => {
+      const [start, end] = sourceWall.drawnEdge;
+      const dx = end.x - start.x, dy = end.y - start.y;
+      const sourceLength = Math.hypot(dx, dy);
+      if (sourceLength < 0.1) return;
+      const ux = dx / sourceLength, uy = dy / sourceLength;
+      const sign = sourceWall.side === "left" ? 1 : -1;
+      const nx = -uy * sign, ny = ux * sign;
+      const wallCenterX = (start.x + end.x) / 2 + nx * sourceWall.thicknessMm / 2;
+      const wallCenterY = (start.y + end.y) / 2 + ny * sourceWall.thicknessMm / 2;
+      if (wallCenterX >= maxX - edgeTolerance || wallCenterY <= minY + edgeTolerance) return;
+
+      const openings = (graph.openings ?? [])
+        .filter(opening => opening.wallId === sourceWall.id)
+        .map(opening => ({ start: opening.offsetMm - opening.widthMm / 2,
+          end: opening.offsetMm + opening.widthMm / 2 }))
+        .sort((a, b) => a.start - b.start);
+      const segments: { start: number; end: number }[] = [];
+      let cursor = 0;
+      openings.forEach(opening => {
+        if (opening.start > cursor) segments.push({ start: cursor, end: opening.start });
+        cursor = Math.max(cursor, opening.end);
+      });
+      if (cursor < sourceLength) segments.push({ start: cursor, end: sourceLength });
+
+      segments.forEach(segment => {
+        const segmentLength = segment.end - segment.start;
+        if (segmentLength < 0.1) return;
+        const along = (segment.start + segment.end) / 2;
+        const geometry = new THREE.BoxGeometry(
+          segmentLength / 1000,
+          wallHeight,
+          sourceWall.thicknessMm / 1000,
+        );
+        geometries.push(geometry);
+        const wall = new THREE.Mesh(geometry, wallMaterial);
+        wall.position.set(
+          (start.x + ux * along + nx * sourceWall.thicknessMm / 2 - cx) / 1000,
+          wallHeight / 2,
+          -(start.y + uy * along + ny * sourceWall.thicknessMm / 2 - cy) / 1000,
+        );
+        wall.rotation.y = Math.atan2(uy, ux);
+        wall.castShadow = true;
+        wall.receiveShadow = true;
+        scene.add(wall);
+      });
     });
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0xa1aaa4, 1.5));
@@ -282,7 +299,7 @@ export default function RoomPreview3D({ rooms, title, tileSize, through }: Props
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [rooms, through]);
+  }, [rooms, through, graph, showWalls]);
 
   const readyLayouts = rooms.filter(room => room.layout).length;
   const details = readyLayouts === rooms.length && rooms.length
@@ -299,16 +316,23 @@ export default function RoomPreview3D({ rooms, title, tileSize, through }: Props
           <strong>{title}</strong>
           <span>{details}</span>
         </div>
-        <button
-          type="button"
-          className="room-preview-reset"
-          onClick={() => resetView.current()}
-          aria-label="Вернуть исходный вид 3D-сцены"
-          title="Вернуть исходный вид"
-        >
-          <RotateCcw size={17} aria-hidden="true" />
-          Исходный вид
-        </button>
+        <div className="room-preview-actions">
+          <button type="button" className="room-preview-walls" aria-pressed={showWalls}
+            onClick={() => setShowWalls(value => !value)}>
+            {showWalls ? <EyeOff size={17} aria-hidden="true" /> : <Eye size={17} aria-hidden="true" />}
+            {showWalls ? "Скрыть стены" : "Показать стены"}
+          </button>
+          <button
+            type="button"
+            className="room-preview-reset"
+            onClick={() => resetView.current()}
+            aria-label="Вернуть исходный вид 3D-сцены"
+            title="Вернуть исходный вид"
+          >
+            <RotateCcw size={17} aria-hidden="true" />
+            Исходный вид
+          </button>
+        </div>
       </figcaption>
       <p className="room-preview-help">Потяните, чтобы осмотреть · прокрутите для масштаба</p>
     </figure>

@@ -629,7 +629,7 @@ export function physicalGraphSchema(value: unknown): PhysicalGraphV5 {
   const openingIntervals = new Map<string, [number, number][]>();
   for (const raw of arr(graph.openings ?? [], 6300)) {
     const opening = obj(raw);
-    exact(opening, ["id", "wallId", "offsetMm", "widthMm"]);
+    exact(opening, ["id", "wallId", "offsetMm", "widthMm", "revealDepthMm"]);
     const id = str(opening.id, 1, 100), wallId = str(opening.wallId, 1, 100);
     if (ids.has(id) || openingIds.has(id) || !walls.has(wallId)) fail();
     openingIds.add(id);
@@ -637,6 +637,10 @@ export function physicalGraphSchema(value: unknown): PhysicalGraphV5 {
     const width = requireTenth(num(opening.widthMm));
     if (offset < 0 || width < 300 || width > 3000 || width % 10 !== 0) fail();
     const wall = walls.get(wallId)!, [start, end] = (wall.drawnEdge as unknown[]).map(pointV6);
+    if (opening.revealDepthMm !== undefined) {
+      const depth = requireTenth(num(opening.revealDepthMm));
+      if (depth < 0 || depth > num(wall.thicknessMm)) fail();
+    }
     const length = Math.hypot(end.x - start.x, end.y - start.y);
     const interval: [number, number] = [offset - width / 2, offset + width / 2];
     if (interval[0] < 10 || interval[1] > length - 10) fail();
@@ -755,6 +759,15 @@ export function parseV6(value: unknown): ProjectDocumentV6 {
       if (!(graph.openings ?? []).some(opening => opening.id === str(command.openingId, 1))) fail();
       if (num(command.widthMm) < 300 || num(command.widthMm) > 3000 ||
           num(command.widthMm) % 10 !== 0) fail();
+    } else if (type === "setDoorProperties") {
+      exact(command, ["type", "openingId", "widthMm", "revealDepthMm"]);
+      const opening = (graph.openings ?? []).find(opening => opening.id === str(command.openingId, 1));
+      if (!opening) fail();
+      const wall = graph.walls.find(wall => wall.id === opening!.wallId) ?? fail();
+      if (num(command.widthMm) < 300 || num(command.widthMm) > 3000 ||
+          num(command.widthMm) % 10 !== 0) fail();
+      const depth = requireTenth(num(command.revealDepthMm));
+      if (depth < 0 || depth > wall.thicknessMm) fail();
     } else if (type === "deleteDoorOpening") {
       exact(command, ["type", "openingId"]);
       if (!(graph.openings ?? []).some(opening => opening.id === str(command.openingId, 1))) fail();

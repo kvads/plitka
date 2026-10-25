@@ -52,6 +52,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const [thicknessInput, setThicknessInput] = useState("100");
   const [doorWidthInput, setDoorWidthInput] = useState("800");
   const [selectedDoorWidthInput, setSelectedDoorWidthInput] = useState("");
+  const [selectedDoorRevealInput, setSelectedDoorRevealInput] = useState("");
   const [selectedDoorId, setSelectedDoorId] = useState<string | null>(null);
   const [selectedThicknessInput, setSelectedThicknessInput] = useState("");
   const [selectedWallId, setSelectedWallId] = useState<string | null>(null);
@@ -80,10 +81,14 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const thicknessValid = Number.isInteger(thickness / 10) && thickness >= 10 && thickness <= 100000;
   const selected = doc.plan.draft.walls.find(wall => wall.id === selectedWallId);
   const selectedDoor = (doc.plan.draft.openings ?? []).find(opening => opening.id === selectedDoorId);
+  const selectedDoorWall = doc.plan.draft.walls.find(wall => wall.id === selectedDoor?.wallId);
   const doorWidth = Number(doorWidthInput.replace(",", "."));
   const doorWidthValid = Number.isInteger(doorWidth / 10) && doorWidth >= 300 && doorWidth <= 3000;
   const selectedDoorWidth = Number(selectedDoorWidthInput.replace(",", "."));
   const selectedDoorWidthValid = Number.isInteger(selectedDoorWidth / 10) && selectedDoorWidth >= 300 && selectedDoorWidth <= 3000;
+  const selectedDoorReveal = Number(selectedDoorRevealInput.replace(",", "."));
+  const selectedDoorRevealValid = !!selectedDoorWall && isTenth(selectedDoorReveal) &&
+    selectedDoorReveal >= 0 && selectedDoorReveal <= selectedDoorWall.thicknessMm;
   useEffect(() => { if (selectedWallId && !selected) {
     setSelectedWallId(null); setSelectedHandle(null);
   } }, [selectedWallId, selected]);
@@ -133,8 +138,12 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     setSelectedDoorId(openingId);
     setSelectedWallId(null);
     setSelectedHandle(null);
-    setSelectedDoorWidthInput(String((doc.plan.draft.openings ?? [])
-      .find(opening => opening.id === openingId)?.widthMm ?? ""));
+    const opening = (doc.plan.draft.openings ?? []).find(opening => opening.id === openingId);
+    const wall = doc.plan.draft.walls.find(wall => wall.id === opening?.wallId);
+    setSelectedDoorWidthInput(String(opening?.widthMm ?? ""));
+    setSelectedDoorRevealInput(String(opening
+      ? opening.revealDepthMm ?? (wall?.thicknessMm ?? 0) / 2
+      : ""));
   };
   const layoutMode = doc.workflow.requestedStage === "variants";
   useEffect(() => {
@@ -373,7 +382,8 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       }>
         <RoomPreview3D rooms={previewRooms}
           title={previewThrough ? "Сквозная раскладка" : previewRooms[0].name}
-          tileSize={sharedGrid?.tile ?? room?.material.tile ?? 0} through={previewThrough} />
+          tileSize={sharedGrid?.tile ?? room?.material.tile ?? 0} through={previewThrough}
+          graph={doc.plan.draft} />
       </Suspense> : <div className="room-preview-empty" role="status">
         <Cuboid aria-hidden="true" />
         <strong>Нет выбранного помещения</strong>
@@ -619,13 +629,26 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
             Введите ширину от 300 до 3000 мм с шагом 10 мм.
           </p>}
           {selectedDoor ? <>
-            <button disabled={busy || !selectedDoorWidthValid} onClick={() => void command({
-              type: "setDoorWidth", openingId: selectedDoor.id, widthMm: selectedDoorWidth,
-            })}>Применить ширину</button>
+            <label>Глубина откоса, мм<input type="number" min="0"
+              max={selectedDoorWall?.thicknessMm ?? 0} step="0.1"
+              value={selectedDoorRevealInput}
+              onChange={event => setSelectedDoorRevealInput(event.target.value)} /></label>
+            {!selectedDoorRevealValid && <p role="alert">
+              Введите глубину от 0 до {displayTenth(selectedDoorWall?.thicknessMm ?? 0)} мм
+              с шагом 0,1 мм.
+            </p>}
+            <small className="muted">Отсчитывается от линии, по которой была построена стена.
+              С другой стороны остаётся {displayTenth(Math.max(0,
+                (selectedDoorWall?.thicknessMm ?? 0) - (selectedDoorRevealValid ? selectedDoorReveal : 0)))} мм.</small>
+            <button disabled={busy || !selectedDoorWidthValid || !selectedDoorRevealValid}
+              onClick={() => void command({
+                type: "setDoorProperties", openingId: selectedDoor.id,
+                widthMm: selectedDoorWidth, revealDepthMm: selectedDoorReveal,
+              })}>Применить параметры</button>
             <button onClick={() => chooseDoor(null)}>Снять выделение</button>
           </> : <>
             <p>Нажмите на стену — проём разместится по центру указанной точки.</p>
-            <small className="muted">У торцов и сочленений сохраняется необходимый участок стены.</small>
+            <small className="muted">Новый откос занимает половину толщины стены. Точную глубину можно задать после размещения.</small>
           </>}
         </> : <>
         <h2>{selected ? "Стена" : "Новая стена"}</h2>

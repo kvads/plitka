@@ -582,7 +582,7 @@
   z-index: 2;
   left: 92px;
   bottom: max(12px, env(safe-area-inset-bottom, 0px));
-  width: min(330px, calc(100vw - 440px));
+  width: min(520px, calc(100vw - 440px));
   min-width: 240px;
   border: 1px solid #d7ded4;
   border-radius: 12px;
@@ -619,7 +619,8 @@
     flex-direction: row;
     align-items: center;
   }
-  .room-preview-fullscreen .room-preview-reset { width: auto; }
+  .room-preview-fullscreen .room-preview-reset,
+  .room-preview-fullscreen .room-preview-walls { width: auto; }
   .room-preview-fullscreen .room-preview-help {
     top: max(8px, env(safe-area-inset-top, 0px));
     left: 82px;

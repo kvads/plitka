@@ -20,10 +20,12 @@ def opening_parts(wall: PhysicalWallV5, opening: DoorOpeningV5
     last = opening.offsetMm + opening.widthMm / 2
     drawn_a = (start.x + ux * first, start.y + uy * first)
     drawn_b = (start.x + ux * last, start.y + uy * last)
-    middle_a = (drawn_a[0] + nx * wall.thicknessMm / 2,
-                drawn_a[1] + ny * wall.thicknessMm / 2)
-    middle_b = (drawn_b[0] + nx * wall.thicknessMm / 2,
-                drawn_b[1] + ny * wall.thicknessMm / 2)
+    reveal_depth = (wall.thicknessMm / 2 if opening.revealDepthMm is None
+                    else opening.revealDepthMm)
+    middle_a = (drawn_a[0] + nx * reveal_depth,
+                drawn_a[1] + ny * reveal_depth)
+    middle_b = (drawn_b[0] + nx * reveal_depth,
+                drawn_b[1] + ny * reveal_depth)
     opposite_a = (drawn_a[0] + nx * wall.thicknessMm,
                   drawn_a[1] + ny * wall.thicknessMm)
     opposite_b = (drawn_b[0] + nx * wall.thicknessMm,

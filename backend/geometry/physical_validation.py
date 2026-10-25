@@ -65,6 +65,10 @@ def validate_physical_graph(graph: PhysicalGraphV5) -> None:
         length = math.dist(_pair(wall.drawnEdge[0]), _pair(wall.drawnEdge[1]))
         if not is_tenth(opening.offsetMm) or not is_tenth(opening.widthMm):
             raise ValueError("Размер и положение дверного проёма должны иметь шаг 0,1 мм.")
+        if (opening.revealDepthMm is not None and
+                (not is_tenth(opening.revealDepthMm) or
+                 opening.revealDepthMm > wall.thicknessMm)):
+            raise ValueError("Глубина откоса должна быть от 0 до толщины стены с шагом 0,1 мм.")
         if opening.widthMm % 10 != 0:
             raise ValueError("Ширина дверного проёма должна иметь шаг 10 мм.")
         first, last = opening.offsetMm - opening.widthMm / 2, opening.offsetMm + opening.widthMm / 2
@@ -107,7 +111,7 @@ def canonical_basis_key(graph: PhysicalGraphV5) -> str:
         row = joint.model_dump(mode="json")
         row["participants"].sort(key=lambda part: part["wallId"])
         joint_data.append(row)
-    opening_data = [opening.model_dump(mode="json")
+    opening_data = [opening.model_dump(mode="json", exclude_none=True)
                     for opening in sorted(graph.openings, key=lambda opening: opening.id)]
     def tenths(value):
         if isinstance(value, dict):

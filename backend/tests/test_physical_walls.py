@@ -173,6 +173,57 @@ def test_internal_door_connects_two_rooms_and_splits_threshold_area_between_them
         face["topologyKey"] for face in opened["faces"]}
 
 
+def test_exterior_door_adds_room_side_reveal_to_tile_area():
+    graph = {"walls": [], "junctions": [], "openings": []}
+    walls = [
+        ([(0, 0), (1200, 0)], "right"),
+        ([(1200, 0), (1200, 1000)], "left"),
+        ([(1200, 1000), (0, 1000)], "right"),
+        ([(0, 1000), (0, 0)], "left"),
+    ]
+    for index, (edge, side) in enumerate(walls):
+        result = client.post("/api/v5/plan/command", json={
+            **command_request(graph), "commandId": f"exterior-door-room-{index}",
+            "command": {"type": "drawWall", "drawnEdge": [
+                {"x": x, "y": y} for x, y in edge],
+                "side": side, "thicknessMm": 100},
+        }).json()
+        assert result["status"] == "applied", result["issues"]
+        graph = result["graph"]
+
+    before_area = result["faces"][0]["areaMm2"]
+    opened = client.post("/api/v5/plan/command", json={
+        **command_request(graph), "commandId": "exterior-door",
+        "command": {"type": "addDoorOpening", "wallId": "wall-exterior-door-room-0",
+                    "offsetMm": 500, "widthMm": 600},
+    }).json()
+
+    assert opened["status"] == "applied", opened["issues"]
+    opened = client.post("/api/v5/plan/command", json={
+        **command_request(opened["graph"]), "commandId": "exterior-door-depth",
+        "command": {"type": "setDoorProperties", "openingId": "door-exterior-door",
+                    "widthMm": 600, "revealDepthMm": 30},
+    }).json()
+    assert opened["status"] == "applied", opened["issues"]
+    assert opened["graph"]["openings"][0]["revealDepthMm"] == 30
+    assert len(opened["faces"]) == 1
+    face = opened["faces"][0]
+    assert face["areaMm2"] == before_area + 600 * 30
+    assert face["doorIds"] == ["door-exterior-door"]
+    assert face["connectedRoomKeys"] == []
+    tiled_shape = Polygon(face["polygon"]["outline"], face["polygon"]["holes"])
+    assert tiled_shape.intersection(Polygon([(300, -30), (900, -30),
+                                             (900, 0), (300, 0)])).area == 600 * 30
+
+    flush = client.post("/api/v5/plan/command", json={
+        **command_request(opened["graph"]), "commandId": "exterior-door-flush",
+        "command": {"type": "setDoorProperties", "openingId": "door-exterior-door",
+                    "widthMm": 600, "revealDepthMm": 0},
+    }).json()
+    assert flush["status"] == "applied", flush["issues"]
+    assert flush["faces"][0]["areaMm2"] == before_area
+
+
 def test_physical_model_rejects_axes_and_invalid_stored_corners():
     bad = saved_wall()
     bad["vertices"] = []
