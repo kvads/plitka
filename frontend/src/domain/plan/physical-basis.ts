@@ -1,7 +1,7 @@
 import type { PhysicalGraphV5 } from "./types";
 
-/** Stable key for a physical graph, independent of object/list insertion order. */
-export async function physicalBasisKey(graph: PhysicalGraphV5): Promise<string> {
+/** Canonical representation independent of object/list insertion order. */
+export function physicalGraphCanonicalJson(graph: PhysicalGraphV5): string {
   const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
   const ordered = {
     walls: [...graph.walls].sort((a, b) => compare(a.id, b.id)),
@@ -18,7 +18,12 @@ export async function physicalBasisKey(graph: PhysicalGraphV5): Promise<string> 
         .map(([key, item]) => [key, normalize(item)]));
     return value;
   };
-  const bytes = new TextEncoder().encode(JSON.stringify(normalize(ordered)));
+  return JSON.stringify(normalize(ordered));
+}
+
+/** Stable key for a physical graph, independent of object/list insertion order. */
+export async function physicalBasisKey(graph: PhysicalGraphV5): Promise<string> {
+  const bytes = new TextEncoder().encode(physicalGraphCanonicalJson(graph));
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return "physical-v5:" + Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
 }

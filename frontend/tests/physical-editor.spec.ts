@@ -344,6 +344,17 @@ test("physical v6 continues one tile grid through three separate rooms after rel
   page.on("request", event => {
     if (event.url().endsWith("/api/v5/layout")) recalculations.push(event.postDataJSON());
   });
+  await page.evaluate(() => {
+    const stored = JSON.parse(localStorage.getItem("plitka-projects-v6")!);
+    const reverseObjectKeys = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(reverseObjectKeys);
+      if (value && typeof value === "object") return Object.fromEntries(
+        Object.entries(value).reverse().map(([key, item]) => [key, reverseObjectKeys(item)]));
+      return value;
+    };
+    stored.projects[0].plan.draft = reverseObjectKeys(stored.projects[0].plan.draft);
+    localStorage.setItem("plitka-projects-v6", JSON.stringify(stored));
+  });
   await page.reload();
   for (const room of rooms)
     await expect(page.locator(`[data-layout-room-id="${room.id}"]`).first()).toBeVisible();

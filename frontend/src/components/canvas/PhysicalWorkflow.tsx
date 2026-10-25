@@ -6,6 +6,7 @@ import { usePhysicalProject } from "../../domain/plan/usePhysicalProject";
 import { deleteV6 } from "../../domain/plan/storage";
 import type { ProjectDocumentV6 } from "../../domain/plan/types";
 import { isTenth } from "../../domain/plan/precision";
+import { physicalGraphCanonicalJson } from "../../domain/plan/physical-basis";
 import { newRoom } from "../../domain/plan/rooms";
 import NumberField from "../workflow/NumberField";
 import { api } from "../../api";
@@ -45,6 +46,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const project = usePhysicalProject(initial, onSaved);
   const { doc, update, command, drawWall, busy, error } = project;
   const response = project.response?.draftRevision === doc.plan.draftRevision ? project.response : null;
+  const responseMatchesDraft = useMemo(() => !!response &&
+    physicalGraphCanonicalJson(response.graph) === physicalGraphCanonicalJson(doc.plan.draft),
+  [response, doc.plan.draft]);
   const [menuOpen, setMenuOpen] = useState(() => !window.matchMedia("(hover: none) and (pointer: coarse)").matches);
   const [projectMenu, setProjectMenu] = useState(false);
   const [wallTool, setWallTool] = useState(false);
@@ -258,7 +262,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   };
   useEffect(() => {
     if (!layoutMode || !sharedGrid || !response || response.status === "invalid" ||
-        JSON.stringify(response.graph) !== JSON.stringify(doc.plan.draft)) return;
+        !responseMatchesDraft) return;
     const pending = [sharedGrid.referenceRoomId, ...sharedGrid.linkedRoomIds].flatMap(id => {
       const candidate = doc.rooms.find(item => item.id === id);
       const face = response.faces.find(item => item.topologyKey === candidate?.topologyKey);
@@ -291,7 +295,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       setLayoutError(failures.length ? failures.join("; ") : "");
     }).finally(() => { if (!controller.signal.aborted) setSharedLoading(false); });
     return () => controller.abort();
-  }, [layoutMode, sharedGrid, response, doc.plan.draft, doc.rooms, layoutCache]);
+  }, [layoutMode, sharedGrid, response, responseMatchesDraft, doc.plan.draft, doc.rooms, layoutCache]);
   const roomField = (kind: "material" | "rules", key: string, label: string,
     min: number, max: number, unit: string) => room && <NumberField
       label={label} value={(room[kind] as Record<string, number>)[key]}
@@ -305,8 +309,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         } : item),
       }))} />;
   useEffect(() => {
-    if (!response || response.status === "invalid" ||
-        JSON.stringify(response.graph) !== JSON.stringify(doc.plan.draft)) return;
+    if (!response || response.status === "invalid" || !responseMatchesDraft) return;
     const faceKeys = new Set(response.faces.map(face => face.topologyKey));
     const known = new Set(doc.rooms.map(item => item.topologyKey));
     const missing = response.faces.filter(face => !known.has(face.topologyKey));
@@ -323,7 +326,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       }
       return { ...current, rooms: next };
     });
-  }, [response, doc.plan.draft, doc.rooms, update]);
+  }, [response, responseMatchesDraft, doc.plan.draft, doc.rooms, update]);
   const setMode = (mode: "object" | "variants") => {
     update(current => ({ ...current, workflow: { requestedStage: mode } }));
     setRoom3D(false);
