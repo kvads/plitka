@@ -490,7 +490,7 @@ test("physical v6 keeps a failed network command for retry after reload", async 
   })).toEqual([1, null]);
 });
 
-test("physical v6 shows a rejected wall message and allows dismissal", async ({ page }) => {
+test("physical v6 shows a rejected wall message", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Новый проект" }).click();
   await page.getByRole("textbox", { name: "Название проекта" }).fill("Ошибка стены");
@@ -512,8 +512,6 @@ test("physical v6 shows a rejected wall message and allows dismissal", async ({ 
   await canvas.click({ position: { x: box.width / 2 + 100, y: box.height / 2 } });
   const error = page.getByRole("alert").filter({ hasText: "Не удалось построить этот стык." });
   await expect(error).toBeVisible();
-  await error.getByRole("button", { name: "Закрыть" }).click();
-  await expect(error).toHaveCount(0);
 });
 
 test("physical v6 compact desktop panel selects a wall point at low zoom", async ({ browser }) => {

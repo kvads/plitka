@@ -29,3 +29,5 @@ At 375 × 812 and 812 × 375, confirm only `План` and `3D` are offered. Pan,
 ## Production smoke check
 
 After deployment, verify HTTPS health, authentication, one ordinary layout, one shower layout, desktop 3D and a 375 px mobile session. Keep the prior release available until all checks pass.
+
+Completed 2026-11-06: backend `109 passed`; frontend production build passed with the pre-existing lazy 3D chunk-size warning; targeted export, document-schema, shower 3D and portrait/landscape read-only checks passed. The point and linear slope surfaces were inspected in rendered 3D. Production release `527a80a` became healthy on VXR_01, HTTPS returned 200, and authenticated smoke requests verified both an ordinary layout and a four-zone point-drain tray. Release `a2cec1e` remains available for rollback.

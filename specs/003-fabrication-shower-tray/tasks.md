@@ -67,9 +67,9 @@
 - [x] T025 Run backend tests, TypeScript build and targeted Playwright suites from `specs/003-fabrication-shower-tray/quickstart.md`
 - [x] T026 Inspect point and linear trays visually in desktop 3D and mobile portrait/landscape; verify touch-safe read-only controls
 - [x] T027 Update feature documentation and `README.md` with shower, manufacturing precision and mobile read-only behavior
-- [ ] T028 Commit and push the validated release to `origin`
-- [ ] T029 Deploy an atomic release to VXR_01 using `compose.production.yaml` and `/opt/plitka/.env.production`
-- [ ] T030 Verify production readiness, HTTPS, ordinary layout, shower layout, 3D and mobile read-only behavior; retain rollback release
+- [x] T028 Commit and push the validated release to `origin`
+- [x] T029 Deploy an atomic release to VXR_01 using `compose.production.yaml` and `/opt/plitka/.env.production`
+- [x] T030 Verify production readiness, HTTPS, ordinary layout, shower layout, 3D and mobile read-only behavior; retain rollback release
 
 ## Dependencies and execution order
 
