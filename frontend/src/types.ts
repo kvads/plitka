@@ -1,4 +1,13 @@
 export type Point = [number, number];
+export type ShowerRequest = {
+  drainType: "point" | "linear";
+  drainX: number;
+  drainY: number;
+  drainWidth: number;
+  drainLength: number;
+  drainOrientation: "horizontal" | "vertical";
+  slopePercent: number;
+};
 export type LayoutRequest = {
   outline: Point[];
   holes: Point[][];
@@ -9,6 +18,7 @@ export type LayoutRequest = {
   angle: number;
   offset_x: number;
   offset_y: number;
+  shower?: ShowerRequest;
 };
 export type Part = {
   id: string;
@@ -21,6 +31,17 @@ export type Part = {
   area: number;
   full: boolean;
   issues: string[];
+  zoneId?: string | null;
+  surfaceWidth?: number;
+  surfaceHeight?: number;
+};
+export type SlopeZone = {
+  id: string;
+  rings: Point[][];
+  axis: "east" | "west" | "north" | "south" | "horizontal" | "vertical";
+  slopePercent: number;
+  minHeightMm: number;
+  maxHeightMm: number;
 };
 export type Layout = {
   offset_x: number;
@@ -29,6 +50,12 @@ export type Layout = {
   title?: string;
   parts: Part[];
   region: Point[][][];
+  shower?: {
+    drain: { type: "point" | "linear"; x: number; y: number; width: number; length: number;
+      orientation: "horizontal" | "vertical" };
+    zones: SlopeZone[];
+    maxHeightMm: number;
+  };
   metrics: {
     tiles: number;
     full: number;
@@ -65,3 +92,4 @@ export const path = (rings: Point[][]) =>
   rings.map((r) => "M" + r.map((p) => p.join(",")).join("L") + "Z").join(" ");
 export const format = (n: number, _digits = 1) =>
   n.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
+export const manufacturingMillimetres = (n: number) => Math.floor(n + 0.5);

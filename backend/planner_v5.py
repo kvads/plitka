@@ -5,7 +5,7 @@ import math
 import numpy as np
 import shapely
 from shapely.affinity import rotate
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon, box
 from shapely.ops import unary_union
 
 from .planner import EPS, dominates, features, objectives, prepare, rings
@@ -26,8 +26,15 @@ def validate_input(project) -> None:
               project.angle, project.offset_x, project.offset_y]
     values.extend(v for point in project.outline for v in point)
     values.extend(v for hole in project.holes for point in hole for v in point)
+    if project.shower is not None:
+        values.extend([project.shower.drainX, project.shower.drainY,
+                       project.shower.drainWidth, project.shower.drainLength,
+                       project.shower.slopePercent])
     if not all(valid_tenth(value) for value in values):
         raise ValueError('Допустим не более одного знака после запятой.')
+    if (project.shower is not None and project.shower.drainType == 'point' and
+            project.shower.drainLength != project.shower.drainWidth):
+        raise ValueError('У точечного слива длина и ширина рамки должны совпадать.')
 
 
 def offset_ticks(value: float, period: float) -> int:
@@ -82,6 +89,66 @@ def _area(value: float, label: str, *, allow_zero: bool = False) -> float:
     return rounded
 
 
+def _drain_polygon(shower):
+    width = shower.drainWidth
+    length = shower.drainLength
+    if shower.drainType == 'linear' and shower.drainOrientation == 'vertical':
+        width, length = length, width
+    return box(shower.drainX - length / 2, shower.drainY - width / 2,
+               shower.drainX + length / 2, shower.drainY + width / 2)
+
+
+def _shower_height(shower, x: float, y: float) -> float:
+    slope = shower.slopePercent / 100
+    if shower.drainType == 'point':
+        distance = max(abs(x - shower.drainX), abs(y - shower.drainY))
+    elif shower.drainOrientation == 'horizontal':
+        distance = abs(y - shower.drainY)
+    else:
+        distance = abs(x - shower.drainX)
+    return tenth(distance * slope)
+
+
+def _shower_zones(shower, region):
+    min_x, min_y, max_x, max_y = region.bounds
+    radius = max(max_x - min_x, max_y - min_y, 1) * 4
+    x, y = shower.drainX, shower.drainY
+    if shower.drainType == 'point':
+        candidates = [
+            ('east', 'east', Polygon([(x, y), (x + radius, y - radius),
+                                      (x + radius, y + radius)])),
+            ('north', 'north', Polygon([(x, y), (x + radius, y + radius),
+                                        (x - radius, y + radius)])),
+            ('west', 'west', Polygon([(x, y), (x - radius, y + radius),
+                                      (x - radius, y - radius)])),
+            ('south', 'south', Polygon([(x, y), (x - radius, y - radius),
+                                        (x + radius, y - radius)])),
+        ]
+    elif shower.drainOrientation == 'horizontal':
+        candidates = [
+            ('north', 'north', box(min_x - radius, y, max_x + radius, max_y + radius)),
+            ('south', 'south', box(min_x - radius, min_y - radius, max_x + radius, y)),
+        ]
+    else:
+        candidates = [
+            ('east', 'east', box(x, min_y - radius, max_x + radius, max_y + radius)),
+            ('west', 'west', box(min_x - radius, min_y - radius, x, max_y + radius)),
+        ]
+    zones = []
+    for base_id, axis, candidate in candidates:
+        polys = _polys(shapely.intersection(region, candidate, grid_size=.1))
+        for index, poly in enumerate(polys):
+            zones.append((base_id if len(polys) == 1 else f'{base_id}-{index+1}', axis, poly))
+    if not zones:
+        raise ValueError('Не удалось построить уклонные зоны душевого поддона.')
+    covered = unary_union([zone[2] for zone in zones])
+    if region.difference(covered).area > 1e-7:
+        raise ValueError('Уклонные зоны не покрывают весь душевой поддон.')
+    if sum(zone[2].area for zone in zones) - covered.area > 1e-7:
+        raise ValueError('Уклонные зоны душевого поддона перекрываются.')
+    return zones
+
+
 def _canonical_region(project, region):
     room = _snap_geometry(Polygon(project.outline, project.holes))
     area = _area(room.area, 'Помещение')
@@ -98,7 +165,16 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
         region, _ = prepare(project)
     except ValueError as exc:
         raise ValueError('Некорректная область помещения или параметры раскладки.') from exc
+    drain = None
+    if project.shower is not None:
+        drain = _drain_polygon(project.shower)
+        if not region.covers(drain):
+            raise ValueError('Рамка слива должна полностью находиться внутри области укладки.')
+        region = shapely.difference(region, drain, grid_size=.1)
+        if region.is_empty or region.area <= 0:
+            raise ValueError('После размещения слива не осталось области для укладки плитки.')
     room, canonical_region, room_area = _canonical_region(project, region)
+    shower_zones = _shower_zones(project.shower, canonical_region) if project.shower else []
     step = project.tile + project.grout
     dx = offset_ticks(dx, step) / 10
     dy = offset_ticks(dy, step) / 10
@@ -128,11 +204,17 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
     full = cuts = warnings = fragments = tiles = 0
     min_width = project.tile
     for index, geometry in enumerate(clipped):
-        source_parts = _polys(geometry)
+        source_parts = []
+        if shower_zones:
+            for zone_id, axis, zone_geometry in shower_zones:
+                for poly in _polys(shapely.intersection(geometry, zone_geometry, grid_size=.1)):
+                    source_parts.append((zone_id, axis, poly))
+        else:
+            source_parts = [(None, None, poly) for poly in _polys(geometry)]
         if not source_parts:
             continue
         canonical_parts = []
-        for sub, poly in enumerate(source_parts):
+        for sub, (zone_id, axis, poly) in enumerate(source_parts):
             _area(poly.area, 'Фрагмент плитки')
             # GEOS can leave an area around 1e-10 mm² in a predicate when a
             # diagonal edge is represented by different binary floats. The
@@ -140,13 +222,13 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
             # only a material difference would indicate a broken invariant.
             if poly.difference(canonical_region).area > 1e-7:
                 raise ValueError('Фрагмент выходит за каноническую область укладки.')
-            canonical_parts.append((sub, poly))
+            canonical_parts.append((sub, zone_id, axis, poly))
         whole = len(canonical_parts) == 1 and math.isclose(
-            canonical_parts[0][1].area, project.tile ** 2, rel_tol=0, abs_tol=1e-7)
+            canonical_parts[0][3].area, project.tile ** 2, rel_tol=0, abs_tol=1e-7)
         tiles += 1
         full += int(whole)
         cuts += int(not whole)
-        for sub, poly in canonical_parts:
+        for sub, zone_id, axis, poly in canonical_parts:
             polygons.append(poly)
             fragments += 1
             width, issues = (project.tile, []) if whole else features(poly, project)
@@ -156,10 +238,20 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
             if detail:
                 center = poly.representative_point()
                 bx0, by0, bx1, by1 = poly.bounds
+                planar_width, planar_height = bx1 - bx0, by1 - by0
+                surface_width, surface_height = planar_width, planar_height
+                if project.shower is not None:
+                    slope = project.shower.slopePercent / 100
+                    if axis in ('east', 'west'):
+                        surface_width = math.hypot(planar_width, planar_width * slope)
+                    elif axis in ('north', 'south'):
+                        surface_height = math.hypot(planar_height, planar_height * slope)
                 parts.append({'id': f'{index+1}' + (f'.{sub+1}' if len(source_parts)>1 else ''),
                     'source': index+1, 'rings': rings(poly),
                     'center': [tenth(center.x), tenth(center.y)],
-                    'width': tenth(bx1-bx0), 'height': tenth(by1-by0),
+                    'width': tenth(planar_width), 'height': tenth(planar_height),
+                    'surfaceWidth': tenth(surface_width), 'surfaceHeight': tenth(surface_height),
+                    'zoneId': zone_id,
                     'min_width': tenth(width), 'area': _area(poly.area, 'Фрагмент плитки'),
                     'full': whole, 'issues': issues})
     if not polygons:
@@ -186,9 +278,28 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
         'room_area': room_area, 'laying_area': laying, 'covered_area': used,
         'grout_area': grout, 'waste_area': waste,
         'waste_percent': tenth(100 * waste / purchased) if purchased else 0}
-    return {'offset_x': dx, 'offset_y': dy, 'angle': tenth(project.angle),
+    result = {'offset_x': dx, 'offset_y': dy, 'angle': tenth(project.angle),
         'metrics': metrics, 'parts': parts,
         'region': [rings(poly) for poly in _polys(canonical_region)] if detail else []}
+    if project.shower is not None and detail:
+        zone_results = []
+        max_height = 0
+        for zone_id, axis, zone in shower_zones:
+            heights = [_shower_height(project.shower, x, y)
+                       for ring in [zone.exterior, *zone.interiors]
+                       for x, y in ring.coords]
+            zone_max = max(heights, default=0)
+            max_height = max(max_height, zone_max)
+            zone_results.append({'id': zone_id, 'rings': rings(zone), 'axis': axis,
+                'slopePercent': tenth(project.shower.slopePercent),
+                'minHeightMm': min(heights, default=0), 'maxHeightMm': zone_max})
+        result['shower'] = {'drain': {'type': project.shower.drainType,
+            'x': tenth(project.shower.drainX), 'y': tenth(project.shower.drainY),
+            'width': tenth(project.shower.drainWidth),
+            'length': tenth(project.shower.drainLength),
+            'orientation': project.shower.drainOrientation},
+            'zones': zone_results, 'maxHeightMm': tenth(max_height)}
+    return result
 
 
 def optimize_v5(project):

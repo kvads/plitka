@@ -167,6 +167,15 @@ export type ConfirmedPhysicalRoomV5 = {
 export type PhysicalRoomRecordV6 = Omit<RoomRecord, "confirmed"> & {
   confirmed: ConfirmedPhysicalRoomV5 | null;
 };
+export type ShowerTray = {
+  drainType: "point" | "linear";
+  drainX: number;
+  drainY: number;
+  drainWidth: number;
+  drainLength: number;
+  drainOrientation: "horizontal" | "vertical";
+  slopePercent: number;
+};
 export type SharedLayoutGridV6 = {
   referenceRoomId: string;
   referenceBasis: string;
@@ -293,6 +302,7 @@ export type RoomRecord = {
   name: string;
   material: { tile: number; grout: number };
   rules: { gap: number; threshold: number; angle: number };
+  showerTray?: ShowerTray | null;
   fieldInputs: Record<string, string>;
   acknowledgment: Acknowledgment | null;
   confirmed: ConfirmedRoom | null;

@@ -117,15 +117,29 @@ export async function api<T>(
     if (!layout(v) || !record(v)) return false;
     const parts = v.parts as Record<string, unknown>[];
     const metrics = v.metrics as Record<string, unknown>;
-    const numbers = [v.angle, v.offset_x, v.offset_y, ...parts.flatMap(p => [p.width, p.height, p.min_width, p.area]),
+    const numbers = [v.angle, v.offset_x, v.offset_y, ...parts.flatMap(p => [p.width, p.height,
+      p.min_width, p.area, p.surfaceWidth, p.surfaceHeight]),
       ...['min_width', 'room_area', 'laying_area', 'covered_area', 'grout_area', 'waste_area', 'waste_percent'].map(k => metrics[k])];
     if (metrics.symmetry !== null) numbers.push(metrics.symmetry);
     const points = (rings: unknown) => Array.isArray(rings) && rings.every((ring: unknown) => Array.isArray(ring) && ring.every((point: unknown) => Array.isArray(point) && point.length === 2 && point.every(isTenth)));
+    const tenth = (value: unknown) => typeof value === 'number' && isTenth(value);
     return numbers.every(n => typeof n === 'number' && isTenth(n)) &&
       ['tiles', 'full', 'cut', 'fragments', 'warnings'].every(key =>
         Number.isSafeInteger(metrics[key]) && (metrics[key] as number) >= 0) &&
-      parts.every(p => points(p.rings) && Array.isArray(p.center) && p.center.every(isTenth)) &&
-      Array.isArray(v.region) && v.region.every(points);
+      parts.every(p => points(p.rings) && Array.isArray(p.center) && p.center.every(isTenth) &&
+        (p.zoneId === null || typeof p.zoneId === 'string')) &&
+      Array.isArray(v.region) && v.region.every(points) &&
+      (v.shower === undefined || (() => {
+        if (!record(v.shower) || !record(v.shower.drain) || !Array.isArray(v.shower.zones) ||
+            !v.shower.zones.length || !tenth(v.shower.maxHeightMm)) return false;
+        const drain = v.shower.drain;
+        if (!['point', 'linear'].includes(String(drain.type)) ||
+            !['horizontal', 'vertical'].includes(String(drain.orientation)) ||
+            ![drain.x, drain.y, drain.width, drain.length].every(tenth)) return false;
+        return v.shower.zones.every(zone => record(zone) && typeof zone.id === 'string' &&
+          ['east', 'west', 'north', 'south'].includes(String(zone.axis)) && points(zone.rings) &&
+          [zone.slopePercent, zone.minHeightMm, zone.maxHeightMm].every(tenth));
+      })());
   };
   let valid = false;
   if (object && route.startsWith("v5/plan/")) {

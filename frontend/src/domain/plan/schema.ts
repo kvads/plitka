@@ -678,7 +678,7 @@ export function parseV6(value: unknown): ProjectDocumentV6 {
   };
   for (const raw of arr(doc.rooms)) {
     const room = obj(raw);
-    exact(room, ["id", "topologyKey", "binding", "name", "material", "rules", "fieldInputs", "acknowledgment", "confirmed", "boundaryMemory"]);
+    exact(room, ["id", "topologyKey", "binding", "name", "material", "rules", "fieldInputs", "acknowledgment", "confirmed", "boundaryMemory", "showerTray"]);
     const id = str(room.id, 1);
     if (roomIds.has(id)) fail();
     roomIds.add(id);
@@ -696,6 +696,17 @@ export function parseV6(value: unknown): ProjectDocumentV6 {
     exact(material, ["tile", "grout"]); exact(rules, ["gap", "threshold", "angle"]);
     for (const subject of [material.tile, material.grout, rules.gap, rules.threshold, rules.angle])
       requireTenth(num(subject));
+    if (room.showerTray !== undefined && room.showerTray !== null) {
+      const shower = obj(room.showerTray);
+      exact(shower, ["drainType", "drainX", "drainY", "drainWidth", "drainLength", "drainOrientation", "slopePercent"]);
+      choice(shower.drainType, ["point", "linear"]);
+      choice(shower.drainOrientation, ["horizontal", "vertical"]);
+      for (const subject of [shower.drainX, shower.drainY, shower.drainWidth,
+        shower.drainLength, shower.slopePercent]) requireTenth(num(subject));
+      const width = num(shower.drainWidth), length = num(shower.drainLength), slope = num(shower.slopePercent);
+      if (width < 50 || width > 2000 || length < 50 || length > 3000 ||
+          slope < .1 || slope > 10 || (shower.drainType === "point" && length !== width)) fail();
+    }
     if (room.confirmed !== null) {
       const confirmed = obj(room.confirmed);
       exact(confirmed, ["graph", "topologyKey", "geometryKey", "dependencyKey", "measurementKey", "acknowledgment", "sourceDraftRevision"]);

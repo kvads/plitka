@@ -32,6 +32,14 @@ test("v6 raw physical fixtures validate every stored graph snapshot", () => {
   expect(parseV6(linked).sharedGrid?.offsetX).toBe(73.2);
   expect(() => parseV6({ ...linked, sharedGrid: { ...linked.sharedGrid,
     linkedRoomIds: ["missing-room"] } })).toThrow();
+  const shower = { ...source, rooms: source.rooms.map((room, index) => index ? room : { ...room,
+    showerTray: { drainType: "point" as const, drainX: 500, drainY: 500,
+      drainWidth: 100, drainLength: 100, drainOrientation: "horizontal" as const,
+      slopePercent: 2 } }) };
+  expect(parseV6(shower).rooms[0].showerTray?.slopePercent).toBe(2);
+  expect(() => parseV6({ ...shower, rooms: shower.rooms.map((room, index) => index ? room : {
+    ...room, showerTray: { ...room.showerTray!, drainLength: 120 },
+  }) })).toThrow();
   expect(parseV6(createV6("Новый проект", "", "fresh"))).toMatchObject({
     schemaVersion: 6, plan: { draft: { walls: [], junctions: [] } },
   });

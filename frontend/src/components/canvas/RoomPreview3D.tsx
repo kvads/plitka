@@ -65,6 +65,29 @@ const normalizeUvs = (geometry: THREE.BufferGeometry) => {
   uv.needsUpdate = true;
 };
 
+const showerHeight = (layout: Layout | null, zoneId: string | null | undefined,
+  x: number, y: number) => {
+  const shower = layout?.shower;
+  const zone = shower?.zones.find(candidate => candidate.id === zoneId);
+  if (!shower || !zone) return 0;
+  const slope = zone.slopePercent / 100;
+  return zone.axis === "east" || zone.axis === "west"
+    ? Math.abs(x - shower.drain.x) * slope
+    : Math.abs(y - shower.drain.y) * slope;
+};
+
+const elevate = (geometry: THREE.BufferGeometry, layout: Layout | null,
+  zoneId: string | null | undefined, cx: number, cy: number, liftMm = 0) => {
+  const position = geometry.getAttribute("position");
+  for (let index = 0; index < position.count; index++) {
+    const x = position.getX(index) * 1000 + cx;
+    const y = position.getY(index) * 1000 + cy;
+    position.setZ(index, (showerHeight(layout, zoneId, x, y) + liftMm) / 1000);
+  }
+  position.needsUpdate = true;
+  geometry.computeVertexNormals();
+};
+
 const roomCountText = (count: number) => {
   const mod100 = count % 100;
   const mod10 = count % 10;
@@ -112,10 +135,13 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 0.92;
     renderer.domElement.setAttribute("role", "img");
+    const hasShower = visibleRooms.some(room => room.layout?.shower);
     renderer.domElement.setAttribute(
       "aria-label",
       through
         ? `Интерактивная 3D-модель сквозной раскладки. В сцене ${roomCountText(visibleRooms.length)} с общей сеткой плитки.`
+        : hasShower
+          ? `Интерактивная 3D-модель помещения с душевым поддоном, уклонными плоскостями и сливом.`
         : multiRoom
           ? `Интерактивная 3D-модель всех помещений. В сцене ${roomCountText(visibleRooms.length)}.`
           : `Интерактивная 3D-модель помещения «${visibleRooms[0].name}» с серой плиткой на полу.`,
@@ -140,17 +166,19 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     });
     materials.push(groutMaterial);
     visibleRooms.forEach(room => {
-      const roomShape = ringShape(
-        [room.polygon.outline as Point[], ...(room.polygon.holes as Point[][])],
-        cx,
-        cy,
-      );
-      const floorGeometry = new THREE.ShapeGeometry(roomShape);
-      geometries.push(floorGeometry);
-      const floor = new THREE.Mesh(floorGeometry, groutMaterial);
-      floor.rotation.x = -Math.PI / 2;
-      floor.receiveShadow = true;
-      scene.add(floor);
+      const surfaces = room.layout?.shower?.zones.map(zone => ({
+        id: zone.id, rings: zone.rings,
+      })) ?? [{ id: null, rings: [room.polygon.outline as Point[],
+        ...(room.polygon.holes as Point[][])] }];
+      surfaces.forEach(surface => {
+        const floorGeometry = new THREE.ShapeGeometry(ringShape(surface.rings, cx, cy));
+        elevate(floorGeometry, room.layout, surface.id, cx, cy);
+        geometries.push(floorGeometry);
+        const floor = new THREE.Mesh(floorGeometry, groutMaterial);
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        scene.add(floor);
+      });
     });
 
     const tileMaterial = new THREE.MeshStandardMaterial({
@@ -167,6 +195,9 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
       opacity: 0.9,
     });
     materials.push(groutLineMaterial);
+    const drainMaterial = new THREE.MeshStandardMaterial({ color: 0x46534c, roughness: 0.45,
+      metalness: 0.35 });
+    materials.push(drainMaterial);
     const texture = new THREE.TextureLoader().load(textureUrl, (loaded) => {
       loaded.colorSpace = THREE.SRGBColorSpace;
       loaded.anisotropy = renderer.capabilities.getMaxAnisotropy();
@@ -179,18 +210,18 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
       room.layout?.parts.forEach((part) => {
         if (!part.rings[0]?.length) return;
         const geometry = new THREE.ShapeGeometry(ringShape(part.rings, cx, cy));
+        elevate(geometry, room.layout, part.zoneId, cx, cy, 2);
         normalizeUvs(geometry);
         geometries.push(geometry);
         const tile = new THREE.Mesh(geometry, tileMaterial);
         tile.rotation.x = -Math.PI / 2;
-        tile.position.y = 0.018;
         tile.receiveShadow = true;
         scene.add(tile);
         part.rings.forEach((ring) => {
           const outlineGeometry = new THREE.BufferGeometry().setFromPoints(
             ring.map(([x, y]) => new THREE.Vector3(
               (x - cx) / 1000,
-              0.024,
+              (showerHeight(room.layout, part.zoneId, x, y) + 3) / 1000,
               -(y - cy) / 1000,
             )),
           );
@@ -198,6 +229,29 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
           scene.add(new THREE.LineLoop(outlineGeometry, groutLineMaterial));
         });
       });
+      const drain = room.layout?.shower?.drain;
+      if (drain) {
+        const drainWidth = drain.orientation === "horizontal" ? drain.length : drain.width;
+        const drainDepth = drain.orientation === "horizontal" ? drain.width : drain.length;
+        const drainGeometry = new THREE.BoxGeometry(drainWidth / 1000, .016, drainDepth / 1000);
+        geometries.push(drainGeometry);
+        const drainMesh = new THREE.Mesh(drainGeometry, drainMaterial);
+        drainMesh.name = `shower-drain-${room.id}`;
+        drainMesh.userData.showerDrain = true;
+        drainMesh.position.set((drain.x - cx) / 1000, .008, -(drain.y - cy) / 1000);
+        drainMesh.receiveShadow = true;
+        scene.add(drainMesh);
+      }
+      room.layout?.shower?.zones.forEach(zone => zone.rings.forEach(ring => {
+        const breakGeometry = new THREE.BufferGeometry().setFromPoints(ring.map(([x, y]) =>
+          new THREE.Vector3((x - cx) / 1000,
+            (showerHeight(room.layout, zone.id, x, y) + 4) / 1000,
+            -(y - cy) / 1000)));
+        geometries.push(breakGeometry);
+        const line = new THREE.LineLoop(breakGeometry, groutLineMaterial);
+        line.userData.showerBreak = zone.id;
+        scene.add(line);
+      }));
     });
 
     const wallMaterial = new THREE.MeshStandardMaterial({

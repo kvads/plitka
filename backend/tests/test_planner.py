@@ -258,3 +258,54 @@ def test_v5_optimizer_skips_invalid_best_candidate_before_ranking(monkeypatch):
     assert result['pareto_count'] >= 1
     assert all((variant['offset_x'], variant['offset_y']) != (0, 0)
                for variant in result['variants'])
+
+
+def shower(kind='point', **overrides):
+    return {'drainType': kind, 'drainX': 600, 'drainY': 600,
+            'drainWidth': 100, 'drainLength': 100 if kind == 'point' else 800,
+            'drainOrientation': 'horizontal', 'slopePercent': 2} | overrides
+
+
+@pytest.mark.parametrize(('settings', 'expected_axes'), [
+    (shower(), {'east', 'north', 'west', 'south'}),
+    (shower('linear'), {'north', 'south'}),
+    (shower('linear', drainOrientation='vertical'), {'east', 'west'}),
+])
+def test_v5_shower_tray_zones_cover_region_and_split_parts(settings, expected_axes):
+    result = calculate_v5(project(tile=400, shower=settings), 0, 0)
+    zone_polygons = [Polygon(zone['rings'][0], zone['rings'][1:])
+                     for zone in result['shower']['zones']]
+    tiled_region = unary_union([Polygon(rings[0], rings[1:]) for rings in result['region']])
+    drain = result['shower']['drain']
+    drain_width = drain['length'] if drain['orientation'] == 'vertical' else drain['width']
+    drain_length = drain['width'] if drain['orientation'] == 'vertical' else drain['length']
+    drain_shape = box(drain['x'] - drain_length / 2, drain['y'] - drain_width / 2,
+                      drain['x'] + drain_length / 2, drain['y'] + drain_width / 2)
+    assert set(zone['axis'] for zone in result['shower']['zones']) == expected_axes
+    assert tiled_region.intersection(drain_shape).area == 0
+    assert tiled_region.symmetric_difference(unary_union(zone_polygons)).area < .01
+    assert sum(poly.area for poly in zone_polygons) - unary_union(zone_polygons).area < .01
+    assert all(part['zoneId'] for part in result['parts'])
+    assert all(part['surfaceWidth'] >= part['width'] and
+               part['surfaceHeight'] >= part['height'] for part in result['parts'])
+    assert result['shower']['maxHeightMm'] > 0
+
+
+def test_v5_shower_rejects_outside_drain_and_bad_point_frame():
+    with pytest.raises(ValueError, match='полностью находиться'):
+        calculate_v5(project(shower=shower(drainX=1190)), 0, 0)
+    with pytest.raises(ValueError, match='длина и ширина'):
+        calculate_v5(project(shower=shower(drainLength=120)), 0, 0)
+
+
+def test_v5_shower_api_returns_localized_contract():
+    payload = project(tile=400, shower=shower()).model_dump()
+    response = client.post('/api/v5/layout', json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body['shower']['zones']) == 4
+    assert all(part['zoneId'] in {'east', 'north', 'west', 'south'} for part in body['parts'])
+    bad = payload | {'shower': shower(drainX=2000)}
+    response = client.post('/api/v5/layout', json=bad)
+    assert response.status_code == 422
+    assert 'Рамка слива' in response.json()['detail']

@@ -2,7 +2,7 @@ import type { LayoutRequest } from "../../types";
 import type { PhysicalRoomRecordV6, PhysicalRoomV5, ProjectDocumentV6, SharedLayoutGridV6 } from "./types";
 
 export const roomLayoutBasis = (room: PhysicalRoomRecordV6, face: PhysicalRoomV5) =>
-  JSON.stringify([face.geometryKey, room.material, room.rules]);
+  JSON.stringify([face.geometryKey, room.material, room.rules, room.showerTray ?? null]);
 
 export function activeSharedGrid(doc: ProjectDocumentV6, faces: PhysicalRoomV5[]): SharedLayoutGridV6 | null {
   const grid = doc.sharedGrid;
@@ -18,7 +18,8 @@ export function activeSharedGrid(doc: ProjectDocumentV6, faces: PhysicalRoomV5[]
 
 export function roomLayoutKey(doc: ProjectDocumentV6, room: PhysicalRoomRecordV6,
   face: PhysicalRoomV5 | undefined, grid: SharedLayoutGridV6 | null): string {
-  const basis = JSON.stringify([doc.id, room.id, face?.geometryKey, room.material, room.rules]);
+  const basis = JSON.stringify([doc.id, room.id, face?.geometryKey, room.material, room.rules,
+    room.showerTray ?? null]);
   if (!doc.sharedGrid?.linkedRoomIds.includes(room.id)) return basis;
   return JSON.stringify([basis, grid ? [grid.referenceRoomId, grid.tile, grid.grout,
     grid.angle, grid.offsetX, grid.offsetY] : "stale-shared-grid"]);
@@ -37,5 +38,6 @@ export function roomLayoutRequest(room: PhysicalRoomRecordV6, face: PhysicalRoom
     threshold: room.rules.threshold,
     offset_x: grid?.offsetX ?? 0,
     offset_y: grid?.offsetY ?? 0,
+    ...(room.showerTray ? { shower: room.showerTray } : {}),
   };
 }

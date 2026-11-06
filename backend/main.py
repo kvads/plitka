@@ -3,7 +3,7 @@ import hashlib
 import hmac
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
@@ -21,6 +21,17 @@ from .database import (
 from psycopg import Error as DatabaseError
 
 
+class ShowerTray(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
+    drainType: Literal["point", "linear"]
+    drainX: float = Field(ge=-100000, le=100000)
+    drainY: float = Field(ge=-100000, le=100000)
+    drainWidth: float = Field(ge=50, le=2000)
+    drainLength: float = Field(ge=50, le=3000)
+    drainOrientation: Literal["horizontal", "vertical"] = "horizontal"
+    slopePercent: float = Field(ge=.1, le=10)
+
+
 class Project(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
     outline: list[tuple[float, float]] = Field(min_length=3, max_length=100)
@@ -32,6 +43,7 @@ class Project(BaseModel):
     angle: float = Field(default=0, ge=0, lt=90)
     offset_x: float = Field(default=0, ge=-100000, le=100000)
     offset_y: float = Field(default=0, ge=-100000, le=100000)
+    shower: ShowerTray | None = None
 
 
 class ProjectSave(BaseModel):

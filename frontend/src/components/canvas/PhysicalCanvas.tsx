@@ -580,12 +580,34 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       fill={highlightRooms && roomMissing[face.topologyKey] ? "#fff4bb" : "#fff"}
       stroke={face.topologyKey === selectedRoomKey ? "#444" : "none"}
       strokeWidth={2 / pixelScale} />)}
+    {layouts.flatMap(({ roomId, layout }) => (layout.shower?.zones ?? []).map(zone => <path
+      key={`${roomId}:zone:${zone.id}`} data-shower-zone={zone.id} pointerEvents="none"
+      d={zone.rings.map(ring => ring.map(([x, y], index) =>
+        `${index ? "L" : "M"}${x} ${-y}`).join(" ") + " Z").join(" ")}
+      fill={zone.axis === "east" || zone.axis === "west" ? "#e4ece6" : "#edf1e9"}
+      fillRule="evenodd" stroke="none" />))}
     {layouts.flatMap(({ roomId, layout }) => layout.parts.map(part => <path key={`${roomId}:${part.id}`}
       data-layout-room-id={roomId} pointerEvents="none"
       d={part.rings.map(ring => ring.map(([x, y], index) =>
         `${index ? "L" : "M"}${x} ${-y}`).join(" ") + " Z").join(" ")}
       fill={part.full ? "#eee" : "#ccc"} fillRule="evenodd"
       stroke="#777" strokeWidth={Math.max(0.7 / pixelScale, 0.15)} />))}
+    {layouts.flatMap(({ roomId, layout }) => (layout.shower?.zones ?? []).map(zone => <path
+      key={`${roomId}:break:${zone.id}`} data-shower-break={zone.id} pointerEvents="none"
+      d={zone.rings.map(ring => ring.map(([x, y], index) =>
+        `${index ? "L" : "M"}${x} ${-y}`).join(" ") + " Z").join(" ")}
+      fill="none" stroke="#315247" strokeDasharray={`${6 / pixelScale} ${4 / pixelScale}`}
+      strokeWidth={Math.max(1.4 / pixelScale, .2)} />))}
+    {layouts.flatMap(({ roomId, layout }) => {
+      const drain = layout.shower?.drain;
+      if (!drain) return [];
+      const width = drain.orientation === "horizontal" ? drain.length : drain.width;
+      const height = drain.orientation === "horizontal" ? drain.width : drain.length;
+      return [<rect key={`${roomId}:drain`} data-shower-drain="true" pointerEvents="none"
+        x={drain.x - width / 2} y={-(drain.y + height / 2)} width={width} height={height}
+        rx={Math.min(width, height) * .12} fill="#58645d" stroke="#17241e"
+        strokeWidth={Math.max(1.8 / pixelScale, .25)} />];
+    })}
     <g pointerEvents="none">
       {(acceptedPreview?.wallArea ?? wallArea).map((shape, index) => <path key={index} d={svgPath(shape)} fill="#aaa" fillRule="evenodd"
         stroke="#292929" strokeWidth={2 / pixelScale} />)}

@@ -4,7 +4,7 @@ import PhysicalCanvas from "./PhysicalCanvas";
 import ProjectMenu from "./ProjectMenu";
 import { usePhysicalProject } from "../../domain/plan/usePhysicalProject";
 import { deleteV6 } from "../../domain/plan/storage";
-import type { ProjectDocumentV6 } from "../../domain/plan/types";
+import type { ProjectDocumentV6, ShowerTray } from "../../domain/plan/types";
 import { isTenth } from "../../domain/plan/precision";
 import { physicalGraphCanonicalJson } from "../../domain/plan/physical-basis";
 import { newRoom } from "../../domain/plan/rooms";
@@ -17,6 +17,7 @@ import { activeSharedGrid, roomLayoutBasis, roomLayoutKey, roomLayoutRequest } f
 import "./canvas.css";
 
 const RoomPreview3D = lazy(() => import("./RoomPreview3D"));
+const compactViewQuery = "(max-width: 700px), (hover: none) and (pointer: coarse) and (max-height: 700px)";
 
 const displayTenth = (value: number) => value.toLocaleString("ru-RU", {
   minimumFractionDigits: 1, maximumFractionDigits: 1,
@@ -80,6 +81,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const [layoutScope, setLayoutScope] = useState<"room" | "through">(
     () => initial.sharedGrid ? "through" : "room");
   const [room3D, setRoom3D] = useState(false);
+  const [compactView, setCompactView] = useState(() => window.matchMedia(compactViewQuery).matches);
+  const [viewRoomId, setViewRoomId] = useState(initial.selectedRoomId);
+  const [viewViewport, setViewViewport] = useState(initial.viewport);
   const layoutGeneration = useRef(0);
   const failedAutomaticLayouts = useRef(new Set<string>());
   const thickness = Number(thicknessInput.replace(",", "."));
@@ -100,7 +104,22 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     setSelectedWallId(null); setSelectedHandle(null);
   } }, [selectedWallId, selected]);
   useEffect(() => { if (selectedDoorId && !selectedDoor) setSelectedDoorId(null); }, [selectedDoorId, selectedDoor]);
-  const room = doc.rooms.find(item => item.id === doc.selectedRoomId);
+  useEffect(() => {
+    const media = window.matchMedia(compactViewQuery);
+    const changed = () => setCompactView(media.matches);
+    media.addEventListener("change", changed);
+    return () => media.removeEventListener("change", changed);
+  }, []);
+  useEffect(() => {
+    if (!compactView) return;
+    setViewRoomId(doc.selectedRoomId);
+    setViewViewport(doc.viewport);
+    setWallTool(false);
+    setDoorTool(false);
+    setInteractionTool("select");
+    setProjectMenu(false);
+  }, [compactView]);
+  const room = doc.rooms.find(item => item.id === (compactView ? viewRoomId : doc.selectedRoomId));
   const selectedFace = response?.faces.find(face => face.topologyKey === room?.topologyKey);
   const sharedGrid = activeSharedGrid(doc, response?.faces ?? []);
   const referenceRoom = doc.rooms.find(item => item.id === doc.sharedGrid?.referenceRoomId);
@@ -159,7 +178,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     if (selectedDoorWall && isTenth(parsed) && parsed >= 0 && parsed <= selectedDoorWall.thicknessMm)
       setSelectedDoorRevealInput(String(Math.round((selectedDoorWall.thicknessMm - parsed) * 10) / 10));
   };
-  const layoutMode = doc.workflow.requestedStage === "variants";
+  const layoutMode = compactView || doc.workflow.requestedStage === "variants";
   useEffect(() => {
     deletionGeneration.current++;
     setPendingElementDeletion(null);
@@ -308,6 +327,42 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           fieldInputs: { ...item.fieldInputs, [key]: text },
         } : item),
       }))} />;
+  const showerField = (key: keyof Pick<ShowerTray, "drainX" | "drainY" | "drainWidth" |
+    "drainLength" | "slopePercent">, label: string, min: number, max: number, unit: string) =>
+    room?.showerTray && <NumberField label={label} value={room.showerTray[key]}
+      raw={room.fieldInputs[`shower.${key}`]} min={min} max={max} unit={unit}
+      onCommit={(number, text) => update(current => ({ ...current,
+        rooms: current.rooms.map(item => item.id === room.id && item.showerTray ? {
+          ...item,
+          showerTray: number !== null && isTenth(number) && number >= min && number <= max
+            ? { ...item.showerTray, [key]: number,
+              ...(key === "drainWidth" && item.showerTray.drainType === "point"
+                ? { drainLength: number } : {}) } : item.showerTray,
+          fieldInputs: { ...item.fieldInputs, [`shower.${key}`]: text },
+        } : item),
+      }))} />;
+  const toggleShowerTray = (enabled: boolean) => {
+    if (!room) return;
+    const outline = (selectedFace?.polygon?.outline ?? []) as [number, number][];
+    const xs = outline.map(point => point[0]), ys = outline.map(point => point[1]);
+    const centerX = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0;
+    const centerY = ys.length ? (Math.min(...ys) + Math.max(...ys)) / 2 : 0;
+    const initialTray: ShowerTray = {
+      drainType: "point", drainX: Math.round(centerX * 10) / 10,
+      drainY: Math.round(centerY * 10) / 10, drainWidth: 100, drainLength: 100,
+      drainOrientation: "horizontal", slopePercent: 2,
+    };
+    setLayoutScope("room");
+    update(current => ({ ...current, sharedGrid: enabled ? null : current.sharedGrid,
+      rooms: current.rooms.map(item => item.id === room.id
+        ? { ...item, showerTray: enabled ? item.showerTray ?? initialTray : null } : item) }));
+  };
+  const updateShowerTray = (change: Partial<ShowerTray>) => {
+    if (!room) return;
+    update(current => ({ ...current, rooms: current.rooms.map(item =>
+      item.id === room.id && item.showerTray
+        ? { ...item, showerTray: { ...item.showerTray, ...change } } : item) }));
+  };
   useEffect(() => {
     if (!response || response.status === "invalid" || !responseMatchesDraft) return;
     const faceKeys = new Set(response.faces.map(face => face.topologyKey));
@@ -409,12 +464,19 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       highlightRooms={layoutMode} roomMissing={roomMissing}
       roomNames={Object.fromEntries(doc.rooms.filter(item => item.topologyKey).map(item => [item.topologyKey!, item.name]))}
       layouts={layoutMode ? visibleLayouts : []}
-      onSelectRoom={key => update(current => ({ ...current,
-        selectedRoomId: current.rooms.find(item => item.topologyKey === key)?.id ?? null }))}
-      viewport={doc.viewport} onViewport={viewport => update(current => ({ ...current, viewport }))}
-      selectedWallId={selectedWallId} onSelectWall={chooseWall}
-      selectedDoorId={selectedDoorId} onSelectDoor={chooseDoor}
-      deleteTool={interactionTool === "delete" && !layoutMode}
+      onSelectRoom={key => {
+        const id = doc.rooms.find(item => item.topologyKey === key)?.id ?? null;
+        if (compactView) setViewRoomId(id);
+        else update(current => ({ ...current, selectedRoomId: id }));
+      }}
+      viewport={compactView ? viewViewport : doc.viewport}
+      onViewport={viewport => compactView ? setViewViewport(viewport)
+        : update(current => ({ ...current, viewport }))}
+      selectedWallId={compactView ? null : selectedWallId}
+      onSelectWall={wallId => { if (!compactView) chooseWall(wallId); }}
+      selectedDoorId={compactView ? null : selectedDoorId}
+      onSelectDoor={openingId => { if (!compactView) chooseDoor(openingId); }}
+      deleteTool={!compactView && interactionTool === "delete" && !layoutMode}
       onDeleteWall={wallId => { void requestWallDeletion(wallId); }}
       onDeleteDoor={requestDoorDeletion}
       selectedHandle={selectedHandle} onSelectHandle={setSelectedHandle}
@@ -422,10 +484,10 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         if (selectedWallId && !busy) void command({ type: "nudgeWallHandle",
           wallId: selectedWallId, handle, axis, direction });
       }}
-      wallTool={wallTool && !layoutMode} thicknessMm={thicknessValid ? thickness : 100}
+      wallTool={!compactView && wallTool && !layoutMode} thicknessMm={thicknessValid ? thickness : 100}
       onDrawWall={edge => { if (thicknessValid && !busy) void drawWall(edge, "left", thickness); }}
       onResetWallTool={() => setWallTool(false)}
-      doorTool={doorTool && !layoutMode} doorWidthMm={doorWidthValid ? doorWidth : 800}
+      doorTool={!compactView && doorTool && !layoutMode} doorWidthMm={doorWidthValid ? doorWidth : 800}
       onPlaceDoor={(wallId, offsetMm) => {
         if (doorWidthValid && !busy) void command({ type: "addDoorOpening", wallId, offsetMm,
           widthMm: doorWidth });
@@ -436,37 +498,42 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}>
         {menuOpen ? <ChevronsLeft /> : <ChevronsRight />}
       </button>
-      {menuOpen && <aside className="canvas-sidebar" aria-label="Управление планом">
+      {menuOpen && <aside className="canvas-sidebar" aria-label={compactView ? "Навигация по проекту" : "Управление планом"}>
         <div className="canvas-title"><strong>{doc.name}</strong><small>{doc.address || "Адрес не указан"}</small></div>
         <button aria-label="Проекты" title="Проекты" onClick={onBack}><ArrowLeft /></button>
-        {!layoutMode && <button aria-label="Стена" title="Стена" aria-pressed={wallTool}
+        {!compactView && !layoutMode && <button aria-label="Стена" title="Стена" aria-pressed={wallTool}
           onClick={() => { setWallTool(value => !value); setDoorTool(false); chooseDoor(null);
             setInteractionTool("select");
             setMenuOpen(false); setProjectMenu(false); }}><PencilRuler /></button>}
-        {!layoutMode && <button aria-label="Дверной проём" title="Дверной проём" aria-pressed={doorTool}
+        {!compactView && !layoutMode && <button aria-label="Дверной проём" title="Дверной проём" aria-pressed={doorTool}
           onClick={() => { setDoorTool(value => !value); setWallTool(false); chooseWall(null);
             setInteractionTool("select");
             setMenuOpen(false); setProjectMenu(false); }}><DoorOpen /></button>}
-        <button aria-label="Проект" title="Проект" onClick={() => { setProjectMenu(value => !value); setMenuOpen(false); }}><FolderOpen /></button>
-        <button aria-label="Отменить правку" title="Отменить правку" disabled={!project.canUndo || busy}
-          onClick={() => project.undo()}><RotateCcw /></button>
+        {!compactView && <button aria-label="Проект" title="Проект" onClick={() => { setProjectMenu(value => !value); setMenuOpen(false); }}><FolderOpen /></button>}
+        {!compactView && <button aria-label="Отменить правку" title="Отменить правку" disabled={!project.canUndo || busy}
+          onClick={() => project.undo()}><RotateCcw /></button>}
       </aside>}
     </div>
-    <div className="physical-mode-switch" role="group" aria-label="Режим проекта" data-overlay>
-      <button type="button" aria-pressed={!layoutMode && !room3D} onClick={() => setMode("object")}>
+    {compactView && <div className="mobile-readonly-status" role="status" data-overlay>
+      Просмотр — редактирование доступно на компьютере
+    </div>}
+    <div className="physical-mode-switch" role="group" aria-label="Режим проекта" data-overlay
+      data-compact={compactView || undefined}>
+      {!compactView && <button type="button" aria-pressed={!layoutMode && !room3D} onClick={() => setMode("object")}>
         <PencilRuler aria-hidden="true" />
         <span>План</span>
-      </button>
-      <button type="button" aria-pressed={layoutMode && !room3D} onClick={() => setMode("variants")}>
+      </button>}
+      <button type="button" aria-pressed={layoutMode && !room3D}
+        onClick={() => compactView ? setRoom3D(false) : setMode("variants")}>
         <Grid3X3 aria-hidden="true" />
-        <span>Раскладка</span>
+        <span>{compactView ? "План" : "Раскладка"}</span>
       </button>
       <button type="button" aria-pressed={room3D} onClick={showRoomPreview}>
         <Cuboid aria-hidden="true" />
         <span>3D</span>
       </button>
     </div>
-    {!layoutMode && !room3D && <div className="physical-interaction-tools" role="toolbar"
+    {!compactView && !layoutMode && !room3D && <div className="physical-interaction-tools" role="toolbar"
       aria-label="Действие с элементами плана" data-overlay>
       <button type="button" aria-label="Выбрать элемент" title="Выбрать элемент"
         aria-pressed={interactionTool === "select" && !wallTool && !doorTool}
@@ -486,7 +553,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     {deleteWallError && <div className="physical-delete-error" role="alert" data-overlay>
       {deleteWallError}
     </div>}
-    {!room3D && (wallTool || doorTool || selected || selectedDoor || projectMenu || layoutMode || doc.plan.pendingEdit) && <aside className="canvas-panel" data-overlay data-layout-mode={layoutMode || undefined}
+    {!compactView && !room3D && (wallTool || doorTool || selected || selectedDoor || projectMenu || layoutMode || doc.plan.pendingEdit) && <aside className="canvas-panel" data-overlay data-layout-mode={layoutMode || undefined}
       style={{ position: "absolute", right: 12, top: 62, maxWidth: "min(340px, calc(100vw - 72px))", maxHeight: "calc(100dvh - 138px)", overflowY: "auto" }}>
       {wallTool && !layoutMode && <button type="button" className="physical-reset-wall-tool"
         onClick={() => setWallTool(false)} title="Также можно нажать Esc без начатой стены">
@@ -585,6 +652,40 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           {roomField("rules", "gap", "Отступ", 0, 100, "мм")}
           {roomField("rules", "threshold", "Минимальный размер подрезки", 1, 1000, "мм")}
           {(layoutScope === "through" || !linked) && roomField("rules", "angle", "Угол раскладки", 0, 89.9, "°")}
+          <fieldset className="shower-tray-fields">
+            <legend>Душевой поддон</legend>
+            <label className="shower-tray-toggle">
+              <input type="checkbox" checked={!!room.showerTray}
+                onChange={event => toggleShowerTray(event.target.checked)} />
+              <span>Рассчитать уклоны к сливу</span>
+            </label>
+            {room.showerTray && <>
+              <label>Тип слива<select value={room.showerTray.drainType}
+                onChange={event => {
+                  const drainType = event.target.value as ShowerTray["drainType"];
+                  updateShowerTray({ drainType,
+                    ...(drainType === "point" ? { drainLength: room.showerTray!.drainWidth } : {}) });
+                }}>
+                <option value="point">Точечный</option>
+                <option value="linear">Линейный</option>
+              </select></label>
+              {room.showerTray.drainType === "linear" && <label>Направление<select
+                value={room.showerTray.drainOrientation}
+                onChange={event => updateShowerTray({
+                  drainOrientation: event.target.value as ShowerTray["drainOrientation"],
+                })}>
+                <option value="horizontal">Горизонтальный</option>
+                <option value="vertical">Вертикальный</option>
+              </select></label>}
+              {showerField("drainX", "Координата слива X", -100000, 100000, "мм")}
+              {showerField("drainY", "Координата слива Y", -100000, 100000, "мм")}
+              {showerField("drainWidth", "Ширина рамки", 50, 2000, "мм")}
+              {room.showerTray.drainType === "linear" &&
+                showerField("drainLength", "Длина слива", 100, 3000, "мм")}
+              {showerField("slopePercent", "Уклон", .1, 10, "%")}
+              <small className="muted">Плитки на линиях перелома будут разделены на плоские детали.</small>
+            </>}
+          </fieldset>
           </section>
           <button disabled={layoutLoading || !selectedFace.validation.valid ||
               (layoutScope === "through" && doc.rooms.filter(item => item.binding === "attached").length < 2) ||
@@ -606,6 +707,11 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           </div>}
           {cachedLayout?.key === layoutKey && <>
             <p>Плиток: {activeLayout?.metrics.tiles ?? 0}; отход: {activeLayout?.metrics.waste_percent ?? 0}%</p>
+            <p className="muted">Производственные размеры реза округлены до целого миллиметра.</p>
+            {activeLayout?.shower && <p className="shower-result-summary" role="status">
+              Поддон: {activeLayout.shower.zones.length} уклонных зон, перепад до {
+                displayTenth(activeLayout.shower.maxHeightMm)} мм.
+            </p>}
             <div className="variant-list">{cachedLayout.variants.map((variant, index) =>
               <button key={index} aria-pressed={cachedLayout.selected === index}
                 onClick={() => {
