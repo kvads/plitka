@@ -149,12 +149,35 @@ def simple_contact(existing: PhysicalWallV5, new: PhysicalWallV5,
     ])
 
 
+def _incidental_triple_corner(first: PhysicalWallV5, second: PhysicalWallV5,
+                              walls: list[PhysicalWallV5]) -> bool:
+    """A branch and a continuation may meet at one vertex of their host."""
+    shared = polygon(first).intersection(polygon(second))
+    if not isinstance(shared, ShapelyPoint):
+        return False
+    for third in walls:
+        if third.id in (first.id, second.id):
+            continue
+        try:
+            if (simple_contact(first, third, "triple-probe-first") and
+                    simple_contact(second, third, "triple-probe-second")):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def validate_simple_contacts(graph: PhysicalGraphV5) -> None:
     """Every touching pair needs its own registered, matching physical contact."""
     expected_pairs = {}
     for index, a in enumerate(graph.walls):
         for b in graph.walls[index + 1:]:
-            expected = simple_contact(a, b, "expected")
+            try:
+                expected = simple_contact(a, b, "expected")
+            except ValueError:
+                if _incidental_triple_corner(a, b, graph.walls):
+                    continue
+                raise
             if expected:
                 expected_pairs[frozenset((a.id, b.id))] = expected
     actual_pairs = {}
@@ -186,7 +209,12 @@ def rebuild_simple_contacts(graph: PhysicalGraphV5, previous: PhysicalGraphV5) -
         for second in graph.walls[index + 1:]:
             pair = frozenset((first.id, second.id))
             digest = hashlib.sha256("\0".join(sorted(pair)).encode()).hexdigest()[:24]
-            joint = simple_contact(first, second, old_ids.get(pair, "joint-" + digest))
+            try:
+                joint = simple_contact(first, second, old_ids.get(pair, "joint-" + digest))
+            except ValueError:
+                if _incidental_triple_corner(first, second, graph.walls):
+                    continue
+                raise
             if joint:
                 new_joints.append(joint)
                 current_pairs.add(pair)

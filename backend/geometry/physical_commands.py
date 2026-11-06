@@ -185,6 +185,8 @@ def _line_intersection(first_a: PhysicalPoint, first_b: PhysicalPoint,
                        second_a: PhysicalPoint, second_b: PhysicalPoint) -> PhysicalPoint | None:
     ux, uy = first_b.x - first_a.x, first_b.y - first_a.y
     vx, vy = second_b.x - second_a.x, second_b.y - second_a.y
+    if math.hypot(ux, uy) < .1 or math.hypot(vx, vy) < .1:
+        return None
     denominator = ux * vy - uy * vx
     if abs(denominator) < .1 * math.hypot(ux, uy) * math.hypot(vx, vy):
         return None
@@ -215,6 +217,106 @@ def _restore_square_cap(wall: PhysicalWallV5, cap_index: int) -> PhysicalWallV5:
     opposite_index = 3 if cap_index == 0 else 2
     return _replace_cap(wall, cap_index, canonical.corners[cap_index],
                         canonical.corners[opposite_index])
+
+
+def _open_corner_for_continuation(graph: PhysicalGraphV5,
+                                  wall: PhysicalWallV5
+                                  ) -> tuple[PhysicalWallV5, set[str]]:
+    """Turn an occupied L cap into a branch plus a straight continuation.
+
+    The stored L joint has one diagonal shared cap.  Continuing either wall
+    from that corner requires restoring its square cap and trimming the other
+    wall to the restored long face before the new cap can be attached.
+    """
+    wall_dx = wall.drawnEdge[1].x - wall.drawnEdge[0].x
+    wall_dy = wall.drawnEdge[1].y - wall.drawnEdge[0].y
+    wall_length = math.hypot(wall_dx, wall_dy)
+    if wall_length < .1:
+        return wall, set()
+    wall_indices = {item.id: index for index, item in enumerate(graph.walls)}
+    matches = []
+    for joint in graph.junctions:
+        if (len(joint.participants) != 2 or
+                any(part.edge not in ("startCap", "endCap")
+                    for part in joint.participants)):
+            continue
+        for continued_part, branch_part in (
+            (joint.participants[0], joint.participants[1]),
+            (joint.participants[1], joint.participants[0]),
+        ):
+            continued = graph.walls[wall_indices[continued_part.wallId]]
+            branch = graph.walls[wall_indices[branch_part.wallId]]
+            continued_cap = 0 if continued_part.edge == "startCap" else 1
+            branch_cap = 0 if branch_part.edge == "startCap" else 1
+            restored_continued = _restore_square_cap(continued, continued_cap)
+            restored_branch = _restore_square_cap(branch, branch_cap)
+            dx = continued.drawnEdge[1].x - continued.drawnEdge[0].x
+            dy = continued.drawnEdge[1].y - continued.drawnEdge[0].y
+            length = math.hypot(dx, dy)
+            sine = abs(wall_dx * dy - wall_dy * dx) / (wall_length * length)
+            if sine > .01:
+                continue
+            existing_indices = (continued_cap, 3 if continued_cap == 0 else 2)
+            existing_points = [restored_continued.corners[index]
+                               for index in existing_indices]
+            existing_center = PhysicalPoint(
+                x=sum(point.x for point in existing_points) / 2,
+                y=sum(point.y for point in existing_points) / 2)
+            for new_cap in (0, 1):
+                new_indices = (new_cap, 3 if new_cap == 0 else 2)
+                new_points = [wall.corners[index] for index in new_indices]
+                new_center = PhysicalPoint(
+                    x=sum(point.x for point in new_points) / 2,
+                    y=sum(point.y for point in new_points) / 2)
+                distance = math.dist((existing_center.x, existing_center.y),
+                                     (new_center.x, new_center.y))
+                perpendicular = abs((new_center.x - existing_center.x) * wall_dy -
+                                    (new_center.y - existing_center.y) * wall_dx) / wall_length
+                reach = 2 * max(wall.thicknessMm, continued.thicknessMm,
+                                branch.thicknessMm)
+                if distance > reach + .15 or perpendicular > .15:
+                    continue
+                direct = (math.dist((new_points[0].x, new_points[0].y),
+                                    (existing_points[0].x, existing_points[0].y)) +
+                          math.dist((new_points[1].x, new_points[1].y),
+                                    (existing_points[1].x, existing_points[1].y)))
+                crossed = (math.dist((new_points[0].x, new_points[0].y),
+                                     (existing_points[1].x, existing_points[1].y)) +
+                           math.dist((new_points[1].x, new_points[1].y),
+                                     (existing_points[0].x, existing_points[0].y)))
+                drawn, opposite = (existing_points if direct <= crossed
+                                    else list(reversed(existing_points)))
+                aligned_wall = _replace_cap(wall, new_cap, drawn, opposite)
+                trimmed_branch = _miter_contact(restored_branch,
+                                                restored_continued)
+                try:
+                    validate_physical_graph(PhysicalGraphV5(
+                        walls=[restored_continued, trimmed_branch, aligned_wall],
+                        junctions=[]))
+                    if not simple_contact(restored_continued, aligned_wall,
+                                          "continuation-probe"):
+                        continue
+                    if not simple_contact(restored_continued, trimmed_branch,
+                                          "branch-probe"):
+                        continue
+                    # The branch and continuation may share only their one
+                    # triple-node corner; any real contact would be ambiguous.
+                    shared_corner = polygon(trimmed_branch).intersection(
+                        polygon(aligned_wall))
+                    if not isinstance(shared_corner, ShapelyPoint):
+                        continue
+                except ValueError:
+                    continue
+                matches.append((distance, continued_part.wallId,
+                                branch_part.wallId, restored_continued,
+                                trimmed_branch, aligned_wall))
+    if not matches:
+        return wall, set()
+    _, continued_id, branch_id, continued, branch, aligned = min(
+        matches, key=lambda item: item[0])
+    graph.walls[wall_indices[continued_id]] = continued
+    graph.walls[wall_indices[branch_id]] = branch
+    return aligned, {branch_id}
 
 
 def _miter_end_caps(first: PhysicalWallV5, second: PhysicalWallV5
@@ -361,6 +463,34 @@ def normalize_mitered_contacts(graph: PhysicalGraphV5) -> PhysicalGraphV5:
     return repaired
 
 
+def _attach_drawn_wall(graph: PhysicalGraphV5, wall: PhysicalWallV5,
+                       command_id: str,
+                       incidental_corner_walls: set[str] | None = None
+                       ) -> PhysicalGraphV5:
+    """Fit and register a wall against a prepared copy of the graph."""
+    skipped = incidental_corner_walls or set()
+    for index, existing in enumerate(graph.walls):
+        if existing.id in skipped:
+            continue
+        cap_miter = _miter_end_caps(wall, existing)
+        if cap_miter:
+            wall, graph.walls[index] = cap_miter
+        else:
+            wall = _miter_contact(wall, existing)
+    for existing in graph.walls:
+        if existing.id in skipped:
+            continue
+        suffix = hashlib.sha256((command_id + "\0" + existing.id).encode()).hexdigest()[:20]
+        joint_id = "joint-" + command_id if len(graph.walls) == 1 else "joint-" + suffix
+        joint = simple_contact(existing, wall, joint_id)
+        if joint:
+            graph.junctions.append(joint)
+    graph.walls.append(wall)
+    graph = rebuild_simple_contacts(graph, graph)
+    validate_physical_graph(graph)
+    return graph
+
+
 def execute_physical(graph: PhysicalGraphV5, command: dict,
                      command_id: str) -> tuple[PhysicalGraphV5, list[str]]:
     """Return a new graph or raise without mutating the input graph."""
@@ -447,25 +577,16 @@ def execute_physical(graph: PhysicalGraphV5, command: dict,
             points = _complete_oblique_contact(points, existing, command["side"],
                                                thickness_mm)
         wall = create_wall(wall_id, points, command["side"], thickness_mm)
-        for index, existing in enumerate(next_graph.walls):
-            cap_miter = _miter_end_caps(wall, existing)
-            if cap_miter:
-                wall, next_graph.walls[index] = cap_miter
-            else:
-                wall = _miter_contact(wall, existing)
-        for existing in next_graph.walls:
-            suffix = hashlib.sha256((command_id + "\0" + existing.id).encode()).hexdigest()[:20]
-            joint_id = "joint-" + command_id if len(next_graph.walls) == 1 else "joint-" + suffix
-            joint = simple_contact(existing, wall, joint_id)
-            if joint:
-                next_graph.junctions.append(joint)
-        next_graph.walls.append(wall)
-        # Mitring the new wall can also move a cap of an existing wall. Any
-        # junction already stored for that cap must follow the new physical
-        # edge; otherwise a valid branch drawn into an occupied corner is
-        # rejected as a stale saved junction.
-        next_graph = rebuild_simple_contacts(next_graph, next_graph)
-        validate_physical_graph(next_graph)
+        try:
+            next_graph = _attach_drawn_wall(deepcopy(next_graph), wall, command_id)
+        except ValueError as original_error:
+            repaired_graph = deepcopy(next_graph)
+            repaired_wall, incidental_corner_walls = _open_corner_for_continuation(
+                repaired_graph, wall)
+            if not incidental_corner_walls:
+                raise original_error
+            next_graph = _attach_drawn_wall(repaired_graph, repaired_wall, command_id,
+                                            incidental_corner_walls)
         return next_graph, [wall_id]
     if kind == "setWallThickness":
         _fields(command, {"type", "wallId", "thicknessMm"})

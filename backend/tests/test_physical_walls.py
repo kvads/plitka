@@ -7,6 +7,7 @@ from backend.geometry.physical_models import PhysicalGraphV5
 from backend.geometry.physical_validation import canonical_basis_key, validate_physical_graph
 from backend.geometry.physical_geometry import create_wall
 from backend.geometry.physical_commands import execute_physical
+from backend.geometry.physical_commands import _line_intersection
 from backend.geometry.physical_models import PhysicalPoint
 from backend.geometry.physical_junctions import simple_contact, polygon
 from backend.geometry.physical_measurements import face_measurements
@@ -377,6 +378,41 @@ def test_wall_can_join_an_existing_l_corner_without_stale_junction_data():
     validated = client.post("/api/v5/plan/validate",
                             json=request(joined["graph"])).json()
     assert validated["status"] == "valid", validated["issues"]
+
+
+def test_wall_can_continue_out_of_an_occupied_room_corner():
+    graph = {"walls": [], "junctions": [], "openings": []}
+    for command_id, edge in [
+        ("room-left", [(-2003.2, -2.5), (-2003.2, -1312.3)]),
+        ("room-bottom", [(9.7, -2.5), (-2003.2, -2.5)]),
+    ]:
+        result = client.post("/api/v5/plan/command", json={
+            **command_request(graph), "commandId": command_id,
+            "command": {"type": "drawWall", "drawnEdge": [
+                {"x": x, "y": y} for x, y in edge],
+                "side": "left", "thicknessMm": 100},
+        }).json()
+        assert result["status"] == "applied", result["issues"]
+        graph = result["graph"]
+
+    continued = client.post("/api/v5/plan/command", json={
+        **command_request(graph), "commandId": "outside-room-corner",
+        "command": {"type": "drawWall", "drawnEdge": [
+            {"x": -1903.2, "y": -102.5}, {"x": -1903.2, "y": 916.7}],
+            "side": "left", "thicknessMm": 100},
+    }).json()
+
+    assert continued["status"] == "applied", continued["issues"]
+    assert len(continued["graph"]["walls"]) == 3
+    assert len(continued["graph"]["junctions"]) == 2
+    assert client.post("/api/v5/plan/validate",
+                       json=request(continued["graph"])).json()["status"] == "valid"
+
+
+def test_line_intersection_ignores_a_collapsed_edge():
+    point = PhysicalPoint(x=10, y=20)
+    assert _line_intersection(point, point, PhysicalPoint(x=0, y=0),
+                              PhysicalPoint(x=100, y=0)) is None
 
 
 def test_l_junction_rebuilds_both_caps_after_thickness_change():
