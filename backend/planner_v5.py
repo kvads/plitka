@@ -50,6 +50,9 @@ def validate_input(project) -> None:
                 raise ValueError('Для борта нужны высота и ширина.')
         if project.shower.recessDepthMm > (project.shower.baseHeightMm or 0):
             raise ValueError('Глубина чаши не может превышать высоту поддона.')
+    if (project.shower is not None and project.shower.drainSlopeMode == 'edge' and
+            project.shower.drainType != 'linear'):
+        raise ValueError('Односкатный слив у края должен быть линейным.')
 
 
 def offset_ticks(value: float, period: float) -> int:
@@ -203,6 +206,18 @@ def _object_shower_zones(shower, local):
             for zone_id, axis, zone in _shower_zones(shower, local_region)]
 
 
+def _validate_drain_placement(shower, region, drain):
+    if not region.covers(drain):
+        raise ValueError('Рамка слива должна полностью находиться внутри области укладки.')
+    boundary_distance = region.boundary.distance(drain)
+    if shower.drainSlopeMode == 'edge':
+        shared = drain.boundary.intersection(region.boundary.buffer(.11)).length
+        if shared < shower.drainLength * .8:
+            raise ValueError('Односкатный линейный слив должен примыкать длинной стороной к краю поддона.')
+    elif boundary_distance <= .11:
+        raise ValueError('Для уклона со всех сторон оставьте слив внутри поддона, не у самого края.')
+
+
 def _object_surfaces(shower, footprint):
     if footprint is None or shower.edges is None:
         return []
@@ -297,6 +312,9 @@ def _shower_zones(shower, region):
     min_x, min_y, max_x, max_y = region.bounds
     radius = max(max_x - min_x, max_y - min_y, 1) * 4
     x, y = shower.drainX, shower.drainY
+    if shower.drainSlopeMode == 'edge':
+        axis = 'south' if shower.drainOrientation == 'horizontal' else 'west'
+        return [('edge', axis, region)]
     if shower.drainType == 'point':
         candidates = [
             ('east', 'east', Polygon([(x, y), (x + radius, y - radius),
@@ -366,8 +384,7 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True,
             region = object_floor_world
         drain = (_object_transform(_drain_polygon(project.shower), project.shower)
                  if object_footprint is not None else _drain_polygon(effective_shower))
-        if not region.covers(drain):
-            raise ValueError('Рамка слива должна полностью находиться внутри области укладки.')
+        _validate_drain_placement(effective_shower, region, drain)
         region = shapely.difference(region, drain, grid_size=.1)
         if region.is_empty or region.area <= 0:
             raise ValueError('После размещения слива не осталось области для укладки плитки.')
@@ -498,6 +515,7 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True,
             'width': tenth(effective_shower.drainWidth),
             'length': tenth(effective_shower.drainLength),
             'orientation': effective_shower.drainOrientation,
+            'slopeMode': effective_shower.drainSlopeMode,
             'rotationDeg': tenth(project.shower.rotationDeg or 0)},
             'zones': zone_results, 'maxHeightMm': tenth(max_height)}
         if object_footprint is not None:

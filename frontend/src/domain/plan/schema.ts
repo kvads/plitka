@@ -698,10 +698,11 @@ export function parseV6(value: unknown): ProjectDocumentV6 {
       requireTenth(num(subject));
     if (room.showerTray !== undefined && room.showerTray !== null) {
       const shower = obj(room.showerTray);
-      exact(shower, ["drainType", "drainX", "drainY", "drainWidth", "drainLength", "drainOrientation", "slopePercent",
+      exact(shower, ["drainType", "drainX", "drainY", "drainWidth", "drainLength", "drainOrientation", "drainSlopeMode", "slopePercent",
         "id", "originX", "originY", "rotationDeg", "baseHeightMm", "recessDepthMm", "vertices", "edges"]);
       choice(shower.drainType, ["point", "linear"]);
       choice(shower.drainOrientation, ["horizontal", "vertical"]);
+      if (shower.drainSlopeMode !== undefined) choice(shower.drainSlopeMode, ["surround", "edge"]);
       for (const subject of [shower.drainX, shower.drainY, shower.drainWidth,
         shower.drainLength, shower.slopePercent]) requireTenth(num(subject));
       const width = num(shower.drainWidth), length = num(shower.drainLength), slope = num(shower.slopePercent);

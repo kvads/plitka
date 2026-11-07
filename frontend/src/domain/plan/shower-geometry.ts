@@ -108,3 +108,61 @@ export const curbAdjustedTray = (tray: ShowerTray, index: number, nextEdge: Show
     originX: Math.round(((tray.originX ?? 0) + (touchesWall ? frame.inward.x * difference : 0)) * 10) / 10,
     originY: Math.round(((tray.originY ?? 0) + (touchesWall ? frame.inward.y * difference : 0)) * 10) / 10 };
 };
+
+export const normalizedDrainPatch = (planWidth: number, planHeight: number) => {
+  const width = Math.max(50, Math.round(planWidth * 10) / 10);
+  const height = Math.max(50, Math.round(planHeight * 10) / 10);
+  const horizontal = width >= height;
+  const long = Math.max(width, height), short = Math.min(width, height);
+  return {
+    drainType: Math.abs(width - height) < .1 ? "point" as const : "linear" as const,
+    drainOrientation: horizontal ? "horizontal" as const : "vertical" as const,
+    drainLength: long,
+    drainWidth: short,
+  };
+};
+
+export const snapDrainToTrayEdge = (tray: ShowerTray) => {
+  const vertices = tray.vertices ?? [];
+  if (vertices.length < 3) return null;
+  const area = vertices.reduce((sum, point, index) => {
+    const next = vertices[(index + 1) % vertices.length];
+    return sum + point[0] * next[1] - next[0] * point[1];
+  }, 0);
+  const direction = area >= 0 ? 1 : -1;
+  const candidates = vertices.flatMap((start, index) => {
+    const end = vertices[(index + 1) % vertices.length];
+    const dx = end[0] - start[0], dy = end[1] - start[1], length = Math.hypot(dx, dy);
+    const horizontal = Math.abs(dy) < .1, vertical = Math.abs(dx) < .1;
+    if ((!horizontal && !vertical) || length < tray.drainLength) return [];
+    const inward = { x: -dy / length * direction, y: dx / length * direction };
+    const planWidth = horizontal ? tray.drainLength : tray.drainWidth;
+    const planHeight = horizontal ? tray.drainWidth : tray.drainLength;
+    const halfAlong = (horizontal ? planWidth : planHeight) / 2;
+    const low = horizontal ? Math.min(start[0], end[0]) : Math.min(start[1], end[1]);
+    const high = horizontal ? Math.max(start[0], end[0]) : Math.max(start[1], end[1]);
+    const along = Math.max(low + halfAlong, Math.min(high - halfAlong,
+      horizontal ? tray.drainX : tray.drainY));
+    const center: Point = horizontal
+      ? [along, start[1] + inward.y * planHeight / 2]
+      : [start[0] + inward.x * planWidth / 2, along];
+    return [{ center, horizontal,
+      distance: Math.hypot(center[0] - tray.drainX, center[1] - tray.drainY) }];
+  }).sort((a, b) => a.distance - b.distance);
+  const nearest = candidates[0];
+  if (!nearest) return null;
+  return { ...normalizedDrainPatch(
+    nearest.horizontal ? tray.drainLength : tray.drainWidth,
+    nearest.horizontal ? tray.drainWidth : tray.drainLength),
+    drainX: Math.round(nearest.center[0] * 10) / 10,
+    drainY: Math.round(nearest.center[1] * 10) / 10,
+    drainSlopeMode: "edge" as const };
+};
+
+export const centerDrainPatch = (tray: ShowerTray) => {
+  const vertices = tray.vertices ?? [];
+  if (!vertices.length) return { drainSlopeMode: "surround" as const };
+  return { drainSlopeMode: "surround" as const,
+    drainX: Math.round(vertices.reduce((sum, point) => sum + point[0], 0) / vertices.length * 10) / 10,
+    drainY: Math.round(vertices.reduce((sum, point) => sum + point[1], 0) / vertices.length * 10) / 10 };
+};

@@ -315,6 +315,25 @@ def test_v5_shower_rejects_outside_drain_and_bad_point_frame():
         calculate_v5(project(shower=shower(drainLength=120)), 0, 0)
 
 
+def test_v5_edge_linear_drain_uses_one_plane_and_requires_the_tray_edge():
+    settings = shower('linear', drainX=600, drainY=50, drainWidth=100,
+                      drainLength=800, drainSlopeMode='edge')
+    result = calculate_v5(project(tile=400, shower=settings), 0, 0)
+    assert len(result['shower']['zones']) == 1
+    assert result['shower']['zones'][0]['id'] == 'edge'
+    assert result['shower']['drain']['slopeMode'] == 'edge'
+    with pytest.raises(ValueError, match='примыкать длинной стороной'):
+        calculate_v5(project(shower=settings | {'drainY': 300}), 0, 0)
+    with pytest.raises(ValueError, match='должен быть линейным'):
+        calculate_v5(project(shower=shower(drainSlopeMode='edge', drainY=50)), 0, 0)
+
+
+def test_v5_surround_drain_cannot_touch_the_tray_edge():
+    with pytest.raises(ValueError, match='не у самого края'):
+        calculate_v5(project(shower=shower('linear', drainY=50,
+                                           drainWidth=100, drainLength=800)), 0, 0)
+
+
 def test_v5_shower_api_returns_localized_contract():
     payload = project(tile=400, shower=shower()).model_dump()
     response = client.post('/api/v5/layout', json=payload)
@@ -347,10 +366,10 @@ def test_v5_parametric_shower_object_uses_local_shape_and_exposes_surfaces():
 
 def test_v5_parametric_shower_curb_grows_outside_usable_floor():
     result = calculate_v5(project(tile=300,
-                          shower=shower_object(drainX=850, drainY=300)), 0, 0)
+                          shower=shower_object(drainX=840, drainY=300)), 0, 0)
     floor_region = unary_union([Polygon(rings[0], rings[1:])
                                 for rings in result['shower']['object']['floorRegions']])
-    assert floor_region.covers(Point(850 + 100, 300 + 100))
+    assert floor_region.covers(Point(840 + 100, 300 + 100))
 
 
 def test_v5_adjacent_curb_walls_share_a_mitered_outer_corner():

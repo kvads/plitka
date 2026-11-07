@@ -8,7 +8,8 @@ import { openingCorners, openingOffset } from "../src/domain/plan/physical-openi
 import { alignCubeAttachmentToGuides, alignToWallEndProjection, centeredWallGeometry, immediateJointAngles,
   nearestCubeAttachment } from "../src/domain/plan/physical-draw";
 import { newRoom } from "../src/domain/plan/rooms";
-import { curbAdjustedTray, curbWallShapes } from "../src/domain/plan/shower-geometry";
+import { curbAdjustedTray, curbWallShapes, normalizedDrainPatch,
+  snapDrainToTrayEdge } from "../src/domain/plan/shower-geometry";
 import { readFile } from "node:fs/promises";
 
 test("project angles are displayed as whole degrees", () => {
@@ -48,6 +49,18 @@ test("adjacent curb walls share one square outer corner", () => {
   expect(shapes).toHaveLength(2);
   expect(shapes[0].outerEnd).toEqual([1000, -100]);
   expect(shapes[1].outerStart).toEqual([1000, -100]);
+});
+
+test("drain shape and edge mode are derived from its four-corner geometry", () => {
+  expect(normalizedDrainPatch(600, 80)).toEqual({ drainType: "linear",
+    drainOrientation: "horizontal", drainLength: 600, drainWidth: 80 });
+  expect(normalizedDrainPatch(100, 100).drainType).toBe("point");
+  const tray = { drainType: "linear" as const, drainX: 450, drainY: 140,
+    drainWidth: 70, drainLength: 600, drainOrientation: "horizontal" as const,
+    slopePercent: 2, vertices: [[0, 0], [900, 0], [900, 900], [0, 900]] as Point[],
+    edges: [0, 1, 2, 3].map(index => ({ id: `edge-${index}`, kind: "open" as const })) };
+  expect(snapDrainToTrayEdge(tray)).toMatchObject({ drainSlopeMode: "edge",
+    drainOrientation: "horizontal", drainX: 450, drainY: 35 });
 });
 
 test("physical v6 measures both exposed spans of a wall touched by a branch", () => {
@@ -1214,18 +1227,29 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(isolatedShowerModel).toBeVisible();
   await expect(isolatedShowerModel).toHaveAttribute("data-shower-side-labels", "6");
   await expect(isolatedShowerModel).toHaveAttribute("data-shower-wall-indicators", /^[1-6]$/);
-  await expect(showerDialog.getByText(/Перетащите слив для перемещения/)).toBeVisible();
+  await expect(showerDialog.getByText(/тяните жёлтые вершины/)).toBeVisible();
+  await expect(isolatedShowerModel).toHaveAttribute("data-shower-drain-handles", "4");
+  await expect(showerDialog.getByRole("button", { name: "Уклон со всех сторон" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(showerDialog.getByRole("button", { name: "У края · один скат" })).toBeVisible();
   await expect(showerDialog.getByRole("button", { name: /^(Скрыть|Показать) стены$/ })).toHaveCount(0);
   const previewKey = await preview.getAttribute("data-shower-preview-key");
   if (process.env.PW_VISUAL_OUTPUT) await page.screenshot({
     path: process.env.PW_VISUAL_OUTPUT.replace(/\.png$/, "-shower-modal.png"), fullPage: true,
   });
+  const modelBox = (await isolatedShowerModel.boundingBox())!;
+  await page.mouse.move(modelBox.x + modelBox.width * .65, modelBox.y + modelBox.height * .45);
+  await page.mouse.down();
+  await page.mouse.move(modelBox.x + modelBox.width * .78, modelBox.y + modelBox.height * .52);
+  await page.mouse.up();
   await showerDialog.getByRole("button", { name: "Увеличить: Высота" }).click();
   await expect.poll(async () => {
     const key = await preview.getAttribute("data-shower-preview-key");
     return key && key !== previewKey ? key : null;
   }).not.toBeNull();
   await expect(showerDialog.getByRole("img", { name: /душевым поддоном/ })).toBeVisible();
+  await expect(showerDialog.getByRole("img", { name: /душевым поддоном/ }))
+    .toHaveAttribute("data-camera-restored", "true");
   await showerDialog.getByRole("button", { name: /Сторона 1:/ }).click();
   await showerDialog.getByRole("button", { name: /Сторона 1:/ }).click();
   await expect(showerDialog.getByText("Толщина борта", { exact: true })).toBeVisible();

@@ -6,7 +6,8 @@ import { deleteV6 } from "../../domain/plan/storage";
 import type { ProjectDocumentV6, ShowerTray } from "../../domain/plan/types";
 import { formatDegrees, isTenth } from "../../domain/plan/precision";
 import { physicalGraphCanonicalJson } from "../../domain/plan/physical-basis";
-import { curbAdjustedTray, showerEdgeFrame, type ShowerEdge } from "../../domain/plan/shower-geometry";
+import { centerDrainPatch, curbAdjustedTray, normalizedDrainPatch, showerEdgeFrame,
+  snapDrainToTrayEdge, type ShowerEdge } from "../../domain/plan/shower-geometry";
 import { newRoom } from "../../domain/plan/rooms";
 import NumberField from "../workflow/NumberField";
 import { api } from "../../api";
@@ -596,7 +597,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       edges: [0, 1, 2, 3].map(index => ({ id: `edge-${index + 1}`, kind: "open" as const })),
       drainType: "linear", drainX: width / 2, drainY: Math.min(140, height / 3),
       drainWidth: 70, drainLength: Math.max(200, Math.min(700, width - 100)),
-      drainOrientation: "horizontal", slopePercent: 2,
+      drainOrientation: "horizontal", drainSlopeMode: "surround", slopePercent: 2,
     };
     initialTray.edges = targetFace?.polygon
       ? wallAwareShowerEdges(initialTray, targetFace.polygon)
@@ -971,10 +972,26 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
                     const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
                     const cosine = Math.cos(radians), sine = Math.sin(radians);
                     const dx = x - (tray.originX ?? 0), dy = y - (tray.originY ?? 0);
-                    updateShowerTray({
+                    const position = {
                       drainX: Math.round((dx * cosine + dy * sine) * 10) / 10,
                       drainY: Math.round((-dx * sine + dy * cosine) * 10) / 10,
-                    });
+                    };
+                    const next = { ...tray, ...position };
+                    updateShowerTray((tray.drainSlopeMode ?? "surround") === "edge"
+                      ? snapDrainToTrayEdge(next) ?? position : position);
+                  }}
+                  onShowerDrainResize={(x, y, planWidth, planHeight) => {
+                    const tray = room.showerTray;
+                    if (!tray) return;
+                    const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
+                    const cosine = Math.cos(radians), sine = Math.sin(radians);
+                    const dx = x - (tray.originX ?? 0), dy = y - (tray.originY ?? 0);
+                    const patch = { ...normalizedDrainPatch(planWidth, planHeight),
+                      drainX: Math.round((dx * cosine + dy * sine) * 10) / 10,
+                      drainY: Math.round((-dx * sine + dy * cosine) * 10) / 10 };
+                    const next = { ...tray, ...patch };
+                    updateShowerTray((tray.drainSlopeMode ?? "surround") === "edge"
+                      ? snapDrainToTrayEdge(next) ?? patch : patch);
                   }} />
               </Suspense>
               {showerPreviewLoading && <div className="shower-preview-loading" role="status">
@@ -994,23 +1011,27 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
                     onClick={() => adjustShower(key, step, min, max)}>+</button></div>
               </div>)}
               <div className="shower-settings-group"><strong>Слив</strong>
+                <p>Форма: {room.showerTray.drainType === "point" ? "точечная" : "линейная"} · {
+                  displayTenth(room.showerTray.drainOrientation === "horizontal"
+                    ? room.showerTray.drainLength : room.showerTray.drainWidth)} × {
+                  displayTenth(room.showerTray.drainOrientation === "horizontal"
+                    ? room.showerTray.drainWidth : room.showerTray.drainLength)} мм</p>
+                <p>Перетаскивайте слив или одну из четырёх вершин прямо в модели.</p>
                 <div className="shower-choice-row">
-                  {(["point", "linear"] as const).map(type => <button type="button" key={type}
-                    aria-pressed={room.showerTray!.drainType === type}
-                    onClick={() => updateShowerTray({ drainType: type,
-                      ...(type === "point" ? { drainLength: room.showerTray!.drainWidth } : {}) })}>
-                    {type === "point" ? "Точечный" : "Линейный"}</button>)}
-                </div>
-                {room.showerTray.drainType === "linear" && <button type="button"
-                  onClick={() => updateShowerTray({ drainOrientation:
-                    room.showerTray!.drainOrientation === "horizontal" ? "vertical" : "horizontal" })}>
-                  Повернуть слив · {room.showerTray.drainOrientation === "horizontal" ? "горизонтально" : "вертикально"}
-                </button>}
-                <div className="shower-drain-nudge" role="group" aria-label="Положение слива">
-                  <button type="button" aria-label="Сдвинуть слив влево" onClick={() => adjustShower("drainX", -25, 0, 100000)}>←</button>
-                  <button type="button" aria-label="Сдвинуть слив вверх" onClick={() => adjustShower("drainY", 25, 0, 100000)}>↑</button>
-                  <button type="button" aria-label="Сдвинуть слив вниз" onClick={() => adjustShower("drainY", -25, 0, 100000)}>↓</button>
-                  <button type="button" aria-label="Сдвинуть слив вправо" onClick={() => adjustShower("drainX", 25, 0, 100000)}>→</button>
+                  <button type="button"
+                    aria-pressed={(room.showerTray.drainSlopeMode ?? "surround") === "surround"}
+                    onClick={() => updateShowerTray(centerDrainPatch(room.showerTray!))}>
+                    Уклон со всех сторон</button>
+                  <button type="button" aria-pressed={room.showerTray.drainSlopeMode === "edge"}
+                    onClick={() => {
+                      const tray = room.showerTray!;
+                      const linear = tray.drainType === "linear" ? tray : {
+                        ...tray, ...normalizedDrainPatch(Math.max(200, tray.drainLength * 3),
+                          tray.drainWidth) };
+                      const patch = snapDrainToTrayEdge(linear);
+                      if (patch) updateShowerTray(patch);
+                    }}>
+                    У края · один скат</button>
                 </div>
               </div>
               <div className="shower-settings-group"><strong>Стороны поддона</strong>

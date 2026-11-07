@@ -6,6 +6,7 @@ export type ShowerRequest = {
   drainWidth: number;
   drainLength: number;
   drainOrientation: "horizontal" | "vertical";
+  drainSlopeMode?: "surround" | "edge";
   slopePercent: number;
   id?: string;
   originX?: number;
@@ -62,7 +63,8 @@ export type Layout = {
   region: Point[][][];
   shower?: {
     drain: { type: "point" | "linear"; x: number; y: number; width: number; length: number;
-      orientation: "horizontal" | "vertical"; rotationDeg?: number };
+      orientation: "horizontal" | "vertical"; slopeMode?: "surround" | "edge";
+      rotationDeg?: number };
     zones: SlopeZone[];
     maxHeightMm: number;
     object?: {

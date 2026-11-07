@@ -23,6 +23,7 @@ type Props = {
   graph: PhysicalGraphV5;
   isolateShower?: boolean;
   onShowerDrainMove?: (x: number, y: number) => void;
+  onShowerDrainResize?: (x: number, y: number, planWidth: number, planHeight: number) => void;
 };
 
 const pointInRing = (point: Point, ring: Point[]) => {
@@ -120,14 +121,17 @@ const roomCountText = (count: number) => {
 };
 
 export default function RoomPreview3D({ rooms, title, tileSize, through, multiRoom, graph,
-  isolateShower = false, onShowerDrainMove }: Props) {
+  isolateShower = false, onShowerDrainMove, onShowerDrainResize }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const resetView = useRef<() => void>(() => undefined);
   const drainMove = useRef(onShowerDrainMove);
+  const drainResize = useRef(onShowerDrainResize);
+  const cameraView = useRef<{ position: THREE.Vector3; target: THREE.Vector3 } | null>(null);
   const [showWalls, setShowWalls] = useState(() => !multiRoom && !isolateShower);
 
   useEffect(() => setShowWalls(!multiRoom && !isolateShower), [multiRoom, isolateShower]);
   useEffect(() => { drainMove.current = onShowerDrainMove; }, [onShowerDrainMove]);
+  useEffect(() => { drainResize.current = onShowerDrainResize; }, [onShowerDrainResize]);
 
   useEffect(() => {
     const container = host.current;
@@ -191,12 +195,19 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     controls.minPolarAngle = 0.2;
     controls.maxPolarAngle = Math.PI / 2.08;
     controls.target.set(0, isolateShower ? 0.08 : 0.35, 0);
+    if (isolateShower && cameraView.current) {
+      camera.position.copy(cameraView.current.position);
+      controls.target.copy(cameraView.current.target);
+      renderer.domElement.dataset.cameraRestored = "true";
+    }
 
     const geometries: THREE.BufferGeometry[] = [];
     const materials: THREE.Material[] = [];
     const labelTextures: THREE.Texture[] = [];
     let draggableDrain: { mesh: THREE.Mesh; regions: Point[][][]; height: number;
-      frameOffsets: Point[] } | null = null;
+      frameOffsets: Point[]; handles: { mesh: THREE.Mesh; sx: -1 | 1; sy: -1 | 1 }[];
+      rotation: number; planWidth: number; planHeight: number;
+      pending?: { x: number; y: number; width: number; height: number } } | null = null;
     let wallIndicatorMaterial: THREE.MeshStandardMaterial | null = null;
     const groutMaterial = new THREE.MeshStandardMaterial({
       color: 0xd7d8d4,
@@ -244,6 +255,9 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     const drainMaterial = new THREE.MeshStandardMaterial({ color: 0x46534c, roughness: 0.45,
       metalness: 0.35 });
     materials.push(drainMaterial);
+    const drainHandleMaterial = new THREE.MeshStandardMaterial({ color: 0xf2c94c,
+      roughness: 0.55, metalness: 0.05, depthTest: false });
+    materials.push(drainHandleMaterial);
     const texture = new THREE.TextureLoader().load(textureUrl, (loaded) => {
       loaded.colorSpace = THREE.SRGBColorSpace;
       loaded.anisotropy = renderer.capabilities.getMaxAnisotropy();
@@ -300,13 +314,28 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
           const radians = (drain.rotationDeg ?? 0) * Math.PI / 180;
           const cosine = Math.cos(radians), sine = Math.sin(radians);
           const halfX = drainWidth / 2, halfY = drainDepth / 2;
-          const frameOffsets = ([-1, 1] as const).flatMap(xDirection =>
-            ([-1, 1] as const).map(yDirection => {
-              const x = xDirection * halfX, y = yDirection * halfY;
+          const signs = ([-1, 1] as const).flatMap(sx =>
+            ([-1, 1] as const).map(sy => ({ sx, sy })));
+          const frameOffsets = signs.map(({ sx, sy }) => {
+              const x = sx * halfX, y = sy * halfY;
               return [x * cosine - y * sine, x * sine + y * cosine] as Point;
-            }));
+            });
+          const handles = signs.map(({ sx, sy }, index) => {
+            const handleGeometry = new THREE.SphereGeometry(Math.min(.028, span * .025), 18, 12);
+            geometries.push(handleGeometry);
+            const handle = new THREE.Mesh(handleGeometry, drainHandleMaterial);
+            const offset = frameOffsets[index];
+            handle.position.set((drain.x + offset[0] - cx) / 1000,
+              drainMesh.position.y + .018, -(drain.y + offset[1] - cy) / 1000);
+            handle.renderOrder = 120;
+            handle.name = `shower-drain-handle-${sx}-${sy}`;
+            scene.add(handle);
+            return { mesh: handle, sx, sy };
+          });
+          renderer.domElement.dataset.showerDrainHandles = "4";
           draggableDrain = { mesh: drainMesh, regions: floorRegions,
-            height: drainMesh.position.y, frameOffsets };
+            height: drainMesh.position.y, frameOffsets, handles,
+            rotation: radians, planWidth: drainWidth, planHeight: drainDepth };
         }
       }
       room.layout?.shower?.zones.forEach(zone => zone.rings.forEach(ring => {
@@ -514,6 +543,8 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     const pointer = new THREE.Vector2();
     const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0));
     let draggingDrain = false;
+    let resizingDrain: { handle: { mesh: THREE.Mesh; sx: -1 | 1; sy: -1 | 1 };
+      opposite: Point } | null = null;
     const setPointer = (event: PointerEvent) => {
       const bounds = renderer.domElement.getBoundingClientRect();
       pointer.set((event.clientX - bounds.left) / bounds.width * 2 - 1,
@@ -523,8 +554,18 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     const pointerDown = (event: PointerEvent) => {
       if (!draggableDrain) return;
       setPointer(event);
-      if (!raycaster.intersectObject(draggableDrain.mesh, false).length) return;
-      draggingDrain = true;
+      const handleHit = raycaster.intersectObjects(
+        draggableDrain.handles.map(handle => handle.mesh), false)[0]?.object;
+      if (handleHit) {
+        const handle = draggableDrain.handles.find(candidate => candidate.mesh === handleHit)!;
+        const opposite = draggableDrain.handles.find(candidate =>
+          candidate.sx === -handle.sx && candidate.sy === -handle.sy)!;
+        resizingDrain = { handle, opposite: [opposite.mesh.position.x * 1000 + cx,
+          -opposite.mesh.position.z * 1000 + cy] };
+      } else {
+        if (!raycaster.intersectObject(draggableDrain.mesh, false).length) return;
+        draggingDrain = true;
+      }
       controls.enabled = false;
       renderer.domElement.setPointerCapture(event.pointerId);
       renderer.domElement.style.cursor = "grabbing";
@@ -534,30 +575,73 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
       if (!draggableDrain) return;
       const activeDrain = draggableDrain;
       setPointer(event);
-      if (!draggingDrain) {
-        renderer.domElement.style.cursor = raycaster.intersectObject(activeDrain.mesh, false).length
-          ? "grab" : "default";
+      if (!draggingDrain && !resizingDrain) {
+        const overHandle = raycaster.intersectObjects(
+          activeDrain.handles.map(handle => handle.mesh), false).length > 0;
+        renderer.domElement.style.cursor = overHandle ? "nwse-resize"
+          : raycaster.intersectObject(activeDrain.mesh, false).length ? "grab" : "default";
         return;
       }
       dragPlane.constant = -activeDrain.height;
       const intersection = new THREE.Vector3();
       if (!raycaster.ray.intersectPlane(dragPlane, intersection)) return;
       const world: Point = [intersection.x * 1000 + cx, -intersection.z * 1000 + cy];
+      if (resizingDrain) {
+        const ux: Point = [Math.cos(activeDrain.rotation), Math.sin(activeDrain.rotation)];
+        const uy: Point = [-Math.sin(activeDrain.rotation), Math.cos(activeDrain.rotation)];
+        const delta: Point = [world[0] - resizingDrain.opposite[0],
+          world[1] - resizingDrain.opposite[1]];
+        const projectedX = delta[0] * ux[0] + delta[1] * ux[1];
+        const projectedY = delta[0] * uy[0] + delta[1] * uy[1];
+        if (projectedX * resizingDrain.handle.sx < 50 ||
+            projectedY * resizingDrain.handle.sy < 50) return;
+        const width = Math.abs(projectedX), height = Math.abs(projectedY);
+        const center: Point = [resizingDrain.opposite[0] + ux[0] * projectedX / 2 +
+          uy[0] * projectedY / 2, resizingDrain.opposite[1] + ux[1] * projectedX / 2 +
+          uy[1] * projectedY / 2];
+        const corners = ([-1, 1] as const).flatMap(sx => ([-1, 1] as const).map(sy =>
+          [center[0] + ux[0] * sx * width / 2 + uy[0] * sy * height / 2,
+            center[1] + ux[1] * sx * width / 2 + uy[1] * sy * height / 2] as Point));
+        if (!corners.every(point => pointInRegions(point, activeDrain.regions))) return;
+        activeDrain.mesh.position.x = (center[0] - cx) / 1000;
+        activeDrain.mesh.position.z = -(center[1] - cy) / 1000;
+        activeDrain.mesh.scale.x = width / activeDrain.planWidth;
+        activeDrain.mesh.scale.z = height / activeDrain.planHeight;
+        activeDrain.handles.forEach(handle => {
+          handle.mesh.position.x = (center[0] + ux[0] * handle.sx * width / 2 +
+            uy[0] * handle.sy * height / 2 - cx) / 1000;
+          handle.mesh.position.z = -(center[1] + ux[1] * handle.sx * width / 2 +
+            uy[1] * handle.sy * height / 2 - cy) / 1000;
+        });
+        activeDrain.pending = { x: center[0], y: center[1], width, height };
+        event.preventDefault(); event.stopPropagation();
+        return;
+      }
       if (![world, ...activeDrain.frameOffsets.map(([x, y]) =>
         [world[0] + x, world[1] + y] as Point)]
         .every(point => pointInRegions(point, activeDrain.regions))) return;
+      const deltaX = intersection.x - activeDrain.mesh.position.x;
+      const deltaZ = intersection.z - activeDrain.mesh.position.z;
       activeDrain.mesh.position.x = intersection.x;
       activeDrain.mesh.position.z = intersection.z;
+      activeDrain.handles.forEach(handle => {
+        handle.mesh.position.x += deltaX; handle.mesh.position.z += deltaZ;
+      });
       event.preventDefault(); event.stopPropagation();
     };
     const pointerUp = (event: PointerEvent) => {
-      if (!draggingDrain || !draggableDrain) return;
+      if ((!draggingDrain && !resizingDrain) || !draggableDrain) return;
+      const resized = resizingDrain !== null;
       draggingDrain = false;
+      resizingDrain = null;
       controls.enabled = true;
       renderer.domElement.style.cursor = "grab";
       if (renderer.domElement.hasPointerCapture(event.pointerId))
         renderer.domElement.releasePointerCapture(event.pointerId);
-      drainMove.current?.(draggableDrain.mesh.position.x * 1000 + cx,
+      if (resized && draggableDrain.pending) {
+        const pending = draggableDrain.pending;
+        drainResize.current?.(pending.x, pending.y, pending.width, pending.height);
+      } else drainMove.current?.(draggableDrain.mesh.position.x * 1000 + cx,
         -draggableDrain.mesh.position.z * 1000 + cy);
       event.preventDefault(); event.stopPropagation();
     };
@@ -570,6 +654,8 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
       camera.position.copy(initialCamera);
       controls.target.set(0, isolateShower ? 0.08 : 0.35, 0);
       controls.update();
+      if (isolateShower) cameraView.current = {
+        position: camera.position.clone(), target: controls.target.clone() };
     };
 
     const resize = () => {
@@ -593,6 +679,8 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     animate();
 
     return () => {
+      if (isolateShower) cameraView.current = {
+        position: camera.position.clone(), target: controls.target.clone() };
       cancelAnimationFrame(frame);
       observer.disconnect();
       renderer.domElement.removeEventListener("pointerdown", pointerDown, true);
@@ -649,7 +737,7 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
         </div>
       </figcaption>
       <p className="room-preview-help">{isolateShower
-        ? "Перетащите слив для перемещения · потяните фон, чтобы осмотреть"
+        ? "Перетащите слив · тяните жёлтые вершины для изменения размера · фон вращает модель"
         : "Потяните, чтобы осмотреть · прокрутите для масштаба"}</p>
     </figure>
   );

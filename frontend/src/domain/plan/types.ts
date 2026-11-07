@@ -174,6 +174,7 @@ export type ShowerTray = {
   drainWidth: number;
   drainLength: number;
   drainOrientation: "horizontal" | "vertical";
+  drainSlopeMode?: "surround" | "edge";
   slopePercent: number;
   id?: string;
   originX?: number;

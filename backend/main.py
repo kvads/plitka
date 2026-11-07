@@ -37,6 +37,7 @@ class ShowerTray(BaseModel):
     drainWidth: float = Field(ge=50, le=2000)
     drainLength: float = Field(ge=50, le=3000)
     drainOrientation: Literal["horizontal", "vertical"] = "horizontal"
+    drainSlopeMode: Literal["surround", "edge"] = "surround"
     slopePercent: float = Field(ge=.1, le=10)
     id: str | None = Field(default=None, min_length=1, max_length=120)
     originX: float | None = Field(default=None, ge=-100000, le=100000)
