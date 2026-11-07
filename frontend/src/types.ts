@@ -7,6 +7,14 @@ export type ShowerRequest = {
   drainLength: number;
   drainOrientation: "horizontal" | "vertical";
   slopePercent: number;
+  id?: string;
+  originX?: number;
+  originY?: number;
+  rotationDeg?: number;
+  baseHeightMm?: number;
+  vertices?: Point[];
+  edges?: { id: string; kind: "wall" | "open" | "curb" | "entry";
+    curbHeightMm?: number; curbWidthMm?: number }[];
 };
 export type LayoutRequest = {
   outline: Point[];
@@ -52,9 +60,18 @@ export type Layout = {
   region: Point[][][];
   shower?: {
     drain: { type: "point" | "linear"; x: number; y: number; width: number; length: number;
-      orientation: "horizontal" | "vertical" };
+      orientation: "horizontal" | "vertical"; rotationDeg?: number };
     zones: SlopeZone[];
     maxHeightMm: number;
+    object?: {
+      id: string; originX: number; originY: number; rotationDeg: number; baseHeightMm: number;
+      footprint: Point[][];
+      edges: { id: string; kind: "wall" | "open" | "curb" | "entry";
+        curbHeightMm?: number; curbWidthMm?: number }[];
+      surfaces: { id: string; edgeId: string; kind: "fascia" | "curb";
+        edgeKind: "wall" | "open" | "curb" | "entry"; start: Point; end: Point;
+        lengthMm: number; heightMm: number; widthMm: number; areaMm2: number }[];
+    };
   };
   metrics: {
     tiles: number;

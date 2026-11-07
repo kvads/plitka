@@ -266,6 +266,23 @@ def shower(kind='point', **overrides):
             'drainOrientation': 'horizontal', 'slopePercent': 2} | overrides
 
 
+def shower_object(**overrides):
+    return shower(
+        id='shower-1', originX=100, originY=100, rotationDeg=0,
+        baseHeightMm=150,
+        vertices=[(0, 0), (900, 0), (900, 700), (500, 700), (500, 900), (0, 900)],
+        edges=[
+            {'id': 'edge-1', 'kind': 'wall'},
+            {'id': 'edge-2', 'kind': 'curb', 'curbHeightMm': 80, 'curbWidthMm': 100},
+            {'id': 'edge-3', 'kind': 'open'},
+            {'id': 'edge-4', 'kind': 'entry'},
+            {'id': 'edge-5', 'kind': 'open'},
+            {'id': 'edge-6', 'kind': 'wall'},
+        ],
+        drainX=300, drainY=300,
+    ) | overrides
+
+
 @pytest.mark.parametrize(('settings', 'expected_axes'), [
     (shower(), {'east', 'north', 'west', 'south'}),
     (shower('linear'), {'north', 'south'}),
@@ -309,3 +326,28 @@ def test_v5_shower_api_returns_localized_contract():
     response = client.post('/api/v5/layout', json=bad)
     assert response.status_code == 422
     assert 'Рамка слива' in response.json()['detail']
+
+
+def test_v5_parametric_shower_object_uses_local_shape_and_exposes_surfaces():
+    result = calculate_v5(project(tile=300, shower=shower_object()), 0, 0)
+    object_result = result['shower']['object']
+    assert object_result['id'] == 'shower-1'
+    assert object_result['baseHeightMm'] == 150
+    assert object_result['footprint'][0][0] == [100, 100]
+    assert {surface['kind'] for surface in object_result['surfaces']} == {'fascia', 'curb'}
+    assert len([surface for surface in object_result['surfaces'] if surface['kind'] == 'fascia']) == 4
+    assert len([surface for surface in object_result['surfaces'] if surface['kind'] == 'curb']) == 1
+    assert all(part['zoneId'] for part in result['parts'])
+
+
+def test_v5_parametric_shower_object_rotates_and_rejects_invalid_geometry():
+    result = calculate_v5(project(tile=300,
+                          shower=shower_object(rotationDeg=90, originX=1000)), 0, 0)
+    assert [1000, 1000] in result['shower']['object']['footprint'][0]
+    with pytest.raises(ValueError, match='границы помещения'):
+        calculate_v5(project(shower=shower_object(originX=1300)), 0, 0)
+    with pytest.raises(ValueError, match='рёбер'):
+        calculate_v5(project(shower=shower_object(edges=[
+            {'id': 'a', 'kind': 'open'}, {'id': 'b', 'kind': 'open'},
+            {'id': 'c', 'kind': 'open'},
+        ])), 0, 0)

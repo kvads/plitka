@@ -439,6 +439,17 @@
 .shower-tray-toggle { flex-direction: row !important; align-items: center; gap: 8px; }
 .shower-tray-toggle input { width: 20px !important; height: 20px; }
 .shower-result-summary { padding: 8px 10px; border-radius: 8px; background: #e8f2ec; color: #294f3e; }
+.shower-object-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.shower-shape-details { border: 1px solid #cad4cd; border-radius: 8px; padding: 10px; }
+.shower-shape-details summary { cursor: pointer; font-weight: 650; }
+.shower-vertex-list { display: grid; gap: 10px; margin-top: 12px; }
+.shower-vertex-row { display: grid; grid-template-columns: auto 1fr 1fr; gap: 8px; align-items: end; padding-bottom: 10px; border-bottom: 1px solid #dce3de; }
+.shower-vertex-row > label:last-child { grid-column: 1 / -1; }
+.shower-vertex-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+@media (max-width: 700px) {
+  .shower-object-grid, .shower-vertex-row { grid-template-columns: 1fr; }
+  .shower-vertex-row > label:last-child { grid-column: auto; }
+}
 .physical-interaction-tools {
   position: absolute;
   z-index: 6;

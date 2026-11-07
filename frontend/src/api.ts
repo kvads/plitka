@@ -135,8 +135,20 @@ export async function api<T>(
         const drain = v.shower.drain;
         if (!['point', 'linear'].includes(String(drain.type)) ||
             !['horizontal', 'vertical'].includes(String(drain.orientation)) ||
-            ![drain.x, drain.y, drain.width, drain.length].every(tenth)) return false;
-        return v.shower.zones.every(zone => record(zone) && typeof zone.id === 'string' &&
+            ![drain.x, drain.y, drain.width, drain.length].every(tenth) ||
+            (drain.rotationDeg !== undefined && !tenth(drain.rotationDeg))) return false;
+        const validObject = v.shower.object === undefined || (() => {
+          const object = v.shower.object;
+          if (!record(object) || typeof object.id !== 'string' || !points(object.footprint) ||
+              ![object.originX, object.originY, object.rotationDeg, object.baseHeightMm].every(tenth) ||
+              !Array.isArray(object.edges) || !Array.isArray(object.surfaces)) return false;
+          return object.edges.every(edge => record(edge) && typeof edge.id === 'string' &&
+            ['wall', 'open', 'curb', 'entry'].includes(String(edge.kind))) &&
+            object.surfaces.every(surface => record(surface) && typeof surface.id === 'string' &&
+              typeof surface.edgeId === 'string' && ['fascia', 'curb'].includes(String(surface.kind)) &&
+              [surface.lengthMm, surface.heightMm, surface.widthMm, surface.areaMm2].every(tenth));
+        })();
+        return validObject && v.shower.zones.every(zone => record(zone) && typeof zone.id === 'string' &&
           ['east', 'west', 'north', 'south'].includes(String(zone.axis)) && points(zone.rings) &&
           [zone.slopePercent, zone.minHeightMm, zone.maxHeightMm].every(tenth));
       })());

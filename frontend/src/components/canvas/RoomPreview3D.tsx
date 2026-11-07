@@ -70,6 +70,12 @@ const showerHeight = (layout: Layout | null, zoneId: string | null | undefined,
   const shower = layout?.shower;
   const zone = shower?.zones.find(candidate => candidate.id === zoneId);
   if (!shower || !zone) return 0;
+  const rotation = (shower.object?.rotationDeg ?? 0) * Math.PI / 180;
+  if (rotation) {
+    const dx = x - shower.drain.x, dy = y - shower.drain.y;
+    x = shower.drain.x + dx * Math.cos(rotation) + dy * Math.sin(rotation);
+    y = shower.drain.y - dx * Math.sin(rotation) + dy * Math.cos(rotation);
+  }
   const slope = zone.slopePercent / 100;
   return zone.axis === "east" || zone.axis === "west"
     ? Math.abs(x - shower.drain.x) * slope
@@ -166,13 +172,18 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     });
     materials.push(groutMaterial);
     visibleRooms.forEach(room => {
-      const surfaces = room.layout?.shower?.zones.map(zone => ({
-        id: zone.id, rings: zone.rings,
-      })) ?? [{ id: null, rings: [room.polygon.outline as Point[],
-        ...(room.polygon.holes as Point[][])] }];
+      const roomFloorGeometry = new THREE.ShapeGeometry(ringShape([room.polygon.outline as Point[],
+        ...(room.polygon.holes as Point[][])], cx, cy));
+      geometries.push(roomFloorGeometry);
+      const roomFloor = new THREE.Mesh(roomFloorGeometry, groutMaterial);
+      roomFloor.rotation.x = -Math.PI / 2;
+      roomFloor.receiveShadow = true;
+      scene.add(roomFloor);
+      const surfaces = room.layout?.shower?.zones.map(zone => ({ id: zone.id, rings: zone.rings })) ?? [];
       surfaces.forEach(surface => {
         const floorGeometry = new THREE.ShapeGeometry(ringShape(surface.rings, cx, cy));
-        elevate(floorGeometry, room.layout, surface.id, cx, cy);
+        elevate(floorGeometry, room.layout, surface.id, cx, cy,
+          room.layout?.shower?.object?.baseHeightMm ?? 0);
         geometries.push(floorGeometry);
         const floor = new THREE.Mesh(floorGeometry, groutMaterial);
         floor.rotation.x = -Math.PI / 2;
@@ -210,7 +221,8 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
       room.layout?.parts.forEach((part) => {
         if (!part.rings[0]?.length) return;
         const geometry = new THREE.ShapeGeometry(ringShape(part.rings, cx, cy));
-        elevate(geometry, room.layout, part.zoneId, cx, cy, 2);
+        const objectLift = room.layout?.shower?.object?.baseHeightMm ?? 0;
+        elevate(geometry, room.layout, part.zoneId, cx, cy, objectLift + 2);
         normalizeUvs(geometry);
         geometries.push(geometry);
         const tile = new THREE.Mesh(geometry, tileMaterial);
@@ -221,7 +233,7 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
           const outlineGeometry = new THREE.BufferGeometry().setFromPoints(
             ring.map(([x, y]) => new THREE.Vector3(
               (x - cx) / 1000,
-              (showerHeight(room.layout, part.zoneId, x, y) + 3) / 1000,
+              (showerHeight(room.layout, part.zoneId, x, y) + objectLift + 3) / 1000,
               -(y - cy) / 1000,
             )),
           );
@@ -231,6 +243,7 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
       });
       const drain = room.layout?.shower?.drain;
       if (drain) {
+        const objectLift = room.layout?.shower?.object?.baseHeightMm ?? 0;
         const drainWidth = drain.orientation === "horizontal" ? drain.length : drain.width;
         const drainDepth = drain.orientation === "horizontal" ? drain.width : drain.length;
         const drainGeometry = new THREE.BoxGeometry(drainWidth / 1000, .016, drainDepth / 1000);
@@ -238,20 +251,47 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
         const drainMesh = new THREE.Mesh(drainGeometry, drainMaterial);
         drainMesh.name = `shower-drain-${room.id}`;
         drainMesh.userData.showerDrain = true;
-        drainMesh.position.set((drain.x - cx) / 1000, .008, -(drain.y - cy) / 1000);
+        drainMesh.rotation.y = (drain.rotationDeg ?? 0) * Math.PI / 180;
+        drainMesh.position.set((drain.x - cx) / 1000, (objectLift + 8) / 1000,
+          -(drain.y - cy) / 1000);
         drainMesh.receiveShadow = true;
         scene.add(drainMesh);
       }
       room.layout?.shower?.zones.forEach(zone => zone.rings.forEach(ring => {
+        const objectLift = room.layout?.shower?.object?.baseHeightMm ?? 0;
         const breakGeometry = new THREE.BufferGeometry().setFromPoints(ring.map(([x, y]) =>
           new THREE.Vector3((x - cx) / 1000,
-            (showerHeight(room.layout, zone.id, x, y) + 4) / 1000,
+            (showerHeight(room.layout, zone.id, x, y) + objectLift + 4) / 1000,
             -(y - cy) / 1000)));
         geometries.push(breakGeometry);
         const line = new THREE.LineLoop(breakGeometry, groutLineMaterial);
         line.userData.showerBreak = zone.id;
         scene.add(line);
       }));
+      room.layout?.shower?.object?.surfaces.forEach(surface => {
+        const dx = surface.end[0] - surface.start[0];
+        const dy = surface.end[1] - surface.start[1];
+        const length = Math.hypot(dx, dy);
+        if (length < .1 || surface.heightMm <= 0) return;
+        const isCurb = surface.kind === "curb";
+        const height = surface.heightMm / 1000;
+        const depth = Math.max(isCurb ? surface.widthMm / 1000 : .012, .012);
+        const geometry = new THREE.BoxGeometry(length / 1000, height, depth);
+        geometries.push(geometry);
+        const mesh = new THREE.Mesh(geometry, tileMaterial);
+        mesh.name = `shower-${surface.kind}-${surface.edgeId}`;
+        mesh.userData.showerSurface = surface.kind;
+        mesh.rotation.y = Math.atan2(dy, dx);
+        const base = isCurb
+          ? (room.layout?.shower?.object?.baseHeightMm ?? 0) + room.layout!.shower!.maxHeightMm
+          : 0;
+        mesh.position.set(((surface.start[0] + surface.end[0]) / 2 - cx) / 1000,
+          base / 1000 + height / 2,
+          -((surface.start[1] + surface.end[1]) / 2 - cy) / 1000);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+      });
     });
 
     const wallMaterial = new THREE.MeshStandardMaterial({

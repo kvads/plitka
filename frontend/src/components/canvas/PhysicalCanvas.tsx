@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { OpenJointAngleV5, PhysicalGraphV5, PhysicalPolygonV5, PhysicalRoomV5, Point, ProjectDocumentV6 } from "../../domain/plan/types";
+import type { OpenJointAngleV5, PhysicalGraphV5, PhysicalPolygonV5, PhysicalRoomV5, Point, ProjectDocumentV6, ShowerTray } from "../../domain/plan/types";
 import { clampZoom, viewportAtAnchor, worldPoint, zoomAroundWorld } from "../../domain/room/viewport";
 import { roundTenth } from "../../domain/plan/precision";
 import type { Layout } from "../../types";
@@ -28,6 +28,7 @@ type Props = {
   roomMissing?: Record<string, boolean>;
   roomNames?: Record<string, string>;
   layouts?: { roomId: string; layout: Layout }[];
+  showerObjects?: { roomId: string; tray: ShowerTray; selected: boolean }[];
   viewport: Viewport;
   onViewport: (viewport: Viewport) => void;
   selectedWallId: string | null;
@@ -67,7 +68,7 @@ const precisePoint = (point: Point): Point =>
 
 export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces = [], openJointAngles = [],
   selectedRoomKey, onSelectRoom,
-  highlightRooms = false, roomMissing = {}, roomNames = {}, layouts = [], viewport, onViewport,
+  highlightRooms = false, roomMissing = {}, roomNames = {}, layouts = [], showerObjects = [], viewport, onViewport,
   selectedWallId, onSelectWall, selectedHandle, onSelectHandle, onNudge,
   wallTool, thicknessMm, onDrawWall, onResetWallTool,
   doorTool, doorWidthMm, selectedDoorId, onSelectDoor, deleteTool, onDeleteWall,
@@ -580,6 +581,23 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       fill={highlightRooms && roomMissing[face.topologyKey] ? "#fff4bb" : "#fff"}
       stroke={face.topologyKey === selectedRoomKey ? "#444" : "none"}
       strokeWidth={2 / pixelScale} />)}
+    {showerObjects.flatMap(({ roomId, tray, selected }) => {
+      if (!tray.vertices?.length) return [];
+      const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
+      const cosine = Math.cos(radians), sine = Math.sin(radians);
+      const points = tray.vertices.map(([x, y]) => [
+        (tray.originX ?? 0) + x * cosine - y * sine,
+        (tray.originY ?? 0) + x * sine + y * cosine,
+      ] as [number, number]);
+      const d = points.map(([x, y], index) => `${index ? "L" : "M"}${x} ${-y}`).join(" ") + " Z";
+      return [<g key={`${roomId}:shower-object`} data-shower-object={roomId}>
+        <path d={d} fill="#dce9e1" fillOpacity=".72" stroke={selected ? "#176044" : "#527263"}
+          strokeWidth={Math.max((selected ? 3 : 2) / pixelScale, .25)} />
+        {points.map(([x, y], index) => <circle key={index} data-shower-vertex={index}
+          cx={x} cy={-y} r={(selected ? 5 : 3.5) / pixelScale} fill="#fff" stroke="#176044"
+          strokeWidth={1.5 / pixelScale} />)}
+      </g>];
+    })}
     {layouts.flatMap(({ roomId, layout }) => (layout.shower?.zones ?? []).map(zone => <path
       key={`${roomId}:zone:${zone.id}`} data-shower-zone={zone.id} pointerEvents="none"
       d={zone.rings.map(ring => ring.map(([x, y], index) =>
@@ -605,6 +623,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       const height = drain.orientation === "horizontal" ? drain.width : drain.length;
       return [<rect key={`${roomId}:drain`} data-shower-drain="true" pointerEvents="none"
         x={drain.x - width / 2} y={-(drain.y + height / 2)} width={width} height={height}
+        transform={drain.rotationDeg ? `rotate(${-drain.rotationDeg} ${drain.x} ${-drain.y})` : undefined}
         rx={Math.min(width, height) * .12} fill="#58645d" stroke="#17241e"
         strokeWidth={Math.max(1.8 / pixelScale, .25)} />];
     })}

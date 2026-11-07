@@ -328,8 +328,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         } : item),
       }))} />;
   const showerField = (key: keyof Pick<ShowerTray, "drainX" | "drainY" | "drainWidth" |
-    "drainLength" | "slopePercent">, label: string, min: number, max: number, unit: string) =>
-    room?.showerTray && <NumberField label={label} value={room.showerTray[key]}
+    "drainLength" | "slopePercent" | "originX" | "originY" | "rotationDeg" |
+    "baseHeightMm">, label: string, min: number, max: number, unit: string) =>
+    room?.showerTray && <NumberField label={label} value={room.showerTray[key] ?? 0}
       raw={room.fieldInputs[`shower.${key}`]} min={min} max={max} unit={unit}
       onCommit={(number, text) => update(current => ({ ...current,
         rooms: current.rooms.map(item => item.id === room.id && item.showerTray ? {
@@ -347,10 +348,18 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     const xs = outline.map(point => point[0]), ys = outline.map(point => point[1]);
     const centerX = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0;
     const centerY = ys.length ? (Math.min(...ys) + Math.max(...ys)) / 2 : 0;
+    const roomWidth = xs.length ? Math.max(...xs) - Math.min(...xs) : 1200;
+    const roomHeight = ys.length ? Math.max(...ys) - Math.min(...ys) : 1200;
+    const width = Math.max(300, Math.min(900, Math.floor(roomWidth * .7 / 10) * 10));
+    const height = Math.max(300, Math.min(900, Math.floor(roomHeight * .7 / 10) * 10));
+    const originX = Math.round((centerX - width / 2) * 10) / 10;
+    const originY = Math.round((centerY - height / 2) * 10) / 10;
     const initialTray: ShowerTray = {
-      drainType: "point", drainX: Math.round(centerX * 10) / 10,
-      drainY: Math.round(centerY * 10) / 10, drainWidth: 100, drainLength: 100,
-      drainOrientation: "horizontal", slopePercent: 2,
+      id: `shower-${room.id}`, originX, originY, rotationDeg: 0, baseHeightMm: 150,
+      vertices: [[0, 0], [width, 0], [width, height], [0, height]],
+      edges: [0, 1, 2, 3].map(index => ({ id: `edge-${index + 1}`, kind: "open" as const })),
+      drainType: "point", drainX: width / 2, drainY: height / 2,
+      drainWidth: 100, drainLength: 100, drainOrientation: "horizontal", slopePercent: 2,
     };
     setLayoutScope("room");
     update(current => ({ ...current, sharedGrid: enabled ? null : current.sharedGrid,
@@ -464,6 +473,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       highlightRooms={layoutMode} roomMissing={roomMissing}
       roomNames={Object.fromEntries(doc.rooms.filter(item => item.topologyKey).map(item => [item.topologyKey!, item.name]))}
       layouts={layoutMode ? visibleLayouts : []}
+      showerObjects={layoutMode ? doc.rooms.flatMap(candidate => candidate.showerTray?.vertices
+        ? [{ roomId: candidate.id, tray: candidate.showerTray, selected: candidate.id === room?.id }]
+        : []) : []}
       onSelectRoom={key => {
         const id = doc.rooms.find(item => item.topologyKey === key)?.id ?? null;
         if (compactView) setViewRoomId(id);
@@ -657,9 +669,108 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
             <label className="shower-tray-toggle">
               <input type="checkbox" checked={!!room.showerTray}
                 onChange={event => toggleShowerTray(event.target.checked)} />
-              <span>Рассчитать уклоны к сливу</span>
+              <span>Добавить отдельный поддон</span>
             </label>
             {room.showerTray && <>
+              {room.showerTray.vertices && <>
+                <div className="shower-object-grid">
+                  {showerField("originX", "Положение X", -100000, 100000, "мм")}
+                  {showerField("originY", "Положение Y", -100000, 100000, "мм")}
+                  {showerField("rotationDeg", "Поворот", -360, 360, "°")}
+                  {showerField("baseHeightMm", "Высота основания", 0, 1000, "мм")}
+                </div>
+                <label>Форма<select aria-label="Форма поддона" value={room.showerTray.vertices.length === 6 ? "l" : "custom"}
+                  onChange={event => {
+                    const xs = room.showerTray!.vertices!.map(point => point[0]);
+                    const ys = room.showerTray!.vertices!.map(point => point[1]);
+                    const width = Math.max(...xs) || 900, height = Math.max(...ys) || 900;
+                    const vertices: [number, number][] = event.target.value === "l"
+                      ? [[0, 0], [width, 0], [width, height * .55], [width * .55, height * .55],
+                        [width * .55, height], [0, height]]
+                      : [[0, 0], [width, 0], [width, height], [0, height]];
+                    updateShowerTray({ vertices, edges: vertices.map((_, index) => ({
+                      id: `edge-${index + 1}`, kind: "open",
+                    })), ...(event.target.value === "l"
+                      ? { drainX: Math.round(width * .3 * 10) / 10,
+                        drainY: Math.round(height * .3 * 10) / 10 } : {}) });
+                  }}>
+                  <option value="custom">Прямоугольник / своя</option>
+                  <option value="l">Г-образная</option>
+                </select></label>
+                <details className="shower-shape-details">
+                  <summary>Контур и борта ({room.showerTray.vertices.length} углов)</summary>
+                  <div className="shower-vertex-list">
+                    {room.showerTray.vertices.map((point, index) => <div key={index} className="shower-vertex-row">
+                      <strong>Угол {index + 1}</strong>
+                      <label>X, мм<input type="number" step="0.1" value={point[0]}
+                        onChange={event => {
+                          const value = Number(event.target.value);
+                          if (!Number.isFinite(value)) return;
+                          const vertices = room.showerTray!.vertices!.map((item, itemIndex) =>
+                            itemIndex === index ? [Math.round(value * 10) / 10, item[1]] as [number, number] : item);
+                          updateShowerTray({ vertices });
+                        }} /></label>
+                      <label>Y, мм<input type="number" step="0.1" value={point[1]}
+                        onChange={event => {
+                          const value = Number(event.target.value);
+                          if (!Number.isFinite(value)) return;
+                          const vertices = room.showerTray!.vertices!.map((item, itemIndex) =>
+                            itemIndex === index ? [item[0], Math.round(value * 10) / 10] as [number, number] : item);
+                          updateShowerTray({ vertices });
+                        }} /></label>
+                      <label>Ребро после угла<select value={room.showerTray!.edges?.[index]?.kind ?? "open"}
+                        onChange={event => {
+                          const edges = [...(room.showerTray!.edges ?? [])];
+                          const kind = event.target.value as NonNullable<ShowerTray["edges"]>[number]["kind"];
+                          edges[index] = { id: edges[index]?.id ?? `edge-${index + 1}`, kind,
+                            ...(kind === "curb" ? { curbHeightMm: edges[index]?.curbHeightMm ?? 80,
+                              curbWidthMm: edges[index]?.curbWidthMm ?? 100 } : {}) };
+                          updateShowerTray({ edges });
+                        }}>
+                        <option value="wall">У стены</option><option value="open">Открытый торец</option>
+                        <option value="curb">Борт</option><option value="entry">Вход без борта</option>
+                      </select></label>
+                      {room.showerTray!.edges?.[index]?.kind === "curb" && <>
+                        <label>Высота борта, мм<input type="number" min="10" max="500" step="0.1"
+                          value={room.showerTray!.edges[index].curbHeightMm ?? 80}
+                          onChange={event => {
+                            const value = Number(event.target.value);
+                            if (!Number.isFinite(value)) return;
+                            const edges = [...room.showerTray!.edges!];
+                            edges[index] = { ...edges[index], curbHeightMm: Math.round(value * 10) / 10 };
+                            updateShowerTray({ edges });
+                          }} /></label>
+                        <label>Ширина борта, мм<input type="number" min="10" max="500" step="0.1"
+                          value={room.showerTray!.edges[index].curbWidthMm ?? 100}
+                          onChange={event => {
+                            const value = Number(event.target.value);
+                            if (!Number.isFinite(value)) return;
+                            const edges = [...room.showerTray!.edges!];
+                            edges[index] = { ...edges[index], curbWidthMm: Math.round(value * 10) / 10 };
+                            updateShowerTray({ edges });
+                          }} /></label>
+                      </>}
+                    </div>)}
+                  </div>
+                  <div className="shower-vertex-actions">
+                    <button type="button" disabled={room.showerTray.vertices.length >= 24}
+                      onClick={() => {
+                        const vertices = [...room.showerTray!.vertices!];
+                        const first = vertices[0], last = vertices[vertices.length - 1];
+                        vertices.push([Math.round((first[0] + last[0]) * 5) / 10,
+                          Math.round((first[1] + last[1]) * 5) / 10]);
+                        updateShowerTray({ vertices, edges: [...(room.showerTray!.edges ?? []),
+                          { id: `edge-${vertices.length}`, kind: "open" }] });
+                      }}>Добавить угол</button>
+                    <button type="button" disabled={room.showerTray.vertices.length <= 3}
+                      onClick={() => updateShowerTray({
+                        vertices: room.showerTray!.vertices!.slice(0, -1),
+                        edges: room.showerTray!.edges?.slice(0, -1),
+                      })}>Удалить последний</button>
+                  </div>
+                  <small className="muted">Координаты углов задаются относительно положения поддона. Форма может быть выпуклой или вогнутой, но линии не должны пересекаться.</small>
+                </details>
+              </>}
               <label>Тип слива<select value={room.showerTray.drainType}
                 onChange={event => {
                   const drainType = event.target.value as ShowerTray["drainType"];
@@ -677,8 +788,8 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
                 <option value="horizontal">Горизонтальный</option>
                 <option value="vertical">Вертикальный</option>
               </select></label>}
-              {showerField("drainX", "Координата слива X", -100000, 100000, "мм")}
-              {showerField("drainY", "Координата слива Y", -100000, 100000, "мм")}
+              {showerField("drainX", room.showerTray.vertices ? "Слив X внутри поддона" : "Координата слива X", -100000, 100000, "мм")}
+              {showerField("drainY", room.showerTray.vertices ? "Слив Y внутри поддона" : "Координата слива Y", -100000, 100000, "мм")}
               {showerField("drainWidth", "Ширина рамки", 50, 2000, "мм")}
               {room.showerTray.drainType === "linear" &&
                 showerField("drainLength", "Длина слива", 100, 3000, "мм")}

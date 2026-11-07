@@ -21,6 +21,14 @@ from .database import (
 from psycopg import Error as DatabaseError
 
 
+class ShowerEdge(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
+    id: str = Field(min_length=1, max_length=120)
+    kind: Literal["wall", "open", "curb", "entry"]
+    curbHeightMm: float | None = Field(default=None, ge=10, le=500)
+    curbWidthMm: float | None = Field(default=None, ge=10, le=500)
+
+
 class ShowerTray(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
     drainType: Literal["point", "linear"]
@@ -30,6 +38,13 @@ class ShowerTray(BaseModel):
     drainLength: float = Field(ge=50, le=3000)
     drainOrientation: Literal["horizontal", "vertical"] = "horizontal"
     slopePercent: float = Field(ge=.1, le=10)
+    id: str | None = Field(default=None, min_length=1, max_length=120)
+    originX: float | None = Field(default=None, ge=-100000, le=100000)
+    originY: float | None = Field(default=None, ge=-100000, le=100000)
+    rotationDeg: float | None = Field(default=None, ge=-360, le=360)
+    baseHeightMm: float | None = Field(default=None, ge=0, le=1000)
+    vertices: list[tuple[float, float]] | None = Field(default=None, min_length=3, max_length=24)
+    edges: list[ShowerEdge] | None = Field(default=None, min_length=3, max_length=24)
 
 
 class Project(BaseModel):

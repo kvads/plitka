@@ -996,7 +996,18 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.getByText("800 000,0 мм²")).toBeVisible();
   await expect(page.locator("[data-physical-canvas]").getByText("90,0°").first()).toBeVisible();
   await expect(page.locator("[data-physical-canvas]").getByText("800,0 мм").first()).toBeVisible();
-  await page.getByRole("checkbox", { name: "Рассчитать уклоны к сливу" }).check();
+  await page.getByRole("checkbox", { name: "Добавить отдельный поддон" }).check();
+  await expect(page.locator("[data-shower-object]")).toHaveCount(1);
+  await expect(page.locator("[data-shower-vertex]")).toHaveCount(4);
+  await page.getByLabel("Форма поддона").selectOption("l");
+  await expect(page.locator("[data-shower-vertex]")).toHaveCount(6);
+  await page.getByText("Контур и борта (6 углов)").click();
+  await page.getByLabel("Ребро после угла").first().selectOption("curb");
+  await expect.poll(() => page.evaluate(() => {
+    const document = JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0];
+    return [document.rooms[0].showerTray.vertices.length,
+      document.rooms[0].showerTray.edges[0].kind];
+  })).toEqual([6, "curb"]);
   await page.getByRole("button", { name: "Подобрать раскладку" }).click();
   await expect(page.getByText(/Плиток:/)).toBeVisible();
   await expect(page.locator("[data-shower-zone]")).toHaveCount(4);
@@ -1004,18 +1015,26 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.getByText(/Поддон: 4 уклонных зон/)).toBeVisible();
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await expect(page.getByRole("img", { name: /душевым поддоном, уклонными плоскостями и сливом/ })).toBeVisible();
+  if (process.env.PW_VISUAL_OUTPUT) await page.screenshot({ path: process.env.PW_VISUAL_OUTPUT,
+    fullPage: true });
   await expect(page.getByRole("button", { name: "Скрыть стены" })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "Скрыть стены" }).click();
   await page.getByRole("button", { name: "Раскладка", exact: true }).click();
   const csvDownload = page.waitForEvent("download");
   await page.getByRole("button", { name: "Таблица деталей · CSV" }).click();
   const csv = await csvDownload;
-  expect((await readFile(await csv.path(), "utf8"))).toContain("Площадь мм²");
+  const csvText = await readFile(await csv.path(), "utf8");
+  expect(csvText).toContain("Площадь мм²");
+  expect(csvText).toContain("Поверхность edge-1:curb");
   await page.getByRole("button", { name: "Сбросить раскладку" }).click();
   await expect(page.getByText("Раскладка помещения сброшена. Параметры и стены сохранены.")).toBeVisible();
   await expect(page.locator("[data-layout-room-id]")).toHaveCount(0);
   await expect(page.locator("[data-room-key]")).toHaveAttribute("fill", "#fff4bb");
   await expect(page.locator("[data-room-key]")).toHaveCount(1);
+  await page.getByRole("checkbox", { name: "Добавить отдельный поддон" }).uncheck();
+  await expect(page.locator("[data-shower-object]")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray)).toBeNull();
   const roomId = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].id);
   await page.getByRole("button", { name: "Раскрыть меню" }).click();
   await page.getByRole("button", { name: "Проект", exact: true }).click();

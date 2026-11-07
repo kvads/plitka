@@ -175,6 +175,19 @@ export type ShowerTray = {
   drainLength: number;
   drainOrientation: "horizontal" | "vertical";
   slopePercent: number;
+  id?: string;
+  originX?: number;
+  originY?: number;
+  rotationDeg?: number;
+  baseHeightMm?: number;
+  vertices?: [number, number][];
+  edges?: ShowerEdge[];
+};
+export type ShowerEdge = {
+  id: string;
+  kind: "wall" | "open" | "curb" | "entry";
+  curbHeightMm?: number;
+  curbWidthMm?: number;
 };
 export type SharedLayoutGridV6 = {
   referenceRoomId: string;

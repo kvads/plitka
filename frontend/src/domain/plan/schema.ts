@@ -698,7 +698,8 @@ export function parseV6(value: unknown): ProjectDocumentV6 {
       requireTenth(num(subject));
     if (room.showerTray !== undefined && room.showerTray !== null) {
       const shower = obj(room.showerTray);
-      exact(shower, ["drainType", "drainX", "drainY", "drainWidth", "drainLength", "drainOrientation", "slopePercent"]);
+      exact(shower, ["drainType", "drainX", "drainY", "drainWidth", "drainLength", "drainOrientation", "slopePercent",
+        "id", "originX", "originY", "rotationDeg", "baseHeightMm", "vertices", "edges"]);
       choice(shower.drainType, ["point", "linear"]);
       choice(shower.drainOrientation, ["horizontal", "vertical"]);
       for (const subject of [shower.drainX, shower.drainY, shower.drainWidth,
@@ -706,6 +707,28 @@ export function parseV6(value: unknown): ProjectDocumentV6 {
       const width = num(shower.drainWidth), length = num(shower.drainLength), slope = num(shower.slopePercent);
       if (width < 50 || width > 2000 || length < 50 || length > 3000 ||
           slope < .1 || slope > 10 || (shower.drainType === "point" && length !== width)) fail();
+      if (shower.vertices !== undefined) {
+        str(shower.id, 1, 120);
+        for (const value of [shower.originX, shower.originY, shower.rotationDeg, shower.baseHeightMm])
+          requireTenth(num(value));
+        const vertices = arr(shower.vertices, 24);
+        const edges = arr(shower.edges, 24);
+        if (vertices.length < 3 || edges.length !== vertices.length || num(shower.baseHeightMm) < 0 ||
+            num(shower.baseHeightMm) > 1000) fail();
+        vertices.forEach(rawPoint => {
+          const point = arr(rawPoint, 2);
+          if (point.length !== 2) fail();
+          point.forEach(value => requireTenth(num(value)));
+        });
+        edges.forEach(rawEdge => {
+          const edge = obj(rawEdge);
+          exact(edge, ["id", "kind", "curbHeightMm", "curbWidthMm"]);
+          str(edge.id, 1, 120); choice(edge.kind, ["wall", "open", "curb", "entry"]);
+          if (edge.kind === "curb") {
+            requireTenth(num(edge.curbHeightMm)); requireTenth(num(edge.curbWidthMm));
+          }
+        });
+      }
     }
     if (room.confirmed !== null) {
       const confirmed = obj(room.confirmed);

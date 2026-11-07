@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import numpy as np
 import shapely
-from shapely.affinity import rotate
+from shapely.affinity import rotate, translate
 from shapely.geometry import Polygon, MultiPolygon, box
 from shapely.ops import unary_union
 
@@ -30,11 +30,23 @@ def validate_input(project) -> None:
         values.extend([project.shower.drainX, project.shower.drainY,
                        project.shower.drainWidth, project.shower.drainLength,
                        project.shower.slopePercent])
+        if project.shower.vertices is not None:
+            values.extend([project.shower.originX or 0, project.shower.originY or 0,
+                           project.shower.rotationDeg or 0, project.shower.baseHeightMm or 0])
+            values.extend(v for point in project.shower.vertices for v in point)
+            for edge in project.shower.edges or []:
+                values.extend(v for v in (edge.curbHeightMm, edge.curbWidthMm) if v is not None)
     if not all(valid_tenth(value) for value in values):
         raise ValueError('Допустим не более одного знака после запятой.')
     if (project.shower is not None and project.shower.drainType == 'point' and
             project.shower.drainLength != project.shower.drainWidth):
         raise ValueError('У точечного слива длина и ширина рамки должны совпадать.')
+    if project.shower is not None and project.shower.vertices is not None:
+        if project.shower.edges is None or len(project.shower.edges) != len(project.shower.vertices):
+            raise ValueError('Количество рёбер поддона должно совпадать с количеством вершин.')
+        for edge in project.shower.edges:
+            if edge.kind == 'curb' and (edge.curbHeightMm is None or edge.curbWidthMm is None):
+                raise ValueError('Для борта нужны высота и ширина.')
 
 
 def offset_ticks(value: float, period: float) -> int:
@@ -98,7 +110,68 @@ def _drain_polygon(shower):
                shower.drainX + length / 2, shower.drainY + width / 2)
 
 
+def _object_geometry(shower, room_region):
+    if shower.vertices is None:
+        return shower, None, None
+    local = Polygon(shower.vertices)
+    if not local.is_valid or local.is_empty or local.area <= 0:
+        raise ValueError('Контур душевого поддона должен быть простым и иметь площадь.')
+    angle = shower.rotationDeg or 0
+    origin_x, origin_y = shower.originX or 0, shower.originY or 0
+    footprint = translate(rotate(local, angle, origin=(0, 0)), origin_x, origin_y)
+    footprint = _snap_geometry(footprint)
+    if not room_region.covers(footprint):
+        raise ValueError('Контур душевого поддона выходит за границы помещения.')
+    radians = math.radians(angle)
+    drain_x = origin_x + shower.drainX * math.cos(radians) - shower.drainY * math.sin(radians)
+    drain_y = origin_y + shower.drainX * math.sin(radians) + shower.drainY * math.cos(radians)
+    world_shower = shower.model_copy(update={'drainX': tenth(drain_x), 'drainY': tenth(drain_y)})
+    return world_shower, footprint, local
+
+
+def _object_transform(geometry, shower):
+    return translate(rotate(geometry, shower.rotationDeg or 0, origin=(0, 0)),
+                     shower.originX or 0, shower.originY or 0)
+
+
+def _object_shower_zones(shower, local):
+    drain = _drain_polygon(shower)
+    local_region = shapely.difference(local, drain, grid_size=.1)
+    return [(zone_id, axis, _snap_geometry(_object_transform(zone, shower)))
+            for zone_id, axis, zone in _shower_zones(shower, local_region)]
+
+
+def _object_surfaces(shower, footprint):
+    if footprint is None or shower.edges is None:
+        return []
+    coords = list(footprint.exterior.coords)[:-1]
+    surfaces = []
+    for index, edge in enumerate(shower.edges):
+        start, end = coords[index], coords[(index + 1) % len(coords)]
+        length = math.dist(start, end)
+        if edge.kind != 'wall':
+            height = shower.baseHeightMm or 0
+            surfaces.append({'id': f'{edge.id}:fascia', 'edgeId': edge.id, 'kind': 'fascia',
+                'edgeKind': edge.kind, 'start': [tenth(start[0]), tenth(start[1])],
+                'end': [tenth(end[0]), tenth(end[1])], 'lengthMm': tenth(length),
+                'heightMm': tenth(height), 'widthMm': 0, 'areaMm2': tenth(length * height)})
+        if edge.kind == 'curb':
+            height, width = edge.curbHeightMm or 0, edge.curbWidthMm or 0
+            surfaces.append({'id': f'{edge.id}:curb', 'edgeId': edge.id, 'kind': 'curb',
+                'edgeKind': edge.kind, 'start': [tenth(start[0]), tenth(start[1])],
+                'end': [tenth(end[0]), tenth(end[1])], 'lengthMm': tenth(length),
+                'heightMm': tenth(height), 'widthMm': tenth(width),
+                'areaMm2': tenth(length * (width + 2 * height))})
+    return surfaces
+
+
 def _shower_height(shower, x: float, y: float) -> float:
+    if shower.vertices is not None:
+        x -= shower.originX or 0
+        y -= shower.originY or 0
+        radians = math.radians(-(shower.rotationDeg or 0))
+        x, y = x * math.cos(radians) - y * math.sin(radians), \
+               x * math.sin(radians) + y * math.cos(radians)
     slope = shower.slopePercent / 100
     if shower.drainType == 'point':
         distance = max(abs(x - shower.drainX), abs(y - shower.drainY))
@@ -165,16 +238,25 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
         region, _ = prepare(project)
     except ValueError as exc:
         raise ValueError('Некорректная область помещения или параметры раскладки.') from exc
+    room_region = region
     drain = None
+    object_footprint = None
+    effective_shower = project.shower
+    object_local = None
     if project.shower is not None:
-        drain = _drain_polygon(project.shower)
+        effective_shower, object_footprint, object_local = _object_geometry(project.shower, room_region)
+        region = object_footprint if object_footprint is not None else region
+        drain = (_object_transform(_drain_polygon(project.shower), project.shower)
+                 if object_footprint is not None else _drain_polygon(effective_shower))
         if not region.covers(drain):
             raise ValueError('Рамка слива должна полностью находиться внутри области укладки.')
         region = shapely.difference(region, drain, grid_size=.1)
         if region.is_empty or region.area <= 0:
             raise ValueError('После размещения слива не осталось области для укладки плитки.')
     room, canonical_region, room_area = _canonical_region(project, region)
-    shower_zones = _shower_zones(project.shower, canonical_region) if project.shower else []
+    shower_zones = (_object_shower_zones(project.shower, object_local)
+                    if project.shower is not None and object_local is not None
+                    else _shower_zones(effective_shower, canonical_region) if effective_shower else [])
     step = project.tile + project.grout
     dx = offset_ticks(dx, step) / 10
     dy = offset_ticks(dy, step) / 10
@@ -207,8 +289,9 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
         source_parts = []
         if shower_zones:
             for zone_id, axis, zone_geometry in shower_zones:
-                for poly in _polys(shapely.intersection(geometry, zone_geometry, grid_size=.1)):
-                    source_parts.append((zone_id, axis, poly))
+                for base_poly in _polys(geometry):
+                    for poly in _polys(shapely.intersection(base_poly, zone_geometry, grid_size=.1)):
+                        source_parts.append((zone_id, axis, poly))
         else:
             source_parts = [(None, None, poly) for poly in _polys(geometry)]
         if not source_parts:
@@ -240,8 +323,8 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
                 bx0, by0, bx1, by1 = poly.bounds
                 planar_width, planar_height = bx1 - bx0, by1 - by0
                 surface_width, surface_height = planar_width, planar_height
-                if project.shower is not None:
-                    slope = project.shower.slopePercent / 100
+                if effective_shower is not None:
+                    slope = effective_shower.slopePercent / 100
                     if axis in ('east', 'west'):
                         surface_width = math.hypot(planar_width, planar_width * slope)
                     elif axis in ('north', 'south'):
@@ -281,7 +364,7 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
     result = {'offset_x': dx, 'offset_y': dy, 'angle': tenth(project.angle),
         'metrics': metrics, 'parts': parts,
         'region': [rings(poly) for poly in _polys(canonical_region)] if detail else []}
-    if project.shower is not None and detail:
+    if effective_shower is not None and detail:
         zone_results = []
         max_height = 0
         for zone_id, axis, zone in shower_zones:
@@ -291,14 +374,26 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
             zone_max = max(heights, default=0)
             max_height = max(max_height, zone_max)
             zone_results.append({'id': zone_id, 'rings': rings(zone), 'axis': axis,
-                'slopePercent': tenth(project.shower.slopePercent),
+                'slopePercent': tenth(effective_shower.slopePercent),
                 'minHeightMm': min(heights, default=0), 'maxHeightMm': zone_max})
-        result['shower'] = {'drain': {'type': project.shower.drainType,
-            'x': tenth(project.shower.drainX), 'y': tenth(project.shower.drainY),
-            'width': tenth(project.shower.drainWidth),
-            'length': tenth(project.shower.drainLength),
-            'orientation': project.shower.drainOrientation},
+        result['shower'] = {'drain': {'type': effective_shower.drainType,
+            'x': tenth(effective_shower.drainX), 'y': tenth(effective_shower.drainY),
+            'width': tenth(effective_shower.drainWidth),
+            'length': tenth(effective_shower.drainLength),
+            'orientation': effective_shower.drainOrientation,
+            'rotationDeg': tenth(project.shower.rotationDeg or 0)},
             'zones': zone_results, 'maxHeightMm': tenth(max_height)}
+        if object_footprint is not None:
+            result['shower']['object'] = {
+                'id': project.shower.id or 'shower-object',
+                'originX': tenth(project.shower.originX or 0),
+                'originY': tenth(project.shower.originY or 0),
+                'rotationDeg': tenth(project.shower.rotationDeg or 0),
+                'baseHeightMm': tenth(project.shower.baseHeightMm or 0),
+                'footprint': rings(object_footprint),
+                'edges': [edge.model_dump(exclude_none=True) for edge in project.shower.edges or []],
+                'surfaces': _object_surfaces(project.shower, object_footprint),
+            }
     return result
 
 

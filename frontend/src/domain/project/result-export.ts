@@ -54,6 +54,12 @@ const partHeight = (layout: Layout, zoneId: string | null | undefined, point: nu
   const shower = layout.shower;
   const zone = shower?.zones.find(candidate => candidate.id === zoneId);
   if (!shower || !zone) return 0;
+  const rotation = (shower.object?.rotationDeg ?? 0) * Math.PI / 180;
+  if (rotation) {
+    const dx = point[0] - shower.drain.x, dy = point[1] - shower.drain.y;
+    point = [shower.drain.x + dx * Math.cos(rotation) + dy * Math.sin(rotation),
+      shower.drain.y - dx * Math.sin(rotation) + dy * Math.cos(rotation)];
+  }
   const slope = zone.slopePercent / 100;
   return zone.axis === "east" || zone.axis === "west"
     ? Math.abs(point[0] - shower.drain.x) * slope
@@ -62,16 +68,18 @@ const partHeight = (layout: Layout, zoneId: string | null | undefined, point: nu
 
 export function exportResult(kind: "svg" | "csv", layout: Layout) {
   if (kind === "csv") {
+    const tileRows = layout.parts.map((p) =>
+      [p.id, p.zoneId ?? "", manufacturingMillimetres(p.surfaceWidth ?? p.width),
+        manufacturingMillimetres(p.surfaceHeight ?? p.height), format(p.area),
+        p.issues.join(", ")].join(";"));
+    const surfaceRows = (layout.shower?.object?.surfaces ?? []).map(surface =>
+      [`Поверхность ${surface.id}`, surface.kind === "curb" ? "Борт" : "Торец",
+        manufacturingMillimetres(surface.lengthMm), manufacturingMillimetres(surface.heightMm),
+        format(surface.areaMm2), ""].join(";"));
     download(
       "plitka-details.csv",
       "\uFEFFДеталь;Зона уклона;Ширина по поверхности мм;Высота по поверхности мм;Площадь мм²;Предупреждения\n" +
-        layout.parts
-          .map((p) =>
-            [p.id, p.zoneId ?? "", manufacturingMillimetres(p.surfaceWidth ?? p.width),
-              manufacturingMillimetres(p.surfaceHeight ?? p.height), format(p.area),
-              p.issues.join(", ")].join(";"),
-          )
-          .join("\n"),
+        [...tileRows, ...surfaceRows].join("\n"),
       "text/csv;charset=utf-8",
     );
     return;
