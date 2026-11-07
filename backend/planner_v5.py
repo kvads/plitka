@@ -296,7 +296,8 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True,
     effective_shower = project.shower
     object_local = None
     if project.shower is not None:
-        effective_shower, object_footprint, object_local = _object_geometry(project.shower, room_region)
+        shower_room = _snap_geometry(Polygon(project.outline, project.holes))
+        effective_shower, object_footprint, object_local = _object_geometry(project.shower, shower_room)
         region = object_footprint if object_footprint is not None else region
         drain = (_object_transform(_drain_polygon(project.shower), project.shower)
                  if object_footprint is not None else _drain_polygon(effective_shower))

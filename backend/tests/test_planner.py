@@ -341,6 +341,15 @@ def test_v5_parametric_shower_object_uses_local_shape_and_exposes_surfaces():
                if part['surfaceId'] == 'shower-top')
 
 
+def test_v5_parametric_shower_can_touch_two_room_walls_despite_tile_gap():
+    result = calculate_v5(project(tile=300, gap=10,
+                          shower=shower_object(originX=0, originY=0)), 0, 0)
+    footprint = Polygon(result['shower']['object']['footprint'][0])
+    assert footprint.bounds[:2] == (0, 0)
+    assert result['shower']['object']['edges'][0]['kind'] == 'wall'
+    assert result['shower']['object']['edges'][-1]['kind'] == 'wall'
+
+
 def test_v5_parametric_shower_object_rotates_and_rejects_invalid_geometry():
     result = calculate_v5(project(tile=300,
                           shower=shower_object(rotationDeg=90, originX=1000)), 0, 0)

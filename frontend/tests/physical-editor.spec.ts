@@ -1074,18 +1074,25 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.originX)
   ).toBe(originBeforeKeyboard + 10);
   const movedBox = (await showerObject.boundingBox())!;
+  const cornerTarget = await roomCanvas.evaluate(node => {
+    const svg = node as SVGSVGElement;
+    const point = svg.createSVGPoint(); point.x = 900; point.y = -100;
+    const screen = point.matrixTransform(svg.getScreenCTM()!);
+    return { x: screen.x, y: screen.y };
+  });
   await page.mouse.move(movedBox.x + movedBox.width / 2, movedBox.y + movedBox.height / 2);
   await page.mouse.down();
-  await page.mouse.move(movedBox.x + movedBox.width / 2 + 1000, movedBox.y + movedBox.height / 2);
+  await page.mouse.move(cornerTarget.x, cornerTarget.y);
   await page.mouse.up();
   await expect.poll(() => page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.originX)
   ).toBeLessThanOrEqual(340);
   await expect.poll(() => page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.edges
-      .filter((edge: { kind: string }) => edge.kind === "wall").length)).toBeGreaterThan(0);
+      .filter((edge: { kind: string }) => edge.kind === "wall").length)).toBeGreaterThanOrEqual(2);
   await showerObject.click();
   await expect(page.getByRole("heading", { name: "Поддон на плане" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Удалить поддон" })).toHaveCount(0);
   await page.getByLabel("Форма поддона").selectOption("l");
   await expect(page.locator("[data-shower-vertex]")).toHaveCount(6);
   await page.getByText("Контур (6 углов)").click();
@@ -1098,6 +1105,7 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
     path: process.env.PW_VISUAL_OUTPUT.replace(/\.png$/, "-shower-modal.png"), fullPage: true,
   });
   await showerDialog.getByRole("button", { name: "Увеличить: Высота" }).click();
+  await showerDialog.getByRole("button", { name: /Сторона 1:/ }).click();
   await showerDialog.getByRole("button", { name: /Сторона 1:/ }).click();
   await expect.poll(() => page.evaluate(() => {
     const document = JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0];
@@ -1130,6 +1138,15 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.locator("[data-layout-room-id]")).toHaveCount(0);
   await expect(page.locator("[data-room-key]")).toHaveAttribute("fill", "#fff4bb");
   await expect(page.locator("[data-room-key]")).toHaveCount(1);
+  await page.getByRole("button", { name: "План", exact: true }).click();
+  await page.getByRole("button", { name: "Удалить элемент" }).click();
+  await page.locator("[data-shower-object]").click();
+  const deleteShower = page.getByRole("alertdialog", { name: "Удалить поддон?" });
+  await expect(deleteShower).toBeVisible();
+  await deleteShower.getByRole("button", { name: "Удалить поддон" }).click();
+  await expect(page.locator("[data-shower-object]")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray)).toBeNull();
   const roomId = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].id);
   await page.getByRole("button", { name: "Проект", exact: true }).click();
   await page.getByRole("menuitem", { name: "Очистить" }).click();

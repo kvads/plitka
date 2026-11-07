@@ -53,6 +53,7 @@ type Props = {
   deleteTool: boolean;
   onDeleteWall: (wallId: string) => void;
   onDeleteDoor: (openingId: string) => void;
+  onDeleteShower: (roomId: string) => void;
   onPlaceDoor: (wallId: string, offsetMm: number) => void;
   onResetDoorTool: () => void;
 };
@@ -80,7 +81,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   selectedWallId, onSelectWall, selectedHandle, onSelectHandle, onNudge,
   wallTool, thicknessMm, onDrawWall, onResetWallTool,
   doorTool, doorWidthMm, selectedDoorId, onSelectDoor, deleteTool, onDeleteWall,
-  onDeleteDoor, onPlaceDoor, onResetDoorTool }: Props) {
+  onDeleteDoor, onDeleteShower, onPlaceDoor, onResetDoorTool }: Props) {
   const svg = useRef<SVGSVGElement>(null);
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef<Gesture | null>(null);
@@ -424,7 +425,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       return;
     }
     if (current.showerRoomId && !showerTool) {
-      onSelectShower?.(current.showerRoomId);
+      if (deleteTool) onDeleteShower(current.showerRoomId);
+      else onSelectShower?.(current.showerRoomId);
       return;
     } else if (showerTool) {
       const point = current.roomKey ? world(event.clientX, event.clientY) : null;
@@ -661,8 +663,12 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       return [<g key={`${roomId}:shower-object`} data-shower-object={roomId}
         data-dragging={showerDrag?.roomId === roomId || undefined}
         tabIndex={selected ? 0 : -1} role="button"
-        aria-label="Душевой поддон. Перетащите мышью или перемещайте стрелками."
+        aria-label={deleteTool ? "Удалить душевой поддон"
+          : "Душевой поддон. Перетащите мышью или перемещайте стрелками."}
         onKeyDown={event => {
+          if (deleteTool && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault(); onDeleteShower(roomId); return;
+          }
           const delta = event.key === "ArrowLeft" ? { x: -10, y: 0 }
             : event.key === "ArrowRight" ? { x: 10, y: 0 }
             : event.key === "ArrowUp" ? { x: 0, y: 10 }

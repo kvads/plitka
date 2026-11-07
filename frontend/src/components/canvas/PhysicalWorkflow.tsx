@@ -30,10 +30,10 @@ const displayTenth = (value: number) => value.toLocaleString("ru-RU", {
 const pointOnSegment = (point: [number, number], start: [number, number], end: [number, number]) => {
   const dx = end[0] - start[0], dy = end[1] - start[1];
   const length = Math.hypot(dx, dy);
-  if (length < .001) return Math.hypot(point[0] - start[0], point[1] - start[1]) < .2;
+  if (length < .001) return Math.hypot(point[0] - start[0], point[1] - start[1]) < .01;
   const cross = Math.abs((point[0] - start[0]) * dy - (point[1] - start[1]) * dx) / length;
   const dot = (point[0] - start[0]) * dx + (point[1] - start[1]) * dy;
-  return cross <= .2 && dot >= -.2 && dot <= length * length + .2;
+  return cross <= .01 && dot >= -.01 && dot <= length * length + .01;
 };
 const distanceToSegment = (point: [number, number], start: [number, number], end: [number, number]) => {
   const dx = end[0] - start[0], dy = end[1] - start[1];
@@ -82,15 +82,29 @@ const constrainedShowerOrigin = (tray: ShowerTray, delta: { x: number; y: number
   const desiredX = Math.round((startX + delta.x) * 10) / 10;
   const desiredY = Math.round((startY + delta.y) * 10) / 10;
   if (showerFitsRoom(tray, desiredX, desiredY, polygon, clearance)) return { x: desiredX, y: desiredY };
-  let low = 0, high = 1;
-  for (let iteration = 0; iteration < 24; iteration++) {
-    const ratio = (low + high) / 2;
-    const x = startX + delta.x * ratio, y = startY + delta.y * ratio;
-    if (showerFitsRoom(tray, x, y, polygon, clearance)) low = ratio;
-    else high = ratio;
-  }
-  return { x: Math.round((startX + delta.x * low) * 10) / 10,
-    y: Math.round((startY + delta.y * low) * 10) / 10 };
+  const constrainFrom = (origin: { x: number; y: number }, movement: { x: number; y: number }) => {
+    const target = { x: origin.x + movement.x, y: origin.y + movement.y };
+    if (showerFitsRoom(tray, target.x, target.y, polygon, clearance)) return target;
+    let low = 0, high = 1;
+    for (let iteration = 0; iteration < 24; iteration++) {
+      const ratio = (low + high) / 2;
+      const x = origin.x + movement.x * ratio, y = origin.y + movement.y * ratio;
+      if (showerFitsRoom(tray, x, y, polygon, clearance)) low = ratio;
+      else high = ratio;
+    }
+    return { x: Math.round((origin.x + movement.x * low) * 10) / 10,
+      y: Math.round((origin.y + movement.y * low) * 10) / 10 };
+  };
+  const start = { x: startX, y: startY };
+  const direct = constrainFrom(start, delta);
+  const afterX = constrainFrom(start, { x: delta.x, y: 0 });
+  const xThenY = constrainFrom(afterX, { x: 0, y: delta.y });
+  const afterY = constrainFrom(start, { x: 0, y: delta.y });
+  const yThenX = constrainFrom(afterY, { x: delta.x, y: 0 });
+  return [direct, xThenY, yThenX].filter(candidate =>
+    showerFitsRoom(tray, candidate.x, candidate.y, polygon, clearance))
+    .sort((a, b) => Math.hypot(a.x - desiredX, a.y - desiredY) -
+      Math.hypot(b.x - desiredX, b.y - desiredY))[0] ?? direct;
 };
 const wallAwareShowerEdges = (tray: ShowerTray,
   polygon: { outline: number[][]; holes: number[][][] }, clearance = 0) => {
@@ -130,7 +144,8 @@ type Removal =
 
 type PendingElementDeletion =
   | { kind: "wall"; wallId: string; impact: PhysicalDeletionImpact }
-  | { kind: "door"; openingId: string; widthMm: number };
+  | { kind: "door"; openingId: string; widthMm: number }
+  | { kind: "shower"; roomId: string };
 
 export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }: {
   initial: ProjectDocumentV6;
@@ -481,7 +496,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       drainOrientation: "horizontal", slopePercent: 2,
     };
     initialTray.edges = targetFace?.polygon
-      ? wallAwareShowerEdges(initialTray, targetFace.polygon, targetRoom.rules.gap)
+      ? wallAwareShowerEdges(initialTray, targetFace.polygon)
       : initialTray.edges;
     setLayoutScope("room");
     update(current => ({ ...current, sharedGrid: enabled ? null : current.sharedGrid,
@@ -499,7 +514,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     if (!room?.showerTray) return;
     const tray = { ...room.showerTray, ...change };
     if (selectedFace?.polygon)
-      tray.edges = wallAwareShowerEdges(tray, selectedFace.polygon, room.rules.gap);
+      tray.edges = wallAwareShowerEdges(tray, selectedFace.polygon);
     updateShowerTray(tray);
   };
   const adjustShower = (key: "baseHeightMm" | "recessDepthMm" | "slopePercent" |
@@ -650,11 +665,10 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         const targetRoom = doc.rooms.find(candidate => candidate.id === roomId);
         const targetFace = response?.faces.find(candidate => candidate.topologyKey === targetRoom?.topologyKey);
         if (!targetRoom?.showerTray || !targetFace?.polygon) return;
-        const origin = constrainedShowerOrigin(targetRoom.showerTray, delta, targetFace.polygon,
-          targetRoom.rules.gap);
+        const origin = constrainedShowerOrigin(targetRoom.showerTray, delta, targetFace.polygon);
         if (origin.x === targetRoom.showerTray.originX && origin.y === targetRoom.showerTray.originY) return;
         const movedTray = { ...targetRoom.showerTray, originX: origin.x, originY: origin.y };
-        movedTray.edges = wallAwareShowerEdges(movedTray, targetFace.polygon, targetRoom.rules.gap);
+        movedTray.edges = wallAwareShowerEdges(movedTray, targetFace.polygon);
         update(current => ({ ...current, rooms: current.rooms.map(candidate =>
           candidate.id === roomId && candidate.showerTray ? { ...candidate,
             showerTray: movedTray } : candidate) }));
@@ -667,8 +681,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         const targetRoom = doc.rooms.find(candidate => candidate.id === roomId);
         const targetFace = response?.faces.find(candidate => candidate.topologyKey === targetRoom?.topologyKey);
         if (!targetRoom?.showerTray || !targetFace?.polygon) return { x: 0, y: 0 };
-        const origin = constrainedShowerOrigin(targetRoom.showerTray, delta, targetFace.polygon,
-          targetRoom.rules.gap);
+        const origin = constrainedShowerOrigin(targetRoom.showerTray, delta, targetFace.polygon);
         return { x: origin.x - (targetRoom.showerTray.originX ?? 0),
           y: origin.y - (targetRoom.showerTray.originY ?? 0) };
       }}
@@ -687,6 +700,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       deleteTool={!compactView && interactionTool === "delete" && !layoutMode}
       onDeleteWall={wallId => { void requestWallDeletion(wallId); }}
       onDeleteDoor={requestDoorDeletion}
+      onDeleteShower={roomId => setPendingElementDeletion({ kind: "shower", roomId })}
       selectedHandle={selectedHandle} onSelectHandle={setSelectedHandle}
       onNudge={(handle, axis, direction) => {
         if (selectedWallId && !busy) void command({ type: "nudgeWallHandle",
@@ -1049,9 +1063,6 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           <button type="button" className="shower-open-3d" onClick={() => setShowerSettingsOpen(true)}>
             <Cuboid aria-hidden="true" />Настроить поддон в 3D
           </button>
-          <button type="button" className="shower-remove" onClick={() => toggleShowerTray(false)}>
-            <Trash2 aria-hidden="true" />Удалить поддон
-          </button>
         </> : selectedDoor || doorTool ? <>
           <h2>{selectedDoor ? "Дверной проём" : "Новая дверь"}</h2>
           <label>Ширина проёма, мм<input type="number" min="300" max="3000" step="10"
@@ -1128,13 +1139,16 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       <section role="alertdialog" aria-modal="true" aria-labelledby="physical-delete-title"
         onKeyDown={event => { if (event.key === "Escape") setPendingElementDeletion(null); }}>
         <h2 id="physical-delete-title">{pendingElementDeletion.kind === "wall"
-          ? "Удалить стену?" : "Удалить дверной проём?"}</h2>
+          ? "Удалить стену?" : pendingElementDeletion.kind === "door"
+            ? "Удалить дверной проём?" : "Удалить поддон?"}</h2>
         {pendingElementDeletion.kind === "wall" ? <p>
           Будет удалена стена, {pendingElementDeletion.impact.junctionIds.length} связанных стыков
           {pendingElementDeletion.impact.openingIds.length
             ? ` и дверных проёмов: ${pendingElementDeletion.impact.openingIds.length}` : ""}.
           Затронутых помещений: {pendingElementDeletion.impact.affectedRoomKeys.length}.
-        </p> : <p>Будет удалён дверной проём шириной {displayTenth(pendingElementDeletion.widthMm)} мм.</p>}
+        </p> : pendingElementDeletion.kind === "door"
+          ? <p>Будет удалён дверной проём шириной {displayTenth(pendingElementDeletion.widthMm)} мм.</p>
+          : <p>Поддон и его настройки будут удалены из помещения.</p>}
         <div className="delete-project-actions">
           <button ref={deleteCancelButton} type="button" disabled={busy}
             onClick={() => setPendingElementDeletion(null)}>Отмена</button>
@@ -1142,12 +1156,16 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
             if (pendingElementDeletion.kind === "wall") {
               void command({ type: "deleteWall", wallId: pendingElementDeletion.wallId });
               chooseWall(null);
-            } else {
+            } else if (pendingElementDeletion.kind === "door") {
               void command({ type: "deleteDoorOpening", openingId: pendingElementDeletion.openingId });
               chooseDoor(null);
+            } else {
+              update(current => ({ ...current, rooms: current.rooms.map(item =>
+                item.id === pendingElementDeletion.roomId ? { ...item, showerTray: null } : item) }));
             }
             setPendingElementDeletion(null);
-          }}>{pendingElementDeletion.kind === "wall" ? "Удалить стену" : "Удалить проём"}</button>
+          }}>{pendingElementDeletion.kind === "wall" ? "Удалить стену"
+            : pendingElementDeletion.kind === "door" ? "Удалить проём" : "Удалить поддон"}</button>
         </div>
       </section>
     </div>}
