@@ -2,7 +2,6 @@ import { expect, test } from "@playwright/test";
 import { touchSession, v6DiagonalWallGraph, v6PhysicalDocument, v6SavedWallGraph } from "./fixtures/projects";
 import type { Point, ProjectDocumentV6 } from "../src/domain/plan/types";
 import { physicalBasisKey } from "../src/domain/plan/physical-basis";
-import { parseV6Import } from "../src/domain/plan/migration";
 import { splitWallDimensions } from "../src/domain/plan/physical-dimensions";
 import { openingCorners, openingOffset } from "../src/domain/plan/physical-openings";
 import { alignCubeAttachmentToGuides, alignToWallEndProjection, centeredWallGeometry, immediateJointAngles,
@@ -519,6 +518,7 @@ test("physical v6 keeps a failed network command for retry after reload", async 
   const canvas = page.locator("[data-physical-canvas]");
   const box = (await canvas.boundingBox())!;
   await canvas.click({ position: { x: box.width / 2 - 100, y: box.height / 2 } });
+  await expect(canvas.locator("[data-wall-start]")).toBeVisible();
   await canvas.click({ position: { x: box.width / 2 + 100, y: box.height / 2 } });
   await expect.poll(() => page.evaluate(() => {
     const plan = JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].plan;
@@ -551,7 +551,10 @@ test("physical v6 shows a rejected wall message", async ({ page }) => {
   const canvas = page.locator("[data-physical-canvas]");
   const box = (await canvas.boundingBox())!;
   await canvas.click({ position: { x: box.width / 2 - 100, y: box.height / 2 } });
+  await expect(canvas.locator("[data-wall-start]")).toBeVisible();
+  const rejected = page.waitForResponse(response => response.url().endsWith("/api/v5/plan/command"));
   await canvas.click({ position: { x: box.width / 2 + 100, y: box.height / 2 } });
+  await rejected;
   const error = page.getByRole("alert").filter({ hasText: "Не удалось построить этот стык." });
   await expect(error).toBeVisible();
 });
@@ -587,7 +590,9 @@ test("physical v6 project creates a wall and reopens it twice", async ({ page })
   await page.getByRole("textbox", { name: "Название проекта" }).fill("Физический план");
   await page.getByRole("button", { name: "Создать проект" }).click();
   await expect(page.locator("[data-physical-canvas]")).toBeVisible();
-  await page.getByRole("button", { name: "Стена", exact: true }).click();
+  const wallTool = page.getByRole("button", { name: "Стена", exact: true });
+  await expect(wallTool.locator(".lucide-brick-wall")).toHaveCount(1);
+  await wallTool.click();
   const canvas = page.locator("[data-physical-canvas]");
   const box = await canvas.boundingBox();
   expect(box).not.toBeNull();
@@ -619,15 +624,17 @@ test("physical v6 project creates a wall and reopens it twice", async ({ page })
     await expect(page.locator("[data-physical-canvas]")).toBeVisible();
     await expect(page.locator("[data-wall-id]")).toHaveCount(1);
   }
-  await page.getByRole("button", { name: "Проект", exact: true }).click();
-  const download = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Скачать проект" }).click();
-  const exported = await download;
-  expect(exported.suggestedFilename()).toBe("Физический план.json");
-  const imported = parseV6Import(JSON.parse(await readFile(await exported.path(), "utf8")));
-  expect(imported.plan.draft.walls).toHaveLength(1);
-  await page.getByRole("button", { name: "Удалить проект" }).first().click();
-  await page.getByRole("dialog", { name: "Удалить проект" }).getByRole("button", { name: "Удалить проект" }).click();
+  const projectTrigger = page.getByRole("button", { name: "Проект", exact: true });
+  await expect(projectTrigger).toContainText("Физический план");
+  await projectTrigger.click();
+  const quickActions = page.getByRole("menu", { name: "Быстрые действия проекта" });
+  await expect(quickActions.getByRole("menuitem")).toHaveCount(2);
+  await expect(quickActions.getByRole("menuitem", { name: "Очистить" }).locator("svg")).toHaveCount(1);
+  await expect(quickActions.locator("input")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Скачать проект" })).toHaveCount(0);
+  await quickActions.getByRole("menuitem", { name: "Удалить проект" }).click();
+  await page.getByRole("alertdialog", { name: "Удалить проект?" })
+    .getByRole("button", { name: "Удалить проект" }).click();
   await expect(page.getByRole("heading", { name: "Проекты", exact: true })).toBeVisible();
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects)).toHaveLength(0);
 });
@@ -987,12 +994,12 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   ];
   for (const [index, [edge, side]] of walls.entries()) {
     const response = await request.post("/api/v5/plan/command", { data: {
-      schemaVersion: 5, commandId: `browser-room-${index}`, draftRevision: index,
+      schemaVersion: 5, commandId: `browser-room-${Date.now()}-${index}`, draftRevision: index,
       basisKey: await physicalBasisKey(graph as ProjectDocumentV6["plan"]["draft"]), graph,
       command: { type: "drawWall", drawnEdge: edge.map(([x, y]) => ({ x, y })),
         side, thicknessMm: 100 },
     } });
-    expect(response.ok()).toBeTruthy();
+    expect(response.ok(), `${response.status()} ${await response.text()}`).toBeTruthy();
     const body = await response.json();
     expect(body.status).toBe("applied");
     graph = body.graph;
@@ -1012,14 +1019,26 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.locator("[data-room-key]")).toHaveAttribute("fill", "#fff");
   await expect.poll(() => page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms.length)).toBe(1);
+  const joinedWall = page.locator("[data-wall-id]").first();
+  await joinedWall.click();
+  await expect(joinedWall).toHaveAttribute("fill", "#f2c94c88");
+  await expect(page.locator("[data-selected-wall-length]")).toBeVisible();
+  await expect(page.locator("[data-selected-wall-angle]")).toHaveCount(2);
   await page.getByRole("button", { name: "Раскладка", exact: true }).click();
+  await expect(page.locator("[data-wall-handle]")).toHaveCount(0);
+  await expect(page.locator("[data-selected-wall-length]")).toHaveCount(0);
+  await expect(page.locator("[data-selected-wall-angle]")).toHaveCount(0);
+  await expect(joinedWall).toHaveAttribute("fill", "#00000000");
   await expect(page.locator("[data-room-key]")).toHaveAttribute("fill", "#fff4bb");
   await page.locator("[data-room-key]").click();
   await expect(page.getByRole("textbox", { name: "Название помещения" })).toHaveValue("Помещение 1");
   await expect(page.getByRole("complementary").locator(".room-preview-card")).toHaveCount(0);
   await expect(page.getByText("800 000,0 мм²")).toBeVisible();
   await expect(page.locator("[data-physical-canvas]").getByText("90,0°").first()).toBeVisible();
-  await expect(page.locator("[data-physical-canvas]").getByText("800,0 мм").first()).toBeVisible();
+  await expect(page.locator("[data-physical-canvas]").getByText("800 мм").first()).toBeVisible();
+  await page.getByRole("button", { name: "План", exact: true }).click();
+  await page.locator("[data-room-key]").click();
+  await page.getByRole("button", { name: "Раскрыть меню" }).click();
   await page.getByRole("button", { name: "Поддон", exact: true }).click();
   const roomCanvas = page.locator("[data-physical-canvas]");
   const placementPoint = await roomCanvas.evaluate(node => {
@@ -1034,6 +1053,9 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.getByRole("textbox", { name: "Положение X" })).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Положение Y" })).toHaveCount(0);
   const showerObject = page.locator("[data-shower-object]");
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray?.originX
+  )).not.toBeUndefined();
   const originBeforeDrag = await page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.originX);
   const showerBox = (await showerObject.boundingBox())!;
@@ -1059,22 +1081,31 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect.poll(() => page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.originX)
   ).toBeLessThanOrEqual(340);
-  await page.getByRole("textbox", { name: "Глубина чаши" }).fill("40");
-  await page.getByRole("textbox", { name: "Глубина чаши" }).press("Tab");
   await expect.poll(() => page.evaluate(() =>
-    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0]
-      .showerTray.recessDepthMm)).toBe(40);
-  await expect(page.getByRole("combobox", { name: "Тип слива" })).toHaveValue("linear");
-  await expect(page.getByRole("textbox", { name: "Длина слива" })).toHaveValue(/^[4-9]\d\d/);
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.edges
+      .filter((edge: { kind: string }) => edge.kind === "wall").length)).toBeGreaterThan(0);
+  await showerObject.click();
+  await expect(page.getByRole("heading", { name: "Поддон на плане" })).toBeVisible();
   await page.getByLabel("Форма поддона").selectOption("l");
   await expect(page.locator("[data-shower-vertex]")).toHaveCount(6);
-  await page.getByText("Контур и борта (6 углов)").click();
-  await page.getByLabel("Ребро после угла").first().selectOption("curb");
+  await page.getByText("Контур (6 углов)").click();
+  await page.getByRole("button", { name: "Настроить поддон в 3D" }).click();
+  const showerDialog = page.getByRole("dialog", { name: "Настройка поддона в 3D" });
+  await expect(showerDialog).toBeVisible();
+  await expect(showerDialog.getByRole("spinbutton")).toHaveCount(0);
+  await expect(showerDialog.getByRole("img", { name: /душевым поддоном/ })).toBeVisible();
+  if (process.env.PW_VISUAL_OUTPUT) await page.screenshot({
+    path: process.env.PW_VISUAL_OUTPUT.replace(/\.png$/, "-shower-modal.png"), fullPage: true,
+  });
+  await showerDialog.getByRole("button", { name: "Увеличить: Высота" }).click();
+  await showerDialog.getByRole("button", { name: /Сторона 1:/ }).click();
   await expect.poll(() => page.evaluate(() => {
     const document = JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0];
     return [document.rooms[0].showerTray.vertices.length,
       document.rooms[0].showerTray.edges[0].kind];
   })).toEqual([6, "curb"]);
+  await showerDialog.getByRole("button", { name: "Закрыть настройку поддона" }).click();
+  await page.getByRole("button", { name: "Раскладка", exact: true }).click();
   await page.getByRole("button", { name: "Подобрать раскладку" }).click();
   await expect(page.getByText(/Плиток:/)).toBeVisible();
   await expect(page.locator("[data-shower-zone]")).toHaveCount(2);
@@ -1100,16 +1131,15 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.locator("[data-room-key]")).toHaveAttribute("fill", "#fff4bb");
   await expect(page.locator("[data-room-key]")).toHaveCount(1);
   const roomId = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].id);
-  await page.getByRole("button", { name: "Раскрыть меню" }).click();
   await page.getByRole("button", { name: "Проект", exact: true }).click();
-  await page.getByRole("button", { name: "Очистить проект" }).first().click();
-  await page.getByRole("dialog", { name: "Очистить проект" }).getByRole("button", { name: "Очистить проект" }).click();
+  await page.getByRole("menuitem", { name: "Очистить" }).click();
+  await page.getByRole("alertdialog", { name: "Очистить проект?" })
+    .getByRole("button", { name: "Очистить" }).click();
   await expect(page.locator("[data-room-key]")).toHaveCount(0);
   await expect(page.locator("[data-shower-object]")).toHaveCount(0);
   await expect.poll(() => page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray)).toBeNull();
-  await page.getByRole("button", { name: "Вернуть план к сохранённому снимку" }).click();
-  await expect(page.locator("[data-room-key]")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Вернуть план к сохранённому снимку" })).toHaveCount(0);
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].id)).toBe(roomId);
 });
 
@@ -1237,7 +1267,7 @@ test("physical v6 diagonal wall ruler offers a precise perpendicular target", as
     expect(distance).toBeGreaterThanOrEqual(99.9);
     expect(Math.min(distance % 100, 100 - distance % 100)).toBeLessThanOrEqual(.1);
     expect(Math.abs(dx + dy)).toBeLessThanOrEqual(.1);
-    await expect(canvas.getByText("100,0 мм · 90,0°").first()).toBeVisible();
+    await expect(canvas.getByText("100 мм · 90,0°").first()).toBeVisible();
   } finally { await context.close(); }
 });
 
@@ -1270,7 +1300,7 @@ test("physical v6 aligns a descending wall with a neighboring end and shows a ru
 
   const ruler = canvas.locator("[data-wall-alignment-guide]");
   await expect(ruler).toBeVisible();
-  await expect(ruler.locator("[data-wall-alignment-distance]")).toHaveText("950,0 мм");
+  await expect(ruler.locator("[data-wall-alignment-distance]")).toHaveText("950 мм");
   const line = ruler.locator("line");
   await expect(line).toHaveAttribute("y1", "0");
   await expect(line).toHaveAttribute("y2", "0");

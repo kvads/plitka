@@ -32,6 +32,7 @@ type Props = {
   showerObjects?: { roomId: string; tray: ShowerTray; selected: boolean }[];
   showerTool?: boolean;
   onPlaceShower?: (roomKey: string, point: Point) => void;
+  onSelectShower?: (roomId: string) => void;
   onMoveShower?: (roomId: string, delta: Point) => void;
   constrainShowerMove?: (roomId: string, delta: Point) => Point;
   viewport: Viewport;
@@ -75,7 +76,7 @@ const precisePoint = (point: Point): Point =>
 export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces = [], openJointAngles = [],
   selectedRoomKey, onSelectRoom,
   highlightRooms = false, roomMissing = {}, roomNames = {}, layouts = [], showerObjects = [],
-  showerTool = false, onPlaceShower, onMoveShower, constrainShowerMove, viewport, onViewport,
+  showerTool = false, onPlaceShower, onSelectShower, onMoveShower, constrainShowerMove, viewport, onViewport,
   selectedWallId, onSelectWall, selectedHandle, onSelectHandle, onNudge,
   wallTool, thicknessMm, onDrawWall, onResetWallTool,
   doorTool, doorWidthMm, selectedDoorId, onSelectDoor, deleteTool, onDeleteWall,
@@ -422,7 +423,10 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       onSelectHandle?.(current.handle);
       return;
     }
-    if (showerTool) {
+    if (current.showerRoomId && !showerTool) {
+      onSelectShower?.(current.showerRoomId);
+      return;
+    } else if (showerTool) {
       const point = current.roomKey ? world(event.clientX, event.clientY) : null;
       if (current.roomKey && point) onPlaceShower?.(current.roomKey, precisePoint(point));
     } else if (wallTool) {
@@ -478,7 +482,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   const selectedFace = faces.find(face => face.topologyKey === selectedRoomKey);
   const splitDimensions = splitWallDimensions(
     acceptedPreview?.graph ?? graph, acceptedPreview?.wallArea ?? wallArea, 17 / pixelScale);
-  const selectedWallLengthDimension = selectedWallId && selectedHandle ? (() => {
+  const selectedWallLengthDimension = selectedWallId ? (() => {
     const wall = graph.walls.find(candidate => candidate.id === selectedWallId);
     if (!wall) return null;
     const [start, end] = wall.drawnEdge;
@@ -533,6 +537,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       {arc && <path data-wall-angle-arc d={arc} fill="none" stroke="#a33"
         strokeWidth={1.4 / pixelScale} />}
       <text data-wall-preview-angle={pending || undefined}
+        data-selected-wall-angle={!pending || undefined}
         x={position.x} y={-position.y}
         textAnchor="middle" fontSize={13 / pixelScale} fontWeight={600}
         fill="#8f2929" stroke="#fff" strokeWidth={3 / pixelScale} paintOrder="stroke">
@@ -759,8 +764,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       onKeyDown={event => { if (!wallTool && !doorTool && (event.key === "Enter" || event.key === " ")) {
         event.preventDefault(); deleteTool ? onDeleteWall(wall.id) : onSelectWall(wall.id);
       } }}
-      d={wallPath(wall.corners)} fill={wall.id === selectedWallId ? "#55555577" : "#00000000"}
-      stroke={wall.id === selectedWallId ? "#111" : "none"}
+      d={wallPath(wall.corners)} fill={wall.id === selectedWallId ? "#f2c94c88" : "#00000000"}
+      stroke={wall.id === selectedWallId ? "#9a6a00" : "none"}
       strokeWidth={wall.id === selectedWallId ? 2 / pixelScale : 0} />)}
     {(graph.openings ?? []).map(opening => {
       const wall = graph.walls.find(candidate => candidate.id === opening.wallId);

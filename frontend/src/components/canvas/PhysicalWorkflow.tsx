@@ -1,7 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Bath, Check, ChevronsLeft, ChevronsRight, Cuboid, DoorOpen, FolderOpen, Grid3X3, LoaderCircle, MousePointer2, PencilRuler, RotateCcw, Trash2, X } from "lucide-react";
+import { ArrowLeft, Bath, BrickWall, Check, ChevronDown, ChevronsLeft, ChevronsRight, Cuboid, DoorOpen, Grid3X3, LoaderCircle, MousePointer2, PencilRuler, RotateCcw, Trash2, X } from "lucide-react";
 import PhysicalCanvas from "./PhysicalCanvas";
-import ProjectMenu from "./ProjectMenu";
 import { usePhysicalProject } from "../../domain/plan/usePhysicalProject";
 import { deleteV6 } from "../../domain/plan/storage";
 import type { ProjectDocumentV6, ShowerTray } from "../../domain/plan/types";
@@ -15,6 +14,12 @@ import { physicalDeletionPreview, type PhysicalDeletionImpact } from "../../doma
 import { exportResult } from "../../domain/project/result-export";
 import { activeSharedGrid, roomLayoutBasis, roomLayoutKey, roomLayoutRequest } from "../../domain/plan/shared-grid";
 import "./canvas.css";
+
+const Broom = () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+  strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+  <path d="m15 4 5 5" /><path d="m17.5 6.5-9 9" />
+  <path d="m7 14 3 3-1.5 4H3l-1-1 1.5-5.5Z" /><path d="m3 18 3 3" />
+</svg>;
 
 const RoomPreview3D = lazy(() => import("./RoomPreview3D"));
 const compactViewQuery = "(max-width: 700px), (hover: none) and (pointer: coarse) and (max-height: 700px)";
@@ -87,6 +92,30 @@ const constrainedShowerOrigin = (tray: ShowerTray, delta: { x: number; y: number
   return { x: Math.round((startX + delta.x * low) * 10) / 10,
     y: Math.round((startY + delta.y * low) * 10) / 10 };
 };
+const wallAwareShowerEdges = (tray: ShowerTray,
+  polygon: { outline: number[][]; holes: number[][][] }, clearance = 0) => {
+  if (!tray.vertices?.length) return tray.edges;
+  const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
+  const cosine = Math.cos(radians), sine = Math.sin(radians);
+  const vertices = tray.vertices.map(([x, y]) => [
+    (tray.originX ?? 0) + x * cosine - y * sine,
+    (tray.originY ?? 0) + x * sine + y * cosine,
+  ] as [number, number]);
+  const boundaries = [polygon.outline as [number, number][],
+    ...(polygon.holes as [number, number][][])];
+  return vertices.map((start, index) => {
+    const end = vertices[(index + 1) % vertices.length];
+    const samples: [number, number][] = [start,
+      [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2], end];
+    const distance = Math.max(...samples.map(point => Math.min(...boundaries.flatMap(ring =>
+      ring.map((edgeStart, edgeIndex) => distanceToSegment(point, edgeStart,
+        ring[(edgeIndex + 1) % ring.length]))))));
+    const previous = tray.edges?.[index];
+    return distance <= clearance + .6
+      ? { id: previous?.id ?? `edge-${index + 1}`, kind: "wall" as const }
+      : previous ?? { id: `edge-${index + 1}`, kind: "open" as const };
+  });
+};
 const roomCountText = (count: number) => {
   const mod100 = count % 100;
   const mod10 = count % 10;
@@ -138,6 +167,8 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const [deleteWallError, setDeleteWallError] = useState("");
   const deletionGeneration = useRef(0);
   const deleteCancelButton = useRef<HTMLButtonElement>(null);
+  const projectMenuRoot = useRef<HTMLDivElement>(null);
+  const projectMenuTrigger = useRef<HTMLButtonElement>(null);
   const [layoutCache, setLayoutCache] = useState<Record<string, { key: string; variants: Layout[]; selected: number }>>({});
   const [layoutLoading, setLayoutLoading] = useState(false);
   const [layoutError, setLayoutError] = useState("");
@@ -147,6 +178,8 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     () => initial.sharedGrid ? "through" : "room");
   const [room3D, setRoom3D] = useState(false);
   const [showerTool, setShowerTool] = useState(false);
+  const [showerSettingsOpen, setShowerSettingsOpen] = useState(false);
+  const [showerPreviewLoading, setShowerPreviewLoading] = useState(false);
   const [compactView, setCompactView] = useState(() => window.matchMedia(compactViewQuery).matches);
   const [viewRoomId, setViewRoomId] = useState(initial.selectedRoomId);
   const [viewViewport, setViewViewport] = useState(initial.viewport);
@@ -176,6 +209,23 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     media.addEventListener("change", changed);
     return () => media.removeEventListener("change", changed);
   }, []);
+  useEffect(() => {
+    if (!projectMenu) return;
+    const pointerDown = (event: PointerEvent) => {
+      if (!projectMenuRoot.current?.contains(event.target as Node)) setProjectMenu(false);
+    };
+    const keyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setProjectMenu(false);
+      projectMenuTrigger.current?.focus();
+    };
+    window.addEventListener("pointerdown", pointerDown);
+    window.addEventListener("keydown", keyDown);
+    return () => {
+      window.removeEventListener("pointerdown", pointerDown);
+      window.removeEventListener("keydown", keyDown);
+    };
+  }, [projectMenu]);
   useEffect(() => {
     if (!compactView) return;
     setViewRoomId(doc.selectedRoomId);
@@ -292,6 +342,19 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       if (generation === layoutGeneration.current) setLayoutLoading(false);
     }
   };
+  useEffect(() => {
+    if (!showerSettingsOpen || !room?.showerTray || !selectedFace?.polygon) return;
+    const controller = new AbortController();
+    const key = layoutKey;
+    setShowerPreviewLoading(true);
+    api<Layout>("v5/layout", roomLayoutRequest(room, selectedFace, null), controller.signal)
+      .then(layout => setLayoutCache(cache => ({ ...cache, [room.id]: {
+        key, variants: [layout], selected: 0,
+      } })))
+      .catch(cause => { if (!controller.signal.aborted) setLayoutError((cause as Error).message); })
+      .finally(() => { if (!controller.signal.aborted) setShowerPreviewLoading(false); });
+    return () => controller.abort();
+  }, [showerSettingsOpen, layoutKey]);
   const optimizeThrough = async () => {
     if (!room || !selectedFace?.polygon) return;
     const generation = ++layoutGeneration.current;
@@ -393,24 +456,6 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           fieldInputs: { ...item.fieldInputs, [key]: text },
         } : item),
       }))} />;
-  const showerField = (key: keyof Pick<ShowerTray, "drainX" | "drainY" | "drainWidth" |
-    "drainLength" | "slopePercent" | "originX" | "originY" | "rotationDeg" |
-    "baseHeightMm" | "recessDepthMm">, label: string, min: number, max: number, unit: string) =>
-    room?.showerTray && <NumberField label={label} value={room.showerTray[key] ?? 0}
-      raw={room.fieldInputs[`shower.${key}`]} min={min} max={max} unit={unit}
-      onCommit={(number, text) => update(current => ({ ...current,
-        rooms: current.rooms.map(item => item.id === room.id && item.showerTray ? {
-          ...item,
-          showerTray: number !== null && isTenth(number) && number >= min && number <= max
-            ? { ...item.showerTray, [key]: number,
-              ...(key === "drainWidth" && item.showerTray.drainType === "point"
-                ? { drainLength: number } : {}),
-              ...(key === "baseHeightMm" ? {
-                recessDepthMm: Math.min(item.showerTray.recessDepthMm ?? 0, number),
-              } : {}) } : item.showerTray,
-          fieldInputs: { ...item.fieldInputs, [`shower.${key}`]: text },
-        } : item),
-      }))} />;
   const toggleShowerTray = (enabled: boolean, placement?: { x: number; y: number },
     targetRoom = room, targetFace = selectedFace) => {
     if (!targetRoom) return;
@@ -435,6 +480,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       drainWidth: 70, drainLength: Math.max(200, Math.min(700, width - 100)),
       drainOrientation: "horizontal", slopePercent: 2,
     };
+    initialTray.edges = targetFace?.polygon
+      ? wallAwareShowerEdges(initialTray, targetFace.polygon, targetRoom.rules.gap)
+      : initialTray.edges;
     setLayoutScope("room");
     update(current => ({ ...current, sharedGrid: enabled ? null : current.sharedGrid,
       selectedRoomId: targetRoom.id,
@@ -446,6 +494,20 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     update(current => ({ ...current, rooms: current.rooms.map(item =>
       item.id === room.id && item.showerTray
         ? { ...item, showerTray: { ...item.showerTray, ...change } } : item) }));
+  };
+  const updateShowerGeometry = (change: Partial<ShowerTray>) => {
+    if (!room?.showerTray) return;
+    const tray = { ...room.showerTray, ...change };
+    if (selectedFace?.polygon)
+      tray.edges = wallAwareShowerEdges(tray, selectedFace.polygon, room.rules.gap);
+    updateShowerTray(tray);
+  };
+  const adjustShower = (key: "baseHeightMm" | "recessDepthMm" | "slopePercent" |
+    "drainX" | "drainY" | "drainWidth" | "drainLength", delta: number,
+  min: number, max: number) => {
+    if (!room?.showerTray) return;
+    const value = Math.max(min, Math.min(max, Number(room.showerTray[key] ?? 0) + delta));
+    updateShowerTray({ [key]: Math.round(value * 10) / 10 });
   };
   useEffect(() => {
     if (!response || !responseMatchesDraft) return;
@@ -479,6 +541,12 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     setDoorTool(false);
     setShowerTool(false);
     setInteractionTool("select");
+    if (mode === "variants") {
+      chooseWall(null);
+      chooseDoor(null);
+      setPendingElementDeletion(null);
+      setDeleteWallError("");
+    }
   };
   const showRoomPreview = () => {
     if (!layoutMode)
@@ -533,6 +601,19 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     const opening = (doc.plan.draft.openings ?? []).find(item => item.id === openingId);
     if (opening) setPendingElementDeletion({ kind: "door", openingId, widthMm: opening.widthMm });
   };
+  const clearProject = () => {
+    update(current => ({ ...current, plan: { ...current.plan,
+      draft: { walls: [], junctions: [], openings: [] }, draftRevision: current.plan.draftRevision + 1,
+      pendingEdit: null, restorePoint: { graph: current.plan.draft,
+        bindings: current.rooms.map(room => ({ roomId: room.id, topologyKey: room.topologyKey })),
+        selectedRoomId: current.selectedRoomId } },
+      rooms: current.rooms.map(room => ({ ...room, binding: "detached" as const, showerTray: null })),
+      selectedRoomId: null }));
+    setSelectedWallId(null);
+    setSelectedDoorId(null);
+    setConfirmClear(false);
+    projectMenuTrigger.current?.focus();
+  };
   return <div className="app physical-editor" style={{ position: "relative", height: "100dvh", overflow: "hidden" }}>
     {room3D ? <div className="room-preview-fullscreen">
       {previewRooms.length ? <Suspense fallback={
@@ -550,14 +631,15 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       </div>}
     </div> : <PhysicalCanvas graph={doc.plan.draft} draftRevision={doc.plan.draftRevision}
       wallArea={response?.wallArea ?? []}
-      faces={response?.faces ?? []} selectedRoomKey={room?.topologyKey}
+      faces={response?.faces ?? []} openJointAngles={response?.openJointAngles ?? []}
+      selectedRoomKey={room?.topologyKey}
       highlightRooms={layoutMode} roomMissing={roomMissing}
       roomNames={Object.fromEntries(doc.rooms.filter(item => item.topologyKey).map(item => [item.topologyKey!, item.name]))}
       layouts={layoutMode ? visibleLayouts : []}
-      showerObjects={layoutMode ? doc.rooms.flatMap(candidate => candidate.binding === "attached" && candidate.showerTray?.vertices
+      showerObjects={doc.rooms.flatMap(candidate => candidate.binding === "attached" && candidate.showerTray?.vertices
         ? [{ roomId: candidate.id, tray: candidate.showerTray, selected: candidate.id === room?.id }]
-        : []) : []}
-      showerTool={!compactView && layoutMode && showerTool}
+        : [])}
+      showerTool={!compactView && !layoutMode && showerTool}
       onPlaceShower={(roomKey, point) => {
         const targetRoom = doc.rooms.find(candidate => candidate.topologyKey === roomKey);
         const targetFace = response?.faces.find(candidate => candidate.topologyKey === roomKey);
@@ -571,9 +653,15 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         const origin = constrainedShowerOrigin(targetRoom.showerTray, delta, targetFace.polygon,
           targetRoom.rules.gap);
         if (origin.x === targetRoom.showerTray.originX && origin.y === targetRoom.showerTray.originY) return;
+        const movedTray = { ...targetRoom.showerTray, originX: origin.x, originY: origin.y };
+        movedTray.edges = wallAwareShowerEdges(movedTray, targetFace.polygon, targetRoom.rules.gap);
         update(current => ({ ...current, rooms: current.rooms.map(candidate =>
           candidate.id === roomId && candidate.showerTray ? { ...candidate,
-            showerTray: { ...candidate.showerTray, originX: origin.x, originY: origin.y } } : candidate) }));
+            showerTray: movedTray } : candidate) }));
+      }}
+      onSelectShower={roomId => {
+        chooseWall(null); chooseDoor(null);
+        update(current => ({ ...current, selectedRoomId: roomId }));
       }}
       constrainShowerMove={(roomId, delta) => {
         const targetRoom = doc.rooms.find(candidate => candidate.id === roomId);
@@ -613,23 +701,156 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           widthMm: doorWidth });
       }}
       onResetDoorTool={() => setDoorTool(false)} />}
+    {!compactView && <div ref={projectMenuRoot} className="physical-project-menu"
+      data-open={projectMenu || undefined} data-overlay>
+      <button ref={projectMenuTrigger} type="button" className="physical-project-trigger"
+        aria-label="Проект" aria-expanded={projectMenu} aria-controls="physical-project-actions"
+        onClick={() => { setProjectMenu(value => !value); setMenuOpen(false); }}>
+        <span>{doc.name}</span><ChevronDown aria-hidden="true" />
+      </button>
+      {projectMenu && <div id="physical-project-actions" className="physical-project-actions"
+        role="menu" aria-label="Быстрые действия проекта">
+        <button type="button" role="menuitem" onClick={() => {
+          setProjectMenu(false); setConfirmClear(true);
+        }}><Broom /><span>Очистить</span></button>
+        <button type="button" role="menuitem" className="danger" onClick={() => {
+          setProjectMenu(false); setConfirmDelete(true);
+        }}><Trash2 aria-hidden="true" /><span>Удалить проект</span></button>
+      </div>}
+    </div>}
+    {confirmClear && <div className="canvas-modal physical-project-confirmation" data-overlay>
+      <section role="alertdialog" aria-modal="true" aria-labelledby="clear-project-title"
+        onKeyDown={event => { if (event.key === "Escape") {
+          setConfirmClear(false); projectMenuTrigger.current?.focus();
+        } }}>
+        <h2 id="clear-project-title">Очистить проект?</h2>
+        <p>Все стены, помещения и поддоны проекта будут удалены.</p>
+        <div className="delete-project-actions">
+          <button type="button" autoFocus onClick={() => {
+            setConfirmClear(false); projectMenuTrigger.current?.focus();
+          }}>Отмена</button>
+          <button type="button" className="danger" onClick={clearProject}>Очистить</button>
+        </div>
+      </section>
+    </div>}
+    {confirmDelete && <div className="canvas-modal physical-project-confirmation" data-overlay>
+      <section role="alertdialog" aria-modal="true" aria-labelledby="delete-project-title"
+        onKeyDown={event => { if (event.key === "Escape" && !deleting) {
+          setConfirmDelete(false); projectMenuTrigger.current?.focus();
+        } }}>
+        <h2 id="delete-project-title">Удалить проект?</h2>
+        <p>Проект будет удалён без возможности восстановления.</p>
+        {deleteProjectError && <p role="alert" className="error">{deleteProjectError}</p>}
+        <div className="delete-project-actions">
+          <button type="button" autoFocus disabled={deleting} onClick={() => {
+            setConfirmDelete(false); projectMenuTrigger.current?.focus();
+          }}>Отмена</button>
+          <button type="button" className="danger" disabled={deleting} onClick={async () => {
+            setDeleting(true);
+            setDeleteProjectError("");
+            try {
+              const result = await deleteV6(doc.id, doc.documentRevision);
+              if (result.status === "conflict")
+                setDeleteProjectError("Проект изменён в другой вкладке. Обновите страницу перед удалением.");
+              else onRemoved(result);
+            } catch (cause) { setDeleteProjectError((cause as Error).message); }
+            finally { setDeleting(false); }
+          }}>Удалить проект</button>
+        </div>
+      </section>
+    </div>}
+    {showerSettingsOpen && room?.showerTray && selectedFace?.polygon &&
+      <div className="canvas-modal shower-settings-modal" data-overlay>
+        <section role="dialog" aria-modal="true" aria-labelledby="shower-settings-title"
+          onKeyDown={event => { if (event.key === "Escape") setShowerSettingsOpen(false); }}>
+          <header><div><h2 id="shower-settings-title">Настройка поддона в 3D</h2>
+            <p>Изменения сразу отображаются в модели.</p></div>
+            <button type="button" aria-label="Закрыть настройку поддона"
+              onClick={() => setShowerSettingsOpen(false)}><X aria-hidden="true" /></button></header>
+          <div className="shower-settings-layout">
+            <div className="shower-settings-preview">
+              <Suspense fallback={<div role="status">Загружаем 3D…</div>}>
+                <RoomPreview3D rooms={[{ id: room.id, name: room.name, polygon: selectedFace.polygon,
+                  layout: activeLayout }]} title={room.name} tileSize={room.material.tile}
+                  through={false} multiRoom={false} graph={doc.plan.draft} />
+              </Suspense>
+              {showerPreviewLoading && <div className="shower-preview-loading" role="status">
+                Обновляем модель…
+              </div>}
+            </div>
+            <aside className="shower-settings-controls" aria-label="Параметры поддона">
+              {([
+                ["baseHeightMm", "Высота", 10, 0, 1000, "мм"],
+                ["recessDepthMm", "Углубление", 5, 0, room.showerTray.baseHeightMm ?? 1000, "мм"],
+                ["slopePercent", "Уклон", .1, .1, 10, "%"],
+              ] as const).map(([key, label, step, min, max, unit]) => <div className="shower-stepper" key={key}>
+                <span>{label}</span><div><button type="button" aria-label={`Уменьшить: ${label}`}
+                  onClick={() => adjustShower(key, -step, min, max)}>−</button>
+                  <strong>{displayTenth(Number(room.showerTray![key] ?? 0))} {unit}</strong>
+                  <button type="button" aria-label={`Увеличить: ${label}`}
+                    onClick={() => adjustShower(key, step, min, max)}>+</button></div>
+              </div>)}
+              <div className="shower-settings-group"><strong>Слив</strong>
+                <div className="shower-choice-row">
+                  {(["point", "linear"] as const).map(type => <button type="button" key={type}
+                    aria-pressed={room.showerTray!.drainType === type}
+                    onClick={() => updateShowerTray({ drainType: type,
+                      ...(type === "point" ? { drainLength: room.showerTray!.drainWidth } : {}) })}>
+                    {type === "point" ? "Точечный" : "Линейный"}</button>)}
+                </div>
+                {room.showerTray.drainType === "linear" && <button type="button"
+                  onClick={() => updateShowerTray({ drainOrientation:
+                    room.showerTray!.drainOrientation === "horizontal" ? "vertical" : "horizontal" })}>
+                  Повернуть слив · {room.showerTray.drainOrientation === "horizontal" ? "горизонтально" : "вертикально"}
+                </button>}
+                <div className="shower-drain-nudge" role="group" aria-label="Положение слива">
+                  <button type="button" aria-label="Сдвинуть слив влево" onClick={() => adjustShower("drainX", -25, 0, 100000)}>←</button>
+                  <button type="button" aria-label="Сдвинуть слив вверх" onClick={() => adjustShower("drainY", 25, 0, 100000)}>↑</button>
+                  <button type="button" aria-label="Сдвинуть слив вниз" onClick={() => adjustShower("drainY", -25, 0, 100000)}>↓</button>
+                  <button type="button" aria-label="Сдвинуть слив вправо" onClick={() => adjustShower("drainX", 25, 0, 100000)}>→</button>
+                </div>
+              </div>
+              <div className="shower-settings-group"><strong>Стороны поддона</strong>
+                <p>Стороны у стен автоматически создаются без борта.</p>
+                {room.showerTray.edges?.map((edge, index) => {
+                  const kinds = ["wall", "open", "curb", "entry"] as const;
+                  const labels = { wall: "у стены · без борта", open: "открытая",
+                    curb: "с бортом", entry: "вход" };
+                  return <button type="button" key={edge.id} onClick={() => {
+                    const kind = kinds[(kinds.indexOf(edge.kind) + 1) % kinds.length];
+                    const edges = [...room.showerTray!.edges!];
+                    edges[index] = { id: edge.id, kind, ...(kind === "curb"
+                      ? { curbHeightMm: edge.curbHeightMm ?? 80, curbWidthMm: edge.curbWidthMm ?? 100 }
+                      : {}) };
+                    updateShowerTray({ edges });
+                  }}>Сторона {index + 1}: {labels[edge.kind]}</button>;
+                })}
+              </div>
+            </aside>
+          </div>
+        </section>
+      </div>}
     <div className="canvas-sidebar-shell" data-overlay style={{ position: "absolute", top: 12, left: 12 }}>
       <button className="canvas-sidebar-toggle" aria-label={menuOpen ? "Свернуть меню" : "Раскрыть меню"}
         aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}>
         {menuOpen ? <ChevronsLeft /> : <ChevronsRight />}
       </button>
       {menuOpen && <aside className="canvas-sidebar" aria-label={compactView ? "Навигация по проекту" : "Управление планом"}>
-        <div className="canvas-title"><strong>{doc.name}</strong><small>{doc.address || "Адрес не указан"}</small></div>
         <button aria-label="Проекты" title="Проекты" onClick={onBack}><ArrowLeft /></button>
         {!compactView && !layoutMode && <button aria-label="Стена" title="Стена" aria-pressed={wallTool}
           onClick={() => { setWallTool(value => !value); setDoorTool(false); chooseDoor(null);
             setInteractionTool("select");
-            setMenuOpen(false); setProjectMenu(false); }}><PencilRuler /></button>}
+            setMenuOpen(false); setProjectMenu(false); }}><BrickWall /></button>}
         {!compactView && !layoutMode && <button aria-label="Дверной проём" title="Дверной проём" aria-pressed={doorTool}
           onClick={() => { setDoorTool(value => !value); setWallTool(false); chooseWall(null);
             setInteractionTool("select");
             setMenuOpen(false); setProjectMenu(false); }}><DoorOpen /></button>}
-        {!compactView && <button aria-label="Проект" title="Проект" onClick={() => { setProjectMenu(value => !value); setMenuOpen(false); }}><FolderOpen /></button>}
+        {!compactView && !layoutMode && <button aria-label="Поддон" title="Разместить душевой поддон"
+          aria-pressed={showerTool} onClick={() => {
+            setShowerTool(value => !value); setWallTool(false); setDoorTool(false);
+            chooseWall(null); chooseDoor(null); setInteractionTool("select");
+            setMenuOpen(false); setProjectMenu(false);
+          }}><Bath /></button>}
         {!compactView && <button aria-label="Отменить правку" title="Отменить правку" disabled={!project.canUndo || busy}
           onClick={() => project.undo()}><RotateCcw /></button>}
       </aside>}
@@ -670,17 +891,11 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           : <Trash2 aria-hidden="true" />}
       </button>
     </div>}
-    {!compactView && layoutMode && !room3D && <div className="physical-interaction-tools shower-placement-tools"
-      role="toolbar" aria-label="Инструменты раскладки" data-overlay>
-      <button type="button" aria-label="Поддон" title="Разместить душевой поддон"
-        aria-pressed={showerTool} onClick={() => setShowerTool(value => !value)}>
-        <Bath aria-hidden="true" />
-      </button>
-    </div>}
     {deleteWallError && <div className="physical-delete-error" role="alert" data-overlay>
       {deleteWallError}
     </div>}
-    {!compactView && !room3D && (wallTool || doorTool || selected || selectedDoor || projectMenu || layoutMode || doc.plan.pendingEdit) && <aside className="canvas-panel" data-overlay data-layout-mode={layoutMode || undefined}
+    {!compactView && !room3D && (wallTool || doorTool || selected || selectedDoor ||
+      (!layoutMode && room?.showerTray) || layoutMode || doc.plan.pendingEdit) && <aside className="canvas-panel" data-overlay data-layout-mode={layoutMode || undefined}
       style={{ position: "absolute", right: 12, top: 62, maxWidth: "min(340px, calc(100vw - 72px))", maxHeight: "calc(100dvh - 138px)", overflowY: "auto" }}>
       {wallTool && !layoutMode && <button type="button" className="physical-reset-wall-tool"
         onClick={() => setWallTool(false)} title="Также можно нажать Esc без начатой стены">
@@ -692,53 +907,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         <X aria-hidden="true" />
         <span>Завершить инструмент «Дверь»</span>
       </button>}
-      {projectMenu ? <>
-        <ProjectMenu doc={doc} embedded onUpdate={update} onClose={() => setProjectMenu(false)}
-          onClear={() => setConfirmClear(true)} onDelete={() => setConfirmDelete(true)}
-          onRestore={() => {
-            const snapshot = doc.plan.restorePoint;
-            if (!snapshot) return;
-            update(current => ({ ...current, plan: { ...current.plan,
-              draft: snapshot.graph, draftRevision: current.plan.draftRevision + 1,
-              restorePoint: null, pendingEdit: null },
-              rooms: current.rooms.map(item => {
-                const match = snapshot.bindings.find(binding => binding.roomId === item.id);
-                return match ? { ...item, topologyKey: match.topologyKey, binding: "attached" as const } : item;
-              }),
-              selectedRoomId: snapshot.selectedRoomId }));
-          }} />
-        {confirmClear && <div role="dialog" aria-label="Очистить проект">
-          <p>Все стены и помещения проекта будут удалены.</p>
-          <button onClick={() => setConfirmClear(false)}>Отмена</button>
-          <button className="danger" onClick={() => {
-            update(current => ({ ...current, plan: { ...current.plan,
-              draft: { walls: [], junctions: [], openings: [] }, draftRevision: current.plan.draftRevision + 1,
-              pendingEdit: null, restorePoint: { graph: current.plan.draft,
-                bindings: current.rooms.map(room => ({ roomId: room.id, topologyKey: room.topologyKey })),
-                selectedRoomId: current.selectedRoomId } },
-              rooms: current.rooms.map(room => ({ ...room, binding: "detached" as const })),
-              selectedRoomId: null }));
-            setSelectedWallId(null);
-            setSelectedDoorId(null);
-            setConfirmClear(false);
-          }}>Очистить проект</button>
-        </div>}
-        {confirmDelete && <div role="dialog" aria-label="Удалить проект">
-          <p>Проект будет удалён без возможности восстановления.</p>
-          {deleteProjectError && <p role="alert" className="error">{deleteProjectError}</p>}
-          <button disabled={deleting} onClick={() => setConfirmDelete(false)}>Отмена</button>
-          <button className="danger" disabled={deleting} onClick={async () => {
-            setDeleting(true);
-            setDeleteProjectError("");
-            try {
-              const result = await deleteV6(doc.id, doc.documentRevision);
-              if (result.status === "conflict") setDeleteProjectError("Проект изменён в другой вкладке. Обновите страницу перед удалением.");
-              else onRemoved(result);
-            } catch (cause) { setDeleteProjectError((cause as Error).message); }
-            finally { setDeleting(false); }
-          }}>Удалить проект</button>
-        </div>}
-      </> : layoutMode ? <>
+      {layoutMode ? <>
         <h2>Раскладка</h2>
         {room && selectedFace ? <>
           <fieldset className="layout-scope">
@@ -779,139 +948,13 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           {roomField("rules", "gap", "Отступ", 0, 100, "мм")}
           {roomField("rules", "threshold", "Минимальный размер подрезки", 1, 1000, "мм")}
           {(layoutScope === "through" || !linked) && roomField("rules", "angle", "Угол раскладки", 0, 89.9, "°")}
-          <fieldset className="shower-tray-fields">
-            <legend>Душевой поддон</legend>
-            {!room.showerTray && <p className="muted">Выберите инструмент «Поддон» и укажите место внутри помещения.</p>}
-            {room.showerTray && <button type="button" className="shower-remove"
-              onClick={() => toggleShowerTray(false)}><Trash2 aria-hidden="true" />Удалить поддон</button>}
-            {room.showerTray && <>
-              {room.showerTray.vertices && <>
-                <div className="shower-object-grid">
-                  {showerField("rotationDeg", "Поворот", -360, 360, "°")}
-                  {showerField("baseHeightMm", "Высота поддона", 0, 1000, "мм")}
-                  {showerField("recessDepthMm", "Глубина чаши", 0,
-                    room.showerTray.baseHeightMm ?? 1000, "мм")}
-                </div>
-                <label>Форма<select aria-label="Форма поддона" value={room.showerTray.vertices.length === 6 ? "l" : "custom"}
-                  onChange={event => {
-                    const xs = room.showerTray!.vertices!.map(point => point[0]);
-                    const ys = room.showerTray!.vertices!.map(point => point[1]);
-                    const width = Math.max(...xs) || 900, height = Math.max(...ys) || 900;
-                    const vertices: [number, number][] = event.target.value === "l"
-                      ? [[0, 0], [width, 0], [width, height * .55], [width * .55, height * .55],
-                        [width * .55, height], [0, height]]
-                      : [[0, 0], [width, 0], [width, height], [0, height]];
-                    updateShowerTray({ vertices, edges: vertices.map((_, index) => ({
-                      id: `edge-${index + 1}`, kind: "open",
-                    })), ...(event.target.value === "l"
-                      ? { drainX: Math.round(width * .5 * 10) / 10,
-                        drainY: Math.round(height * .3 * 10) / 10 } : {}) });
-                  }}>
-                  <option value="custom">Прямоугольник / своя</option>
-                  <option value="l">Г-образная</option>
-                </select></label>
-                <details className="shower-shape-details">
-                  <summary>Контур и борта ({room.showerTray.vertices.length} углов)</summary>
-                  <div className="shower-vertex-list">
-                    {room.showerTray.vertices.map((point, index) => <div key={index} className="shower-vertex-row">
-                      <strong>Угол {index + 1}</strong>
-                      <label>X, мм<input type="number" step="0.1" value={point[0]}
-                        onChange={event => {
-                          const value = Number(event.target.value);
-                          if (!Number.isFinite(value)) return;
-                          const vertices = room.showerTray!.vertices!.map((item, itemIndex) =>
-                            itemIndex === index ? [Math.round(value * 10) / 10, item[1]] as [number, number] : item);
-                          updateShowerTray({ vertices });
-                        }} /></label>
-                      <label>Y, мм<input type="number" step="0.1" value={point[1]}
-                        onChange={event => {
-                          const value = Number(event.target.value);
-                          if (!Number.isFinite(value)) return;
-                          const vertices = room.showerTray!.vertices!.map((item, itemIndex) =>
-                            itemIndex === index ? [item[0], Math.round(value * 10) / 10] as [number, number] : item);
-                          updateShowerTray({ vertices });
-                        }} /></label>
-                      <label>Ребро после угла<select value={room.showerTray!.edges?.[index]?.kind ?? "open"}
-                        onChange={event => {
-                          const edges = [...(room.showerTray!.edges ?? [])];
-                          const kind = event.target.value as NonNullable<ShowerTray["edges"]>[number]["kind"];
-                          edges[index] = { id: edges[index]?.id ?? `edge-${index + 1}`, kind,
-                            ...(kind === "curb" ? { curbHeightMm: edges[index]?.curbHeightMm ?? 80,
-                              curbWidthMm: edges[index]?.curbWidthMm ?? 100 } : {}) };
-                          updateShowerTray({ edges });
-                        }}>
-                        <option value="wall">Примыкание к стене — без борта</option>
-                        <option value="open">Открытый торец</option>
-                        <option value="curb">Борт, включая сторону у стены</option>
-                        <option value="entry">Вход без борта</option>
-                      </select></label>
-                      {room.showerTray!.edges?.[index]?.kind === "curb" && <>
-                        <label>Высота борта, мм<input type="number" min="10" max="500" step="0.1"
-                          value={room.showerTray!.edges[index].curbHeightMm ?? 80}
-                          onChange={event => {
-                            const value = Number(event.target.value);
-                            if (!Number.isFinite(value)) return;
-                            const edges = [...room.showerTray!.edges!];
-                            edges[index] = { ...edges[index], curbHeightMm: Math.round(value * 10) / 10 };
-                            updateShowerTray({ edges });
-                          }} /></label>
-                        <label>Ширина борта, мм<input type="number" min="10" max="500" step="0.1"
-                          value={room.showerTray!.edges[index].curbWidthMm ?? 100}
-                          onChange={event => {
-                            const value = Number(event.target.value);
-                            if (!Number.isFinite(value)) return;
-                            const edges = [...room.showerTray!.edges!];
-                            edges[index] = { ...edges[index], curbWidthMm: Math.round(value * 10) / 10 };
-                            updateShowerTray({ edges });
-                          }} /></label>
-                      </>}
-                    </div>)}
-                  </div>
-                  <div className="shower-vertex-actions">
-                    <button type="button" disabled={room.showerTray.vertices.length >= 24}
-                      onClick={() => {
-                        const vertices = [...room.showerTray!.vertices!];
-                        const first = vertices[0], last = vertices[vertices.length - 1];
-                        vertices.push([Math.round((first[0] + last[0]) * 5) / 10,
-                          Math.round((first[1] + last[1]) * 5) / 10]);
-                        updateShowerTray({ vertices, edges: [...(room.showerTray!.edges ?? []),
-                          { id: `edge-${vertices.length}`, kind: "open" }] });
-                      }}>Добавить угол</button>
-                    <button type="button" disabled={room.showerTray.vertices.length <= 3}
-                      onClick={() => updateShowerTray({
-                        vertices: room.showerTray!.vertices!.slice(0, -1),
-                        edges: room.showerTray!.edges?.slice(0, -1),
-                      })}>Удалить последний</button>
-                  </div>
-                  <small className="muted">Координаты углов задаются относительно положения поддона. Форма может быть выпуклой или вогнутой, но линии не должны пересекаться.</small>
-                </details>
-              </>}
-              <label>Тип слива<select value={room.showerTray.drainType}
-                onChange={event => {
-                  const drainType = event.target.value as ShowerTray["drainType"];
-                  updateShowerTray({ drainType,
-                    ...(drainType === "point" ? { drainLength: room.showerTray!.drainWidth } : {}) });
-                }}>
-                <option value="point">Точечный</option>
-                <option value="linear">Линейный</option>
-              </select></label>
-              {room.showerTray.drainType === "linear" && <label>Направление<select
-                value={room.showerTray.drainOrientation}
-                onChange={event => updateShowerTray({
-                  drainOrientation: event.target.value as ShowerTray["drainOrientation"],
-                })}>
-                <option value="horizontal">Горизонтальный</option>
-                <option value="vertical">Вертикальный</option>
-              </select></label>}
-              {showerField("drainX", room.showerTray.vertices ? "Слив X внутри поддона" : "Координата слива X", -100000, 100000, "мм")}
-              {showerField("drainY", room.showerTray.vertices ? "Слив Y внутри поддона" : "Координата слива Y", -100000, 100000, "мм")}
-              {showerField("drainWidth", "Ширина рамки", 50, 2000, "мм")}
-              {room.showerTray.drainType === "linear" &&
-                showerField("drainLength", "Длина слива", 100, 3000, "мм")}
-              {showerField("slopePercent", "Уклон", .1, 10, "%")}
-              <small className="muted">Плитки на линиях перелома будут разделены на плоские детали.</small>
-            </>}
-          </fieldset>
+          {room.showerTray && <div className="shower-layout-summary">
+            <div><strong>Душевой поддон</strong>
+              <span>Контур и положение настраиваются в режиме «План».</span></div>
+            <button type="button" onClick={() => setShowerSettingsOpen(true)}>
+              <Cuboid aria-hidden="true" />Настроить в 3D
+            </button>
+          </div>}
           </section>
           <button disabled={layoutLoading || !selectedFace.validation.valid ||
               (layoutScope === "through" && doc.rooms.filter(item => item.binding === "attached").length < 2) ||
@@ -965,7 +1008,51 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           : "Полезный контур помещения разомкнут или разделён. Соедините стены, чтобы рассчитать раскладку."}</p>
           : <p>Выберите замкнутое помещение на полотне.</p>}
       </> : <>
-        {selectedDoor || doorTool ? <>
+        {room?.showerTray && !selected && !selectedDoor && !wallTool && !doorTool ? <>
+          <h2>Поддон на плане</h2>
+          <p className="muted">Перетаскивайте поддон мышью. Положение ограничено стенами помещения.</p>
+          <label>Форма<select aria-label="Форма поддона" value={room.showerTray.vertices?.length === 6 ? "l" : "custom"}
+            onChange={event => {
+              const vertices = room.showerTray!.vertices ?? [];
+              const xs = vertices.map(point => point[0]), ys = vertices.map(point => point[1]);
+              const width = Math.max(...xs) || 900, height = Math.max(...ys) || 900;
+              const next: [number, number][] = event.target.value === "l"
+                ? [[0, 0], [width, 0], [width, Math.round(height * .55)],
+                  [Math.round(width * .55), Math.round(height * .55)],
+                  [Math.round(width * .55), height], [0, height]]
+                : [[0, 0], [width, 0], [width, height], [0, height]];
+              updateShowerGeometry({ vertices: next, edges: next.map((_, index) => ({
+                id: `edge-${index + 1}`, kind: "open",
+              })) });
+            }}><option value="custom">Прямоугольник / своя</option>
+            <option value="l">Г-образная</option></select></label>
+          <details className="shower-shape-details">
+            <summary>Контур ({room.showerTray.vertices?.length ?? 0} углов)</summary>
+            <div className="shower-vertex-list">
+              {room.showerTray.vertices?.map((point, index) => <div key={index} className="shower-vertex-row">
+                <strong>Угол {index + 1}</strong>
+                <label>X, мм<input type="number" step="1" value={point[0]} onChange={event => {
+                  const value = Number(event.target.value); if (!Number.isFinite(value)) return;
+                  const vertices = room.showerTray!.vertices!.map((item, itemIndex) =>
+                    itemIndex === index ? [Math.round(value), item[1]] as [number, number] : item);
+                  updateShowerGeometry({ vertices });
+                }} /></label>
+                <label>Y, мм<input type="number" step="1" value={point[1]} onChange={event => {
+                  const value = Number(event.target.value); if (!Number.isFinite(value)) return;
+                  const vertices = room.showerTray!.vertices!.map((item, itemIndex) =>
+                    itemIndex === index ? [item[0], Math.round(value)] as [number, number] : item);
+                  updateShowerGeometry({ vertices });
+                }} /></label>
+              </div>)}
+            </div>
+          </details>
+          <button type="button" className="shower-open-3d" onClick={() => setShowerSettingsOpen(true)}>
+            <Cuboid aria-hidden="true" />Настроить поддон в 3D
+          </button>
+          <button type="button" className="shower-remove" onClick={() => toggleShowerTray(false)}>
+            <Trash2 aria-hidden="true" />Удалить поддон
+          </button>
+        </> : selectedDoor || doorTool ? <>
           <h2>{selectedDoor ? "Дверной проём" : "Новая дверь"}</h2>
           <label>Ширина проёма, мм<input type="number" min="300" max="3000" step="10"
             value={selectedDoor ? selectedDoorWidthInput : doorWidthInput}
