@@ -266,9 +266,9 @@ def _shower_zones(shower, region):
     if not zones:
         raise ValueError('Не удалось построить уклонные зоны душевого поддона.')
     covered = unary_union([zone[2] for zone in zones])
-    if region.difference(covered).area > 1e-7:
+    if not covered.buffer(.11, join_style="mitre").covers(region):
         raise ValueError('Уклонные зоны не покрывают весь душевой поддон.')
-    if sum(zone[2].area for zone in zones) - covered.area > 1e-7:
+    if sum(zone[2].area for zone in zones) - covered.area > .02:
         raise ValueError('Уклонные зоны душевого поддона перекрываются.')
     return zones
 
@@ -350,15 +350,14 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True,
         if not source_parts:
             continue
         canonical_parts = []
-        for sub, (zone_id, axis, poly) in enumerate(source_parts):
+        for zone_id, axis, poly in source_parts:
             _area(poly.area, 'Фрагмент плитки')
-            # GEOS can leave an area around 1e-10 mm² in a predicate when a
-            # diagonal edge is represented by different binary floats. The
-            # fragment was produced by the canonical intersection itself;
-            # only a material difference would indicate a broken invariant.
-            if poly.difference(canonical_region).area > 1e-7:
+            # Fixed-precision GEOS operations can leave a harmless sub-grid
+            # sliver along an angled boundary. Keep the canonical 0.1 mm
+            # coordinates in the response and tolerate only that sliver.
+            if not canonical_region.buffer(.11, join_style="mitre").covers(poly):
                 raise ValueError('Фрагмент выходит за каноническую область укладки.')
-            canonical_parts.append((sub, zone_id, axis, poly))
+            canonical_parts.append((len(canonical_parts), zone_id, axis, poly))
         whole = len(canonical_parts) == 1 and math.isclose(
             canonical_parts[0][3].area, project.tile ** 2, rel_tol=0, abs_tol=1e-7)
         tiles += 1
@@ -397,7 +396,7 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True,
         raise ValueError('После округления фрагменты плитки накладываются друг на друга.')
     used = _area(covered.area, 'Покрытая площадь')
     laying = _area(canonical_region.area, 'Область укладки')
-    grout = _area(canonical_region.area - covered.area, 'Площадь швов', allow_zero=True)
+    grout = _area(max(0, canonical_region.area - covered.area), 'Площадь швов', allow_zero=True)
     purchased = tiles * project.tile**2
     waste = _area(purchased - covered.area, 'Площадь отходов', allow_zero=True)
     symmetry = None

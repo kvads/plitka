@@ -350,6 +350,14 @@ def test_v5_parametric_shower_can_touch_two_room_walls_despite_tile_gap():
     assert result['shower']['object']['edges'][-1]['kind'] == 'wall'
 
 
+def test_v5_parametric_shower_accepts_a_one_millimeter_angled_edge():
+    settings = shower_object(originX=300, originY=0,
+        vertices=[(0, 0), (280, 0), (560, 0), (560, 350), (560, 700), (1, 700)],
+        edges=[{'id': f'edge-{index}', 'kind': 'open'} for index in range(6)])
+    result = calculate_v5(project(tile=300, gap=10, shower=settings), 0, 0)
+    assert [301, 700] in result['shower']['object']['footprint'][0]
+
+
 def test_v5_parametric_shower_object_rotates_and_rejects_invalid_geometry():
     result = calculate_v5(project(tile=300,
                           shower=shower_object(rotationDeg=90, originX=1000)), 0, 0)

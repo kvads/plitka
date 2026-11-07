@@ -523,6 +523,14 @@
 .shower-vertex-row { display: grid; grid-template-columns: auto 1fr 1fr; gap: 8px; align-items: end; padding-bottom: 10px; border-bottom: 1px solid #dce3de; }
 .shower-vertex-row > label:last-child { grid-column: 1 / -1; }
 .shower-vertex-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.shower-vertex-controls { display: grid; gap: 12px; padding: 12px; border: 1px solid #cad4cd; border-radius: 10px; background: #f5f8f5; }
+.shower-vertex-controls > div { display: grid; gap: 3px; }
+.shower-vertex-controls span, .shower-vertex-hint { color: #5d6962; font-size: 13px; }
+.shower-vertex-controls fieldset { margin: 0; padding: 10px; }
+.shower-lock-options { display: grid; gap: 7px; }
+.shower-lock-options button { min-height: 44px; text-align: left; }
+.shower-lock-options button[aria-pressed="true"] { background: #294f3e; color: #fff; }
+.shower-add-vertex[aria-pressed="true"] { background: #294f3e; color: #fff; }
 .shower-layout-summary {
   display: flex;
   align-items: center;
@@ -579,6 +587,8 @@ svg[data-shower-tool="true"] [data-room-key] { cursor: crosshair; }
 [data-shower-object] { cursor: grab; outline: none; }
 [data-shower-object][data-dragging="true"] { cursor: grabbing; }
 [data-shower-object]:focus > path:first-of-type { stroke: #0b6b48; stroke-width: 4px; }
+[data-shower-vertex] { cursor: move; }
+[data-shower-add-edge], [data-shower-joystick] [role="button"] { cursor: pointer; }
 @media (max-width: 700px) {
   .shower-object-grid, .shower-vertex-row { grid-template-columns: 1fr; }
   .shower-vertex-row > label:last-child { grid-column: auto; }

@@ -14,6 +14,8 @@ type Viewport = ProjectDocumentV6["viewport"];
 type Handle = "start" | "center" | "end";
 type Gesture = { id: number; client: Point; viewport: Viewport; moved: boolean;
   wallId: string | null; doorId: string | null; roomKey: string | null; showerRoomId: string | null;
+  showerVertexIndex: number | null; showerAddEdgeIndex: number | null;
+  showerArrow: { axis: "x" | "y"; direction: -1 | 1; vertexIndex: number | null } | null;
   handle: Handle | null;
   arrow: { axis: "x" | "y"; direction: -1 | 1 } | null };
 type WallTarget = { point: Point; attachment: PhysicalAttachment | null; alignment?: WallEndAlignment };
@@ -35,6 +37,13 @@ type Props = {
   onSelectShower?: (roomId: string) => void;
   onMoveShower?: (roomId: string, delta: Point) => void;
   constrainShowerMove?: (roomId: string, delta: Point) => Point;
+  selectedShowerVertex?: { roomId: string; index: number } | null;
+  showerAddVertex?: boolean;
+  onSelectShowerVertex?: (roomId: string, index: number) => void;
+  onMoveShowerVertex?: (roomId: string, index: number, delta: Point) => void;
+  onNudgeShowerVertex?: (roomId: string, index: number, delta: Point) => void;
+  constrainShowerVertexMove?: (roomId: string, index: number, delta: Point) => Point;
+  onAddShowerVertex?: (roomId: string, edgeIndex: number, point: Point) => void;
   viewport: Viewport;
   onViewport: (viewport: Viewport) => void;
   selectedWallId: string | null;
@@ -77,7 +86,9 @@ const precisePoint = (point: Point): Point =>
 export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces = [], openJointAngles = [],
   selectedRoomKey, onSelectRoom,
   highlightRooms = false, roomMissing = {}, roomNames = {}, layouts = [], showerObjects = [],
-  showerTool = false, onPlaceShower, onSelectShower, onMoveShower, constrainShowerMove, viewport, onViewport,
+  showerTool = false, onPlaceShower, onSelectShower, onMoveShower, constrainShowerMove,
+  selectedShowerVertex, showerAddVertex = false, onSelectShowerVertex, onMoveShowerVertex,
+  onNudgeShowerVertex, constrainShowerVertexMove, onAddShowerVertex, viewport, onViewport,
   selectedWallId, onSelectWall, selectedHandle, onSelectHandle, onNudge,
   wallTool, thicknessMm, onDrawWall, onResetWallTool,
   doorTool, doorWidthMm, selectedDoorId, onSelectDoor, deleteTool, onDeleteWall,
@@ -100,6 +111,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   const [serverPreview, setServerPreview] = useState<{ key: string; response: PhysicalPreviewResponse } | null>(null);
   const [doorCursor, setDoorCursor] = useState<{ wallId: string; offsetMm: number } | null>(null);
   const [showerDrag, setShowerDrag] = useState<{ roomId: string; delta: Point } | null>(null);
+  const [showerVertexDrag, setShowerVertexDrag] = useState<{
+    roomId: string; index: number; delta: Point } | null>(null);
   const mobile = window.matchMedia("(hover: none) and (pointer: coarse)").matches;
   const shown = liveViewport ?? viewport;
   const span = 9000 / shown.zoom;
@@ -335,12 +348,26 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     const roomKey = (event.target as Element).closest("[data-room-key]")?.getAttribute("data-room-key") ?? null;
     const showerRoomId = (event.target as Element).closest("[data-shower-object]")
       ?.getAttribute("data-shower-object") ?? null;
+    const showerVertexNode = (event.target as Element).closest("[data-shower-vertex]");
+    const showerVertexIndex = showerVertexNode
+      ? Number(showerVertexNode.getAttribute("data-shower-vertex")) : null;
+    const showerAddNode = (event.target as Element).closest("[data-shower-add-edge]");
+    const showerAddEdgeIndex = showerAddNode
+      ? Number(showerAddNode.getAttribute("data-shower-add-edge")) : null;
+    const showerArrowNode = (event.target as Element).closest("[data-shower-nudge-axis]");
+    const showerArrow = showerArrowNode ? {
+      axis: showerArrowNode.getAttribute("data-shower-nudge-axis") as "x" | "y",
+      direction: Number(showerArrowNode.getAttribute("data-shower-nudge-direction")) as -1 | 1,
+      vertexIndex: showerArrowNode.getAttribute("data-shower-nudge-vertex") === null ? null
+        : Number(showerArrowNode.getAttribute("data-shower-nudge-vertex")),
+    } : null;
     const handle = (event.target as Element).closest("[data-wall-handle]")?.getAttribute("data-wall-handle") as Handle | null;
     const arrowNode = (event.target as Element).closest("[data-nudge-axis]");
     const arrow = arrowNode ? { axis: arrowNode.getAttribute("data-nudge-axis") as "x" | "y",
       direction: Number(arrowNode.getAttribute("data-nudge-direction")) as -1 | 1 } : null;
     gesture.current = { id: event.pointerId, client: { x: event.clientX, y: event.clientY },
-      viewport: shown, moved: false, wallId, doorId, roomKey, showerRoomId, handle, arrow };
+      viewport: shown, moved: false, wallId, doorId, roomKey, showerRoomId,
+      showerVertexIndex, showerAddEdgeIndex, showerArrow, handle, arrow };
   };
   const move = (event: React.PointerEvent<SVGSVGElement>) => {
     if (pointers.current.has(event.pointerId))
@@ -358,9 +385,19 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     const current = gesture.current;
     if (current?.id === event.pointerId && svg.current) {
       const dx = event.clientX - current.client.x, dy = event.clientY - current.client.y;
+      if (current.showerArrow || current.showerAddEdgeIndex !== null) return;
       if (Math.hypot(dx, dy) > 5) current.moved = true;
       if (current.moved) {
-        if (current.showerRoomId && !showerTool) {
+        if (current.showerRoomId && current.showerVertexIndex !== null && !showerTool && !deleteTool) {
+          const from = world(current.client.x, current.client.y);
+          const to = world(event.clientX, event.clientY);
+          if (from && to) {
+            const raw = precisePoint({ x: to.x - from.x, y: to.y - from.y });
+            setShowerVertexDrag({ roomId: current.showerRoomId, index: current.showerVertexIndex,
+              delta: constrainShowerVertexMove?.(current.showerRoomId,
+                current.showerVertexIndex, raw) ?? raw });
+          }
+        } else if (current.showerRoomId && !showerTool && !showerAddVertex) {
           const from = world(current.client.x, current.client.y);
           const to = world(event.clientX, event.clientY);
           if (from && to) {
@@ -406,6 +443,11 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     gesture.current = null;
     if (!current || current.id !== event.pointerId) return;
     if (current.moved) {
+      if (current.showerRoomId && current.showerVertexIndex !== null && showerVertexDrag && !showerTool) {
+        onMoveShowerVertex?.(current.showerRoomId, current.showerVertexIndex, showerVertexDrag.delta);
+        setShowerVertexDrag(null);
+        return;
+      }
       if (current.showerRoomId && showerDrag && !showerTool) {
         onMoveShower?.(current.showerRoomId, showerDrag.delta);
         setShowerDrag(null);
@@ -424,8 +466,21 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       onSelectHandle?.(current.handle);
       return;
     }
+    if (current.showerArrow && current.showerRoomId) {
+      const delta = current.showerArrow.axis === "x"
+        ? { x: current.showerArrow.direction, y: 0 }
+        : { x: 0, y: current.showerArrow.direction };
+      if (current.showerArrow.vertexIndex === null) onMoveShower?.(current.showerRoomId, delta);
+      else onNudgeShowerVertex?.(current.showerRoomId, current.showerArrow.vertexIndex, delta);
+      return;
+    }
     if (current.showerRoomId && !showerTool) {
       if (deleteTool) onDeleteShower(current.showerRoomId);
+      else if (showerAddVertex && current.showerAddEdgeIndex !== null) {
+        const point = world(event.clientX, event.clientY);
+        if (point) onAddShowerVertex?.(current.showerRoomId, current.showerAddEdgeIndex, precisePoint(point));
+      } else if (current.showerVertexIndex !== null)
+        onSelectShowerVertex?.(current.showerRoomId, current.showerVertexIndex);
       else onSelectShower?.(current.showerRoomId);
       return;
     } else if (showerTool) {
@@ -643,10 +698,14 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
       const cosine = Math.cos(radians), sine = Math.sin(radians);
       const drag = showerDrag?.roomId === roomId ? showerDrag.delta : { x: 0, y: 0 };
-      const points = tray.vertices.map(([x, y]) => [
+      const basePoints = tray.vertices.map(([x, y]) => [
         (tray.originX ?? 0) + drag.x + x * cosine - y * sine,
         (tray.originY ?? 0) + drag.y + x * sine + y * cosine,
       ] as [number, number]);
+      const vertexDrag = showerVertexDrag?.roomId === roomId ? showerVertexDrag : null;
+      const points = basePoints.map((point, index) => vertexDrag?.index === index
+        ? [point[0] + vertexDrag.delta.x, point[1] + vertexDrag.delta.y] as [number, number]
+        : point);
       const drainPlanWidth = tray.drainOrientation === "horizontal" ? tray.drainLength : tray.drainWidth;
       const drainPlanHeight = tray.drainOrientation === "horizontal" ? tray.drainWidth : tray.drainLength;
       const drainLocal: [number, number][] = [
@@ -689,9 +748,70 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         <path data-shower-object-drain d={drainPoints.map(([x, y], index) =>
           `${index ? "L" : "M"}${x} ${-y}`).join(" ") + " Z"}
           fill="#4c5b53" stroke="#17241e" strokeWidth={Math.max(1.5 / pixelScale, .2)} />
-        {points.map(([x, y], index) => <circle key={index} data-shower-vertex={index}
-          cx={x} cy={-y} r={(selected ? 5 : 3.5) / pixelScale} fill="#fff" stroke="#176044"
-          strokeWidth={1.5 / pixelScale} />)}
+        {points.map(([x, y], index) => {
+          const active = selectedShowerVertex?.roomId === roomId && selectedShowerVertex.index === index;
+          return <g key={index} data-shower-vertex={index} role="button" tabIndex={selected ? 0 : -1}
+            aria-label={`Вершина поддона ${index + 1}`}
+            onKeyDown={event => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault(); event.stopPropagation();
+              onSelectShowerVertex?.(roomId, index);
+            }}>
+            <circle cx={x} cy={-y} r={22 / pixelScale} fill="transparent" />
+            <circle cx={x} cy={-y} r={(active ? 8 : selected ? 5 : 3.5) / pixelScale}
+              fill={active ? "#f2c94c" : "#fff"} stroke="#176044"
+              strokeWidth={(active ? 2.5 : 1.5) / pixelScale} pointerEvents="none" />
+          </g>;
+        })}
+        {selected && showerAddVertex && points.map((start, index) => {
+          const end = points[(index + 1) % points.length];
+          const x = (start[0] + end[0]) / 2, y = (start[1] + end[1]) / 2;
+          return <g key={`add-${index}`} data-shower-add-edge={index} role="button" tabIndex={0}
+            aria-label={`Добавить вершину на ребро ${index + 1}`}
+            onKeyDown={event => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault(); event.stopPropagation();
+              onAddShowerVertex?.(roomId, index, { x, y });
+            }}>
+            <circle cx={x} cy={-y} r={18 / pixelScale} fill="#fff" stroke="#176044"
+              strokeWidth={1.5 / pixelScale} />
+            <text x={x} y={-y + 5 / pixelScale} textAnchor="middle"
+              fontSize={17 / pixelScale} fill="#176044" pointerEvents="none">+</text>
+          </g>;
+        })}
+        {selected && !showerAddVertex && (() => {
+          const vertexIndex = selectedShowerVertex?.roomId === roomId ? selectedShowerVertex.index : null;
+          const target = vertexIndex === null ? {
+            x: points.reduce((sum, point) => sum + point[0], 0) / points.length,
+            y: points.reduce((sum, point) => sum + point[1], 0) / points.length,
+          } : { x: points[vertexIndex][0], y: points[vertexIndex][1] };
+          return <g data-shower-joystick>
+            <circle cx={target.x} cy={-target.y} r={38 / pixelScale}
+              fill="#ffffffdd" stroke="#9ba99f" strokeWidth={1 / pixelScale} pointerEvents="none" />
+            {([ ["x", -1, "←", -25, 0], ["x", 1, "→", 25, 0],
+              ["y", 1, "↑", 0, -25], ["y", -1, "↓", 0, 25] ] as const)
+              .map(([axis, direction, label, offsetX, offsetY]) =>
+                <g key={`${axis}${direction}`} data-shower-nudge-axis={axis}
+                  data-shower-nudge-direction={direction}
+                  data-shower-nudge-vertex={vertexIndex === null ? undefined : vertexIndex}
+                  role="button" tabIndex={0}
+                  aria-label={`Сдвинуть ${vertexIndex === null ? "поддон" : `вершину ${vertexIndex + 1}`} ${label} на 1 мм`}
+                  onKeyDown={event => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault(); event.stopPropagation();
+                    const delta = axis === "x" ? { x: direction, y: 0 } : { x: 0, y: direction };
+                    if (vertexIndex === null) onMoveShower?.(roomId, delta);
+                    else onNudgeShowerVertex?.(roomId, vertexIndex, delta);
+                  }}>
+                  <circle cx={target.x + offsetX / pixelScale} cy={-target.y + offsetY / pixelScale}
+                    r={12 / pixelScale} fill="#fff" stroke="#cad4cd" strokeWidth={1 / pixelScale} />
+                  <text x={target.x + offsetX / pixelScale}
+                    y={-target.y + offsetY / pixelScale + 4 / pixelScale}
+                    textAnchor="middle" fontSize={13 / pixelScale} fill="#294f3e"
+                    pointerEvents="none">{label}</text>
+                </g>)}
+          </g>;
+        })()}
       </g>];
     })}
     {layouts.flatMap(({ roomId, layout }) => (layout.shower?.zones ?? []).map(zone => <path

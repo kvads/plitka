@@ -130,6 +130,82 @@ const wallAwareShowerEdges = (tray: ShowerTray,
       : previous ?? { id: `edge-${index + 1}`, kind: "open" as const };
   });
 };
+type ShowerVertexLock = "free" | "previous" | "next";
+const showerWorldVertices = (tray: ShowerTray) => {
+  const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
+  const cosine = Math.cos(radians), sine = Math.sin(radians);
+  return (tray.vertices ?? []).map(([x, y]) => [
+    (tray.originX ?? 0) + x * cosine - y * sine,
+    (tray.originY ?? 0) + x * sine + y * cosine,
+  ] as [number, number]);
+};
+const nearestBoundaryPoint = (point: [number, number],
+  polygon: { outline: number[][]; holes: number[][][] }) => {
+  let nearest = point, distance = Number.POSITIVE_INFINITY;
+  for (const ring of [polygon.outline as [number, number][],
+    ...(polygon.holes as [number, number][][])]) {
+    ring.forEach((start, index) => {
+      const end = ring[(index + 1) % ring.length];
+      const dx = end[0] - start[0], dy = end[1] - start[1];
+      const squared = dx * dx + dy * dy;
+      const ratio = squared < .001 ? 0 : Math.max(0, Math.min(1,
+        ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / squared));
+      const candidate: [number, number] = [start[0] + ratio * dx, start[1] + ratio * dy];
+      const candidateDistance = Math.hypot(point[0] - candidate[0], point[1] - candidate[1]);
+      if (candidateDistance < distance) { distance = candidateDistance; nearest = candidate; }
+    });
+  }
+  return { point: nearest, distance };
+};
+const constrainedShowerVertexDelta = (tray: ShowerTray, index: number,
+  delta: { x: number; y: number }, polygon: { outline: number[][]; holes: number[][][] },
+  lock: ShowerVertexLock) => {
+  const worldVertices = showerWorldVertices(tray);
+  const current = worldVertices[index];
+  if (!current) return { x: 0, y: 0 };
+  let movement = delta;
+  if (lock !== "free" && worldVertices.length > 1) {
+    const neighborIndex = lock === "previous"
+      ? (index - 1 + worldVertices.length) % worldVertices.length
+      : (index + 1) % worldVertices.length;
+    const neighbor = worldVertices[neighborIndex];
+    const dx = current[0] - neighbor[0], dy = current[1] - neighbor[1];
+    const length = Math.hypot(dx, dy);
+    if (length > .001) {
+      const ux = dx / length, uy = dy / length;
+      const projection = delta.x * ux + delta.y * uy;
+      movement = { x: ux * projection, y: uy * projection };
+    }
+  }
+  let desired: [number, number] = [current[0] + movement.x, current[1] + movement.y];
+  const boundary = nearestBoundaryPoint(desired, polygon);
+  if (boundary.distance <= 20) desired = boundary.point;
+  const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
+  const cosine = Math.cos(radians), sine = Math.sin(radians);
+  const candidateVertices = (tray.vertices ?? []).map(point => [...point] as [number, number]);
+  const toLocal = (point: [number, number]): [number, number] => {
+    const x = point[0] - (tray.originX ?? 0), y = point[1] - (tray.originY ?? 0);
+    return [x * cosine + y * sine, -x * sine + y * cosine];
+  };
+  const fits = (point: [number, number]) => {
+    candidateVertices[index] = toLocal(point);
+    return showerFitsRoom({ ...tray, vertices: candidateVertices }, tray.originX ?? 0,
+      tray.originY ?? 0, polygon);
+  };
+  if (!fits(desired)) {
+    let low = 0, high = 1;
+    for (let iteration = 0; iteration < 24; iteration++) {
+      const ratio = (low + high) / 2;
+      const point: [number, number] = [current[0] + (desired[0] - current[0]) * ratio,
+        current[1] + (desired[1] - current[1]) * ratio];
+      if (fits(point)) low = ratio; else high = ratio;
+    }
+    desired = [current[0] + (desired[0] - current[0]) * low,
+      current[1] + (desired[1] - current[1]) * low];
+  }
+  return { x: Math.round((desired[0] - current[0]) * 10) / 10,
+    y: Math.round((desired[1] - current[1]) * 10) / 10 };
+};
 const roomCountText = (count: number) => {
   const mod100 = count % 100;
   const mod10 = count % 10;
@@ -195,6 +271,12 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const [showerTool, setShowerTool] = useState(false);
   const [showerSettingsOpen, setShowerSettingsOpen] = useState(false);
   const [showerPreviewLoading, setShowerPreviewLoading] = useState(false);
+  const [showerPreviewLayout, setShowerPreviewLayout] = useState<Layout | null>(null);
+  const showerPreviewGeneration = useRef(0);
+  const [selectedShowerVertex, setSelectedShowerVertex] = useState<{
+    roomId: string; index: number } | null>(null);
+  const [showerVertexLock, setShowerVertexLock] = useState<ShowerVertexLock>("free");
+  const [showerAddVertex, setShowerAddVertex] = useState(false);
   const [compactView, setCompactView] = useState(() => window.matchMedia(compactViewQuery).matches);
   const [viewRoomId, setViewRoomId] = useState(initial.selectedRoomId);
   const [viewViewport, setViewViewport] = useState(initial.viewport);
@@ -361,13 +443,20 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     if (!showerSettingsOpen || !room?.showerTray || !selectedFace?.polygon) return;
     const controller = new AbortController();
     const key = layoutKey;
+    const generation = ++showerPreviewGeneration.current;
     setShowerPreviewLoading(true);
+    setShowerPreviewLayout(null);
     api<Layout>("v5/layout", roomLayoutRequest(room, selectedFace, null), controller.signal)
-      .then(layout => setLayoutCache(cache => ({ ...cache, [room.id]: {
-        key, variants: [layout], selected: 0,
-      } })))
+      .then(layout => {
+        if (generation !== showerPreviewGeneration.current) return;
+        setShowerPreviewLayout(layout);
+        setLayoutCache(cache => ({ ...cache, [room.id]: {
+          key, variants: [layout], selected: 0,
+        } }));
+      })
       .catch(cause => { if (!controller.signal.aborted) setLayoutError((cause as Error).message); })
-      .finally(() => { if (!controller.signal.aborted) setShowerPreviewLoading(false); });
+      .finally(() => { if (!controller.signal.aborted && generation === showerPreviewGeneration.current)
+        setShowerPreviewLoading(false); });
     return () => controller.abort();
   }, [showerSettingsOpen, layoutKey]);
   const optimizeThrough = async () => {
@@ -517,6 +606,55 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       tray.edges = wallAwareShowerEdges(tray, selectedFace.polygon);
     updateShowerTray(tray);
   };
+  const moveShowerVertex = (roomId: string, index: number, delta: { x: number; y: number },
+    lock = showerVertexLock) => {
+    const targetRoom = doc.rooms.find(candidate => candidate.id === roomId);
+    const targetFace = response?.faces.find(candidate => candidate.topologyKey === targetRoom?.topologyKey);
+    if (!targetRoom?.showerTray?.vertices || !targetFace?.polygon) return;
+    const accepted = constrainedShowerVertexDelta(targetRoom.showerTray, index, delta,
+      targetFace.polygon, lock);
+    const world = showerWorldVertices(targetRoom.showerTray)[index];
+    if (!world) return;
+    const nextWorld: [number, number] = [world[0] + accepted.x, world[1] + accepted.y];
+    const radians = (targetRoom.showerTray.rotationDeg ?? 0) * Math.PI / 180;
+    const cosine = Math.cos(radians), sine = Math.sin(radians);
+    const x = nextWorld[0] - (targetRoom.showerTray.originX ?? 0);
+    const y = nextWorld[1] - (targetRoom.showerTray.originY ?? 0);
+    const vertices = targetRoom.showerTray.vertices.map((point, pointIndex) => pointIndex === index
+      ? [Math.round((x * cosine + y * sine) * 10) / 10,
+        Math.round((-x * sine + y * cosine) * 10) / 10] as [number, number]
+      : point);
+    const tray = { ...targetRoom.showerTray, vertices };
+    tray.edges = wallAwareShowerEdges(tray, targetFace.polygon);
+    update(current => ({ ...current, rooms: current.rooms.map(candidate =>
+      candidate.id === roomId ? { ...candidate, showerTray: tray } : candidate) }));
+  };
+  const addShowerVertex = (roomId: string, edgeIndex: number, worldPoint: { x: number; y: number }) => {
+    const targetRoom = doc.rooms.find(candidate => candidate.id === roomId);
+    if (!targetRoom?.showerTray?.vertices || targetRoom.showerTray.vertices.length >= 24) return;
+    const tray = targetRoom.showerTray;
+    const currentVertices = targetRoom.showerTray.vertices;
+    const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
+    const cosine = Math.cos(radians), sine = Math.sin(radians);
+    const x = worldPoint.x - (tray.originX ?? 0), y = worldPoint.y - (tray.originY ?? 0);
+    const local: [number, number] = [x * cosine + y * sine, -x * sine + y * cosine];
+    const start = currentVertices[edgeIndex], end = currentVertices[(edgeIndex + 1) % currentVertices.length];
+    const dx = end[0] - start[0], dy = end[1] - start[1];
+    const squared = dx * dx + dy * dy;
+    const ratio = squared < .001 ? .5 : Math.max(.05, Math.min(.95,
+      ((local[0] - start[0]) * dx + (local[1] - start[1]) * dy) / squared));
+    const inserted: [number, number] = [Math.round((start[0] + dx * ratio) * 10) / 10,
+      Math.round((start[1] + dy * ratio) * 10) / 10];
+    const vertices = [...currentVertices];
+    vertices.splice(edgeIndex + 1, 0, inserted);
+    const edges = [...(tray.edges ?? [])];
+    const sourceEdge = edges[edgeIndex] ?? { id: `edge-${edgeIndex + 1}`, kind: "open" as const };
+    edges.splice(edgeIndex, 1, sourceEdge, { ...sourceEdge, id: `edge-${crypto.randomUUID()}` });
+    updateShowerGeometry({ vertices, edges });
+    setSelectedShowerVertex({ roomId, index: edgeIndex + 1 });
+    setShowerVertexLock("free");
+    setShowerAddVertex(false);
+  };
   const adjustShower = (key: "baseHeightMm" | "recessDepthMm" | "slopePercent" |
     "drainX" | "drainY" | "drainWidth" | "drainLength", delta: number,
   min: number, max: number) => {
@@ -555,6 +693,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     setWallTool(false);
     setDoorTool(false);
     setShowerTool(false);
+    setSelectedShowerVertex(null);
+    setShowerVertexLock("free");
+    setShowerAddVertex(false);
     setInteractionTool("select");
     if (mode === "variants") {
       chooseWall(null);
@@ -589,6 +730,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     setProjectMenu(false);
     setPendingElementDeletion(null);
     setDeleteWallError("");
+    setSelectedShowerVertex(null);
+    setShowerVertexLock("free");
+    setShowerAddVertex(false);
     if (tool === "delete") {
       chooseWall(null);
       chooseDoor(null);
@@ -655,6 +799,8 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         ? [{ roomId: candidate.id, tray: candidate.showerTray, selected: candidate.id === room?.id }]
         : [])}
       showerTool={!compactView && !layoutMode && showerTool}
+      selectedShowerVertex={selectedShowerVertex}
+      showerAddVertex={showerAddVertex}
       onPlaceShower={(roomKey, point) => {
         const targetRoom = doc.rooms.find(candidate => candidate.topologyKey === roomKey);
         const targetFace = response?.faces.find(candidate => candidate.topologyKey === roomKey);
@@ -675,8 +821,25 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       }}
       onSelectShower={roomId => {
         chooseWall(null); chooseDoor(null);
+        setSelectedShowerVertex(null); setShowerVertexLock("free"); setShowerAddVertex(false);
         update(current => ({ ...current, selectedRoomId: roomId }));
       }}
+      onSelectShowerVertex={(roomId, index) => {
+        chooseWall(null); chooseDoor(null);
+        setSelectedShowerVertex({ roomId, index });
+        setShowerVertexLock("free"); setShowerAddVertex(false);
+        update(current => ({ ...current, selectedRoomId: roomId }));
+      }}
+      constrainShowerVertexMove={(roomId, index, delta) => {
+        const targetRoom = doc.rooms.find(candidate => candidate.id === roomId);
+        const targetFace = response?.faces.find(candidate => candidate.topologyKey === targetRoom?.topologyKey);
+        if (!targetRoom?.showerTray || !targetFace?.polygon) return { x: 0, y: 0 };
+        return constrainedShowerVertexDelta(targetRoom.showerTray, index, delta,
+          targetFace.polygon, showerVertexLock);
+      }}
+      onMoveShowerVertex={moveShowerVertex}
+      onNudgeShowerVertex={(roomId, index, delta) => moveShowerVertex(roomId, index, delta, "free")}
+      onAddShowerVertex={addShowerVertex}
       constrainShowerMove={(roomId, delta) => {
         const targetRoom = doc.rooms.find(candidate => candidate.id === roomId);
         const targetFace = response?.faces.find(candidate => candidate.topologyKey === targetRoom?.topologyKey);
@@ -782,10 +945,11 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
             <button type="button" aria-label="Закрыть настройку поддона"
               onClick={() => setShowerSettingsOpen(false)}><X aria-hidden="true" /></button></header>
           <div className="shower-settings-layout">
-            <div className="shower-settings-preview">
+            <div className="shower-settings-preview"
+              data-shower-preview-key={showerPreviewLayout ? layoutKey : undefined}>
               <Suspense fallback={<div role="status">Загружаем 3D…</div>}>
                 <RoomPreview3D rooms={[{ id: room.id, name: room.name, polygon: selectedFace.polygon,
-                  layout: activeLayout }]} title={room.name} tileSize={room.material.tile}
+                  layout: showerPreviewLayout }]} title={room.name} tileSize={room.material.tile}
                   through={false} multiRoom={false} graph={doc.plan.draft} />
               </Suspense>
               {showerPreviewLoading && <div className="shower-preview-loading" role="status">
@@ -1024,42 +1188,47 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       </> : <>
         {room?.showerTray && !selected && !selectedDoor && !wallTool && !doorTool ? <>
           <h2>Поддон на плане</h2>
-          <p className="muted">Перетаскивайте поддон мышью. Положение ограничено стенами помещения.</p>
-          <label>Форма<select aria-label="Форма поддона" value={room.showerTray.vertices?.length === 6 ? "l" : "custom"}
-            onChange={event => {
-              const vertices = room.showerTray!.vertices ?? [];
-              const xs = vertices.map(point => point[0]), ys = vertices.map(point => point[1]);
-              const width = Math.max(...xs) || 900, height = Math.max(...ys) || 900;
-              const next: [number, number][] = event.target.value === "l"
-                ? [[0, 0], [width, 0], [width, Math.round(height * .55)],
-                  [Math.round(width * .55), Math.round(height * .55)],
-                  [Math.round(width * .55), height], [0, height]]
-                : [[0, 0], [width, 0], [width, height], [0, height]];
-              updateShowerGeometry({ vertices: next, edges: next.map((_, index) => ({
-                id: `edge-${index + 1}`, kind: "open",
-              })) });
-            }}><option value="custom">Прямоугольник / своя</option>
-            <option value="l">Г-образная</option></select></label>
-          <details className="shower-shape-details">
-            <summary>Контур ({room.showerTray.vertices?.length ?? 0} углов)</summary>
-            <div className="shower-vertex-list">
-              {room.showerTray.vertices?.map((point, index) => <div key={index} className="shower-vertex-row">
-                <strong>Угол {index + 1}</strong>
-                <label>X, мм<input type="number" step="1" value={point[0]} onChange={event => {
-                  const value = Number(event.target.value); if (!Number.isFinite(value)) return;
-                  const vertices = room.showerTray!.vertices!.map((item, itemIndex) =>
-                    itemIndex === index ? [Math.round(value), item[1]] as [number, number] : item);
-                  updateShowerGeometry({ vertices });
-                }} /></label>
-                <label>Y, мм<input type="number" step="1" value={point[1]} onChange={event => {
-                  const value = Number(event.target.value); if (!Number.isFinite(value)) return;
-                  const vertices = room.showerTray!.vertices!.map((item, itemIndex) =>
-                    itemIndex === index ? [item[0], Math.round(value)] as [number, number] : item);
-                  updateShowerGeometry({ vertices });
-                }} /></label>
-              </div>)}
-            </div>
-          </details>
+          <p className="muted">Перетаскивайте весь поддон или выберите вершину. Джойстик двигает строго по осям с шагом 1 мм.</p>
+          {selectedShowerVertex?.roomId === room.id && room.showerTray.vertices?.[selectedShowerVertex.index]
+            ? (() => {
+              const index = selectedShowerVertex.index;
+              const vertices = room.showerTray!.vertices!;
+              const angle = (neighborIndex: number) => {
+                const point = vertices[index], neighbor = vertices[neighborIndex];
+                const degrees = Math.atan2(point[1] - neighbor[1], point[0] - neighbor[0]) * 180 / Math.PI;
+                return displayTenth(((degrees % 180) + 180) % 180);
+              };
+              const previous = (index - 1 + vertices.length) % vertices.length;
+              const next = (index + 1) % vertices.length;
+              return <section className="shower-vertex-controls" aria-labelledby="selected-shower-vertex">
+                <div><strong id="selected-shower-vertex">Вершина {index + 1}</strong>
+                  <span>Перетаскивайте жёлтую точку или используйте джойстик.</span></div>
+                <fieldset><legend>Направление свободного движения</legend>
+                  <div className="shower-lock-options">
+                    <button type="button" aria-pressed={showerVertexLock === "free"}
+                      onClick={() => setShowerVertexLock("free")}>Свободно</button>
+                    <button type="button" aria-pressed={showerVertexLock === "previous"}
+                      onClick={() => setShowerVertexLock("previous")}>Предыдущее ребро · {angle(previous)}°</button>
+                    <button type="button" aria-pressed={showerVertexLock === "next"}
+                      onClick={() => setShowerVertexLock("next")}>Следующее ребро · {angle(next)}°</button>
+                  </div>
+                </fieldset>
+                <button type="button" disabled={vertices.length <= 3} onClick={() => {
+                  const nextVertices = [...vertices]; nextVertices.splice(index, 1);
+                  const edges = [...(room.showerTray!.edges ?? [])]; edges.splice(index, 1);
+                  updateShowerGeometry({ vertices: nextVertices, edges });
+                  setSelectedShowerVertex(null); setShowerVertexLock("free");
+                }}>Удалить выбранную вершину</button>
+              </section>;
+            })()
+            : <p className="shower-vertex-hint">Выберите белую вершину на контуре, чтобы изменить её.</p>}
+          <button type="button" className="shower-add-vertex" aria-pressed={showerAddVertex}
+            disabled={(room.showerTray.vertices?.length ?? 0) >= 24}
+            onClick={() => { setShowerAddVertex(value => !value); setSelectedShowerVertex(null);
+              setShowerVertexLock("free"); }}>
+            {showerAddVertex ? "Отменить добавление вершины" : "Добавить вершину"}
+          </button>
+          {showerAddVertex && <p role="status" className="muted">Нажмите «+» на нужном ребре поддона.</p>}
           <button type="button" className="shower-open-3d" onClick={() => setShowerSettingsOpen(true)}>
             <Cuboid aria-hidden="true" />Настроить поддон в 3D
           </button>
@@ -1162,6 +1331,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
             } else {
               update(current => ({ ...current, rooms: current.rooms.map(item =>
                 item.id === pendingElementDeletion.roomId ? { ...item, showerTray: null } : item) }));
+              setSelectedShowerVertex(null); setShowerVertexLock("free"); setShowerAddVertex(false);
             }
             setPendingElementDeletion(null);
           }}>{pendingElementDeletion.kind === "wall" ? "Удалить стену"

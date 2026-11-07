@@ -1093,18 +1093,56 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await showerObject.click();
   await expect(page.getByRole("heading", { name: "Поддон на плане" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Удалить поддон" })).toHaveCount(0);
-  await page.getByLabel("Форма поддона").selectOption("l");
+  await expect(page.getByLabel("Форма поддона")).toHaveCount(0);
+  await expect(page.getByRole("spinbutton")).toHaveCount(0);
+  await page.locator("[data-shower-vertex]").last().click();
+  await expect(page.getByText("Вершина 4", { exact: true })).toBeVisible();
+  const vertexX = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.vertices[3][0]);
+  await page.getByRole("button", { name: /Сдвинуть вершину 4 → на 1 мм/ }).click();
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.vertices[3][0]
+  )).toBe(vertexX + 1);
+  await page.getByRole("button", { name: /Предыдущее ребро/ }).click();
+  await expect(page.getByRole("button", { name: /Предыдущее ребро/ })).toHaveAttribute("aria-pressed", "true");
+  const lockedVertex = page.locator("[data-shower-vertex]").last();
+  const lockedBox = (await lockedVertex.boundingBox())!;
+  const lockedY = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.vertices[3][1]);
+  await page.mouse.move(lockedBox.x + lockedBox.width / 2, lockedBox.y + lockedBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(lockedBox.x + lockedBox.width / 2 + 30, lockedBox.y + lockedBox.height / 2 + 30);
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.vertices[3][1]
+  )).toBe(lockedY);
+  await page.getByRole("button", { name: "Добавить вершину" }).click();
+  await expect(page.locator("[data-shower-add-edge]")).toHaveCount(4);
+  await page.locator("[data-shower-add-edge]").first().click();
+  await expect(page.locator("[data-shower-vertex]")).toHaveCount(5);
+  await page.getByRole("button", { name: "Добавить вершину" }).click();
+  await page.locator("[data-shower-add-edge]").nth(2).click();
   await expect(page.locator("[data-shower-vertex]")).toHaveCount(6);
-  await page.getByText("Контур (6 углов)").click();
+  if (process.env.PW_VISUAL_OUTPUT) await page.screenshot({
+    path: process.env.PW_VISUAL_OUTPUT.replace(/\.png$/, "-shower-plan.png"), fullPage: true,
+  });
   await page.getByRole("button", { name: "Настроить поддон в 3D" }).click();
   const showerDialog = page.getByRole("dialog", { name: "Настройка поддона в 3D" });
   await expect(showerDialog).toBeVisible();
   await expect(showerDialog.getByRole("spinbutton")).toHaveCount(0);
+  const preview = showerDialog.locator(".shower-settings-preview");
+  await expect(preview).toHaveAttribute("data-shower-preview-key", /.+/, { timeout: 10_000 });
   await expect(showerDialog.getByRole("img", { name: /душевым поддоном/ })).toBeVisible();
+  const previewKey = await preview.getAttribute("data-shower-preview-key");
   if (process.env.PW_VISUAL_OUTPUT) await page.screenshot({
     path: process.env.PW_VISUAL_OUTPUT.replace(/\.png$/, "-shower-modal.png"), fullPage: true,
   });
   await showerDialog.getByRole("button", { name: "Увеличить: Высота" }).click();
+  await expect.poll(async () => {
+    const key = await preview.getAttribute("data-shower-preview-key");
+    return key && key !== previewKey ? key : null;
+  }).not.toBeNull();
+  await expect(showerDialog.getByRole("img", { name: /душевым поддоном/ })).toBeVisible();
   await showerDialog.getByRole("button", { name: /Сторона 1:/ }).click();
   await showerDialog.getByRole("button", { name: /Сторона 1:/ }).click();
   await expect.poll(() => page.evaluate(() => {
