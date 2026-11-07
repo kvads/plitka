@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { OpenJointAngleV5, PhysicalGraphV5, PhysicalPolygonV5, PhysicalRoomV5, Point, ProjectDocumentV6, ShowerTray } from "../../domain/plan/types";
 import { clampZoom, viewportAtAnchor, worldPoint, zoomAroundWorld } from "../../domain/room/viewport";
-import { roundTenth } from "../../domain/plan/precision";
+import { formatDegrees, roundTenth } from "../../domain/plan/precision";
 import type { Layout } from "../../types";
 import { physicalPreview, type PhysicalPreviewResponse } from "../../domain/plan/physical-preview";
 import { splitWallDimensions } from "../../domain/plan/physical-dimensions";
@@ -599,7 +599,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         x={position.x} y={-position.y}
         textAnchor="middle" fontSize={13 / pixelScale} fontWeight={600}
         fill="#8f2929" stroke="#fff" strokeWidth={3 / pixelScale} paintOrder="stroke">
-        {displayTenth(angle.valueDeg)}°
+        {formatDegrees(angle.valueDeg)}°
       </text>
     </g>;
   };
@@ -724,7 +724,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       {start && wallTool && mobile && guideLabels.map((point, index) =>
         <text key={`ruler-${index}`} x={point.x + 10 / pixelScale}
           y={-point.y - 9 / pixelScale} fontSize={11 / pixelScale} fill="#444">
-          {displayMillimeters(Math.hypot(point.x - start.x, point.y - start.y))} мм · {displayTenth(measuredGuideAngle(point))}°
+          {displayMillimeters(Math.hypot(point.x - start.x, point.y - start.y))} мм · {formatDegrees(measuredGuideAngle(point))}°
         </text>)}
     </g>
     {mobile && wallTool && <g pointerEvents="none">
@@ -905,7 +905,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
               fontSize={(angle.primary ? 13 : 12) / pixelScale}
               fontWeight={angle.primary ? 700 : 650}
               stroke="#fff" strokeWidth={4 / pixelScale} paintOrder="stroke">
-              {displayTenth(angle.value)}°
+              {formatDegrees(angle.value)}°
             </text>
           </g>)}
         </g>}
@@ -1090,7 +1090,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         data-room-angle x={angle.anchor.x} y={-angle.anchor.y}
         fill="#873b2f" fontSize={13 / pixelScale} fontWeight={700}
         stroke="#fff" strokeWidth={4 / pixelScale} paintOrder="stroke">
-        {displayTenth(angle.valueDeg)}°
+        {formatDegrees(angle.valueDeg)}°
       </text>)}
       {selectedFaceDimensions.map((dimension, index) => <text key={`d${index}`}
         data-room-dimension

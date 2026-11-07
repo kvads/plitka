@@ -13,6 +13,12 @@ export function roundTenth(value: number): number {
   return (value < 0 ? -ticks : ticks) / DECIMAL_SCALE;
 }
 
+export function formatDegrees(value: number): string {
+  if (!Number.isFinite(value)) throw new Error("Некорректный угол.");
+  const rounded = Math.sign(value) * Math.round(Math.abs(value));
+  return rounded.toLocaleString("ru-RU", { maximumFractionDigits: 0 });
+}
+
 export function requireTenth(value: number): number {
   if (!isTenth(value)) throw new Error("Допустим не более одного знака после запятой.");
   return value;

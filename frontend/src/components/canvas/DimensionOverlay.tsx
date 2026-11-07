@@ -1,6 +1,7 @@
 import { formatPlanLength } from "../../domain/plan/format-length";
 import { angleGeometry, type AngleTarget } from "../../domain/plan/angles";
 import type { GraphSnapshot } from "../../domain/plan/types";
+import { formatDegrees } from "../../domain/plan/precision";
 export default function DimensionOverlay({
   graph,
   scale,
@@ -88,7 +89,7 @@ export default function DimensionOverlay({
           strokeWidth={3 / scale}
           paintOrder="stroke"
         >
-          {geometry.value.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}°
+          {formatDegrees(geometry.value)}°
         </text>
       </g>
     );

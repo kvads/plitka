@@ -335,10 +335,20 @@ def test_v5_parametric_shower_object_uses_local_shape_and_exposes_surfaces():
     assert object_result['baseHeightMm'] == 150
     assert object_result['footprint'][0][0] == [100, 100]
     assert {surface['kind'] for surface in object_result['surfaces']} == {'fascia', 'curb'}
-    assert len([surface for surface in object_result['surfaces'] if surface['kind'] == 'fascia']) == 4
+    assert len([surface for surface in object_result['surfaces'] if surface['kind'] == 'fascia']) == 3
     assert len([surface for surface in object_result['surfaces'] if surface['kind'] == 'curb']) == 1
+    floor_region = unary_union([Polygon(rings[0], rings[1:])
+                                for rings in object_result['floorRegions']])
+    footprint = Polygon(object_result['footprint'][0])
+    assert footprint.area - floor_region.area == 700 * 100
     assert all(part['zoneId'] for part in result['parts']
                if part['surfaceId'] == 'shower-top')
+
+
+def test_v5_parametric_shower_keeps_drain_out_of_curb_wall():
+    with pytest.raises(ValueError, match='полностью находиться'):
+        calculate_v5(project(tile=300,
+                             shower=shower_object(drainX=850, drainY=300)), 0, 0)
 
 
 def test_v5_parametric_shower_can_touch_two_room_walls_despite_tile_gap():
@@ -394,12 +404,12 @@ def test_v5_recessed_shower_extends_inner_curb_faces_and_validates_depth():
     assert object_result['recessDepthMm'] == 40
     curb = next(surface for surface in object_result['surfaces'] if surface['kind'] == 'curb')
     assert curb['insideHeightMm'] == 120
-    assert curb['outsideHeightMm'] == 80
+    assert curb['outsideHeightMm'] == 230
     inside = [part for part in object_result['surfaceParts']
               if part['surfaceKind'] == 'curb-inside']
     outside = [part for part in object_result['surfaceParts']
                if part['surfaceKind'] == 'curb-outside']
-    assert sum(part['area'] for part in inside) > sum(part['area'] for part in outside)
+    assert sum(part['area'] for part in outside) > sum(part['area'] for part in inside)
     with pytest.raises(ValueError, match='Глубина чаши'):
         calculate_v5(project(shower=shower_object(baseHeightMm=30,
                                                    recessDepthMm=40)), 0, 0)

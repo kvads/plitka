@@ -16,6 +16,7 @@ import { deletionConditions } from "../../domain/plan/commands";
 import ToolPalette from "./ToolPalette";
 import ProjectCanvas, { type Tool } from "./ProjectCanvas";
 import NumberField from "../workflow/NumberField";
+import { formatDegrees } from "../../domain/plan/precision";
 import type {
   ProjectDocumentV5,
   GraphCommand,
@@ -965,7 +966,7 @@ export default function GraphWorkflow({
                               : m.kind === "chainLength"
                                 ? "Общая длина"
                                 : "Участок"}
-                            : {f(m.value || 0, 1)}{" "}
+                            : {m.kind === "angle" ? formatDegrees(m.value || 0) : f(m.value || 0, 1)}{" "}
                             {m.kind === "angle" ? "°" : "мм"}
                           </div>
                         ))}

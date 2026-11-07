@@ -5,7 +5,7 @@ import math
 import numpy as np
 import shapely
 from shapely.affinity import rotate, translate
-from shapely.geometry import Polygon, MultiPolygon, box
+from shapely.geometry import Polygon, MultiPolygon, LineString, box
 from shapely.ops import unary_union
 
 from .planner import EPS, dominates, features, objectives, prepare, rings
@@ -137,6 +137,33 @@ def _object_transform(geometry, shower):
                      shower.originX or 0, shower.originY or 0)
 
 
+def _object_floor_region(shower, local):
+    """Return the usable bowl floor after curb walls occupy space inside the contour."""
+    if shower.edges is None:
+        return local
+    coords = list(local.exterior.coords)[:-1]
+    inward_sign = 1 if local.exterior.is_ccw else -1
+    wall_strips = []
+    for index, edge in enumerate(shower.edges):
+        if edge.kind != 'curb' or not edge.curbWidthMm:
+            continue
+        start, end = coords[index], coords[(index + 1) % len(coords)]
+        strip = LineString([start, end]).buffer(
+            inward_sign * edge.curbWidthMm,
+            single_sided=True,
+            cap_style='flat',
+            join_style='mitre',
+        )
+        wall_strips.append(shapely.intersection(strip, local, grid_size=.1))
+    if not wall_strips:
+        return local
+    walls = unary_union(wall_strips)
+    floor = shapely.difference(local, walls, grid_size=.1)
+    if floor.is_empty or floor.area <= EPS:
+        raise ValueError('Стенки поддона не оставляют полезной площади пола.')
+    return _snap_geometry(floor)
+
+
 def _object_shower_zones(shower, local):
     drain = _drain_polygon(shower)
     local_region = shapely.difference(local, drain, grid_size=.1)
@@ -152,7 +179,7 @@ def _object_surfaces(shower, footprint):
     for index, edge in enumerate(shower.edges):
         start, end = coords[index], coords[(index + 1) % len(coords)]
         length = math.dist(start, end)
-        if edge.kind != 'wall':
+        if edge.kind not in ('wall', 'curb'):
             height = shower.baseHeightMm or 0
             surfaces.append({'id': f'{edge.id}:fascia', 'edgeId': edge.id, 'kind': 'fascia',
                 'edgeKind': edge.kind, 'start': [tenth(start[0]), tenth(start[1])],
@@ -161,12 +188,13 @@ def _object_surfaces(shower, footprint):
         if edge.kind == 'curb':
             height, width = edge.curbHeightMm or 0, edge.curbWidthMm or 0
             inside_height = height + shower.recessDepthMm
+            outside_height = (shower.baseHeightMm or 0) + height
             surfaces.append({'id': f'{edge.id}:curb', 'edgeId': edge.id, 'kind': 'curb',
                 'edgeKind': edge.kind, 'start': [tenth(start[0]), tenth(start[1])],
                 'end': [tenth(end[0]), tenth(end[1])], 'lengthMm': tenth(length),
                 'heightMm': tenth(height), 'widthMm': tenth(width),
-                'insideHeightMm': tenth(inside_height), 'outsideHeightMm': tenth(height),
-                'areaMm2': tenth(length * (width + inside_height + height))})
+                'insideHeightMm': tenth(inside_height), 'outsideHeightMm': tenth(outside_height),
+                'areaMm2': tenth(length * (width + inside_height + outside_height))})
     return surfaces
 
 
@@ -293,12 +321,15 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True,
     room_region = region
     drain = None
     object_footprint = None
+    object_floor_local = None
     effective_shower = project.shower
     object_local = None
     if project.shower is not None:
         shower_room = _snap_geometry(Polygon(project.outline, project.holes))
         effective_shower, object_footprint, object_local = _object_geometry(project.shower, shower_room)
-        region = object_footprint if object_footprint is not None else region
+        if object_footprint is not None:
+            object_floor_local = _object_floor_region(project.shower, object_local)
+            region = _snap_geometry(_object_transform(object_floor_local, project.shower))
         drain = (_object_transform(_drain_polygon(project.shower), project.shower)
                  if object_footprint is not None else _drain_polygon(effective_shower))
         if not region.covers(drain):
@@ -307,8 +338,8 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True,
         if region.is_empty or region.area <= 0:
             raise ValueError('После размещения слива не осталось области для укладки плитки.')
     room, canonical_region, room_area = _canonical_region(project, region)
-    shower_zones = (_object_shower_zones(project.shower, object_local)
-                    if project.shower is not None and object_local is not None
+    shower_zones = (_object_shower_zones(project.shower, object_floor_local)
+                    if project.shower is not None and object_floor_local is not None
                     else _shower_zones(effective_shower, canonical_region) if effective_shower else [])
     step = project.tile + project.grout
     dx = offset_ticks(dx, step) / 10
@@ -445,6 +476,8 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True,
                 'baseHeightMm': tenth(project.shower.baseHeightMm or 0),
                 'recessDepthMm': tenth(project.shower.recessDepthMm),
                 'footprint': rings(object_footprint),
+                'floorRegions': [rings(poly) for poly in _polys(
+                    _object_transform(object_floor_local, project.shower))],
                 'edges': [edge.model_dump(exclude_none=True) for edge in project.shower.edges or []],
                 'surfaces': surfaces,
             }

@@ -1,5 +1,6 @@
 import type { Acknowledgment } from "../../domain/project/schema";
 import type { GeometrySnapshot } from "../../domain/room/types";
+import { formatDegrees } from "../../domain/plan/precision";
 export default function MeasurementsApproval({
   value,
   geometry,
@@ -36,7 +37,8 @@ export default function MeasurementsApproval({
                     : `${i === 0 ? "Комната" : `Отверстие ${i}`} · стена ${index + 1}`;
                 })
                 .join("")}
-              . {e.kind === "length" ? "Длина" : "Угол"}: {e.displayedValue}{" "}
+              . {e.kind === "length" ? "Длина" : "Угол"}: {e.kind === "length"
+                ? e.displayedValue : formatDegrees(e.displayedValue)}{" "}
               {e.kind === "length" ? "мм" : "°"}
             </span>
           ))}

@@ -69,6 +69,7 @@ export type Layout = {
       id: string; originX: number; originY: number; rotationDeg: number; baseHeightMm: number;
       recessDepthMm: number;
       footprint: Point[][];
+      floorRegions: Point[][][];
       edges: { id: string; kind: "wall" | "open" | "curb" | "entry";
         curbHeightMm?: number; curbWidthMm?: number }[];
       surfaces: { id: string; edgeId: string; kind: "fascia" | "curb";

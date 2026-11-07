@@ -4,7 +4,7 @@ import PhysicalCanvas from "./PhysicalCanvas";
 import { usePhysicalProject } from "../../domain/plan/usePhysicalProject";
 import { deleteV6 } from "../../domain/plan/storage";
 import type { ProjectDocumentV6, ShowerTray } from "../../domain/plan/types";
-import { isTenth } from "../../domain/plan/precision";
+import { formatDegrees, isTenth } from "../../domain/plan/precision";
 import { physicalGraphCanonicalJson } from "../../domain/plan/physical-basis";
 import { newRoom } from "../../domain/plan/rooms";
 import NumberField from "../workflow/NumberField";
@@ -457,7 +457,6 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     const key = layoutKey;
     const generation = ++showerPreviewGeneration.current;
     setShowerPreviewLoading(true);
-    setShowerPreviewLayout(null);
     api<Layout>("v5/layout", roomLayoutRequest(room, selectedFace, null), controller.signal)
       .then(layout => {
         if (generation !== showerPreviewGeneration.current) return;
@@ -962,7 +961,18 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
               <Suspense fallback={<div role="status">Загружаем 3D…</div>}>
                 <RoomPreview3D rooms={[{ id: room.id, name: room.name, polygon: selectedFace.polygon,
                   layout: showerPreviewLayout }]} title={room.name} tileSize={room.material.tile}
-                  through={false} multiRoom={false} graph={doc.plan.draft} isolateShower />
+                  through={false} multiRoom={false} graph={doc.plan.draft} isolateShower
+                  onShowerDrainMove={(x, y) => {
+                    const tray = room.showerTray;
+                    if (!tray) return;
+                    const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
+                    const cosine = Math.cos(radians), sine = Math.sin(radians);
+                    const dx = x - (tray.originX ?? 0), dy = y - (tray.originY ?? 0);
+                    updateShowerTray({
+                      drainX: Math.round((dx * cosine + dy * sine) * 10) / 10,
+                      drainY: Math.round((-dx * sine + dy * cosine) * 10) / 10,
+                    });
+                  }} />
               </Suspense>
               {showerPreviewLoading && <div className="shower-preview-loading" role="status">
                 Обновляем модель…
@@ -1228,7 +1238,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
               const angle = (neighborIndex: number) => {
                 const point = vertices[index], neighbor = vertices[neighborIndex];
                 const degrees = Math.atan2(point[1] - neighbor[1], point[0] - neighbor[0]) * 180 / Math.PI;
-                return displayTenth(((degrees % 180) + 180) % 180);
+                return formatDegrees(((degrees % 180) + 180) % 180);
               };
               const previous = (index - 1 + vertices.length) % vertices.length;
               const next = (index + 1) % vertices.length;

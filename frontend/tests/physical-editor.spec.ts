@@ -2,12 +2,19 @@ import { expect, test } from "@playwright/test";
 import { touchSession, v6DiagonalWallGraph, v6PhysicalDocument, v6SavedWallGraph } from "./fixtures/projects";
 import type { Point, ProjectDocumentV6 } from "../src/domain/plan/types";
 import { physicalBasisKey } from "../src/domain/plan/physical-basis";
+import { formatDegrees } from "../src/domain/plan/precision";
 import { splitWallDimensions } from "../src/domain/plan/physical-dimensions";
 import { openingCorners, openingOffset } from "../src/domain/plan/physical-openings";
 import { alignCubeAttachmentToGuides, alignToWallEndProjection, centeredWallGeometry, immediateJointAngles,
   nearestCubeAttachment } from "../src/domain/plan/physical-draw";
 import { newRoom } from "../src/domain/plan/rooms";
 import { readFile } from "node:fs/promises";
+
+test("project angles are displayed as whole degrees", () => {
+  expect(formatDegrees(89.49)).toBe("89");
+  expect(formatDegrees(89.5)).toBe("90");
+  expect(formatDegrees(-89.5)).toBe("-90");
+});
 
 test("physical v6 measures both exposed spans of a wall touched by a branch", () => {
   const graph = { walls: [{ id: "host", drawnEdge: [{ x: 0, y: 0 }, { x: 0, y: 1000 }],
@@ -1035,7 +1042,7 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.getByRole("textbox", { name: "Название помещения" })).toHaveValue("Помещение 1");
   await expect(page.getByRole("complementary").locator(".room-preview-card")).toHaveCount(0);
   await expect(page.getByText("800 000,0 мм²")).toBeVisible();
-  await expect(page.locator("[data-physical-canvas]").getByText("90,0°").first()).toBeVisible();
+  await expect(page.locator("[data-physical-canvas]").getByText("90°").first()).toBeVisible();
   await expect(page.locator("[data-physical-canvas]").getByText("800 мм").first()).toBeVisible();
   await page.getByRole("button", { name: "План", exact: true }).click();
   await page.locator("[data-room-key]").click();
@@ -1119,7 +1126,7 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.locator("[data-physical-canvas] > [data-shower-joystick]")).toHaveCount(1);
   await expect(page.locator("[data-shower-edge-length]")).toHaveCount(4);
   await expect(page.locator("[data-shower-vertex-angle]")).toHaveCount(3);
-  await expect(page.locator("[data-shower-vertex-angle]")).toContainText(["°", "°", "°"]);
+  await expect(page.locator("[data-shower-vertex-angle]")).toHaveText([/^\d+°$/, /^\d+°$/, /^\d+°$/]);
   const vertexX = await page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.vertices[3][0]);
   await page.getByRole("button", { name: /Сдвинуть вершину 4 → на 1 мм/ }).click();
@@ -1155,7 +1162,12 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(showerDialog.getByRole("spinbutton")).toHaveCount(0);
   const preview = showerDialog.locator(".shower-settings-preview");
   await expect(preview).toHaveAttribute("data-shower-preview-key", /.+/, { timeout: 10_000 });
-  await expect(showerDialog.getByRole("img", { name: /душевым поддоном как отдельным объектом/ })).toBeVisible();
+  const isolatedShowerModel = showerDialog.getByRole("img", {
+    name: /душевым поддоном как отдельным объектом/ });
+  await expect(isolatedShowerModel).toBeVisible();
+  await expect(isolatedShowerModel).toHaveAttribute("data-shower-side-labels", "6");
+  await expect(isolatedShowerModel).toHaveAttribute("data-shower-wall-indicators", /^[1-6]$/);
+  await expect(showerDialog.getByText(/Перетащите слив для перемещения/)).toBeVisible();
   await expect(showerDialog.getByRole("button", { name: /^(Скрыть|Показать) стены$/ })).toHaveCount(0);
   const previewKey = await preview.getAttribute("data-shower-preview-key");
   if (process.env.PW_VISUAL_OUTPUT) await page.screenshot({
@@ -1172,7 +1184,7 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(showerDialog.getByText("Толщина борта", { exact: true })).toBeVisible();
   await expect(preview).toHaveAttribute("data-shower-preview-key", /.+/);
   const thicknessPreviewKey = await preview.getAttribute("data-shower-preview-key");
-  await showerDialog.getByRole("button", { name: "Увеличить: толщина борта стороны 1" }).click();
+  await showerDialog.getByRole("button", { name: "Уменьшить: толщина борта стороны 1" }).click();
   await expect.poll(async () => {
     const key = await preview.getAttribute("data-shower-preview-key");
     return key && key !== thicknessPreviewKey ? key : null;
@@ -1182,7 +1194,10 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
     return [document.rooms[0].showerTray.vertices.length,
       document.rooms[0].showerTray.edges[0].kind,
       document.rooms[0].showerTray.edges[0].curbWidthMm];
-  })).toEqual([6, "curb", 110]);
+  })).toEqual([6, "curb", 90]);
+  if (process.env.PW_VISUAL_OUTPUT) await page.screenshot({
+    path: process.env.PW_VISUAL_OUTPUT.replace(/\.png$/, "-shower-curb-wall.png"), fullPage: true,
+  });
   await showerDialog.getByRole("button", { name: "Закрыть настройку поддона" }).click();
   await page.getByRole("button", { name: "Раскладка", exact: true }).click();
   await page.getByRole("button", { name: "Подобрать раскладку" }).click();
@@ -1355,7 +1370,7 @@ test("physical v6 diagonal wall ruler offers a precise perpendicular target", as
     expect(distance).toBeGreaterThanOrEqual(99.9);
     expect(Math.min(distance % 100, 100 - distance % 100)).toBeLessThanOrEqual(.1);
     expect(Math.abs(dx + dy)).toBeLessThanOrEqual(.1);
-    await expect(canvas.getByText("100 мм · 90,0°").first()).toBeVisible();
+    await expect(canvas.getByText("100 мм · 90°").first()).toBeVisible();
   } finally { await context.close(); }
 });
 

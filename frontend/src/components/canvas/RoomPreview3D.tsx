@@ -21,7 +21,27 @@ type Props = {
   multiRoom: boolean;
   graph: PhysicalGraphV5;
   isolateShower?: boolean;
+  onShowerDrainMove?: (x: number, y: number) => void;
 };
+
+const pointInRing = (point: Point, ring: Point[]) => {
+  let inside = false;
+  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
+    const a = ring[index], b = ring[previous];
+    if ((a[1] > point[1]) !== (b[1] > point[1]) &&
+        point[0] < (b[0] - a[0]) * (point[1] - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside;
+  }
+  return inside;
+};
+
+const signedArea = (ring: Point[]) => ring.reduce((sum, [x, y], index) => {
+  const [nextX, nextY] = ring[(index + 1) % ring.length];
+  return sum + x * nextY - nextX * y;
+}, 0) / 2;
+
+const pointInRegions = (point: Point, regions: Point[][][]) => regions.some((rings) =>
+  Boolean(rings[0]?.length) && pointInRing(point, rings[0]) &&
+  !rings.slice(1).some(hole => pointInRing(point, hole)));
 
 const ringShape = (rings: Point[][], cx: number, cy: number) => {
   const path = (ring: Point[]) => {
@@ -104,12 +124,14 @@ const roomCountText = (count: number) => {
 };
 
 export default function RoomPreview3D({ rooms, title, tileSize, through, multiRoom, graph,
-  isolateShower = false }: Props) {
+  isolateShower = false, onShowerDrainMove }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const resetView = useRef<() => void>(() => undefined);
+  const drainMove = useRef(onShowerDrainMove);
   const [showWalls, setShowWalls] = useState(() => !multiRoom && !isolateShower);
 
   useEffect(() => setShowWalls(!multiRoom && !isolateShower), [multiRoom, isolateShower]);
+  useEffect(() => { drainMove.current = onShowerDrainMove; }, [onShowerDrainMove]);
 
   useEffect(() => {
     const container = host.current;
@@ -176,6 +198,10 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
 
     const geometries: THREE.BufferGeometry[] = [];
     const materials: THREE.Material[] = [];
+    const labelTextures: THREE.Texture[] = [];
+    let draggableDrain: { mesh: THREE.Mesh; regions: Point[][][]; height: number;
+      frameOffsets: Point[] } | null = null;
+    let wallIndicatorMaterial: THREE.MeshStandardMaterial | null = null;
     const groutMaterial = new THREE.MeshStandardMaterial({
       color: 0xd7d8d4,
       roughness: 0.92,
@@ -273,6 +299,19 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
           -(drain.y - cy) / 1000);
         drainMesh.receiveShadow = true;
         scene.add(drainMesh);
+        const floorRegions = room.layout?.shower?.object?.floorRegions;
+        if (isolateShower && floorRegions?.length) {
+          const radians = (drain.rotationDeg ?? 0) * Math.PI / 180;
+          const cosine = Math.cos(radians), sine = Math.sin(radians);
+          const halfX = drainWidth / 2, halfY = drainDepth / 2;
+          const frameOffsets = ([-1, 1] as const).flatMap(xDirection =>
+            ([-1, 1] as const).map(yDirection => {
+              const x = xDirection * halfX, y = yDirection * halfY;
+              return [x * cosine - y * sine, x * sine + y * cosine] as Point;
+            }));
+          draggableDrain = { mesh: drainMesh, regions: floorRegions,
+            height: drainMesh.position.y, frameOffsets };
+        }
       }
       room.layout?.shower?.zones.forEach(zone => zone.rings.forEach(ring => {
         const objectLift = (room.layout?.shower?.object?.baseHeightMm ?? 0) -
@@ -292,7 +331,7 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
         const length = Math.hypot(dx, dy);
         if (length < .1 || surface.heightMm <= 0) return;
         const isCurb = surface.kind === "curb";
-        const surfaceHeight = isCurb ? surface.insideHeightMm ?? surface.heightMm : surface.heightMm;
+        const surfaceHeight = isCurb ? surface.outsideHeightMm ?? surface.heightMm : surface.heightMm;
         const height = surfaceHeight / 1000;
         const depth = Math.max(isCurb ? surface.widthMm / 1000 : .012, .012);
         const geometry = new THREE.BoxGeometry(length / 1000, height, depth);
@@ -301,17 +340,98 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
         mesh.name = `shower-${surface.kind}-${surface.edgeId}`;
         mesh.userData.showerSurface = surface.kind;
         mesh.rotation.y = Math.atan2(dy, dx);
-        const base = isCurb
-          ? (room.layout?.shower?.object?.baseHeightMm ?? 0) -
-            (room.layout?.shower?.object?.recessDepthMm ?? 0) + room.layout!.shower!.maxHeightMm
-          : 0;
-        mesh.position.set(((surface.start[0] + surface.end[0]) / 2 - cx) / 1000,
-          base / 1000 + height / 2,
-          -((surface.start[1] + surface.end[1]) / 2 - cy) / 1000);
+        let middleX = (surface.start[0] + surface.end[0]) / 2;
+        let middleY = (surface.start[1] + surface.end[1]) / 2;
+        if (isCurb) {
+          const footprint = room.layout?.shower?.object?.footprint[0] ?? [];
+          const direction = signedArea(footprint) >= 0 ? 1 : -1;
+          middleX += -dy / length * surface.widthMm / 2 * direction;
+          middleY += dx / length * surface.widthMm / 2 * direction;
+        }
+        mesh.position.set((middleX - cx) / 1000,
+          height / 2,
+          -(middleY - cy) / 1000);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
         scene.add(mesh);
       });
+      const showerObject = room.layout?.shower?.object;
+      if (isolateShower && showerObject?.footprint[0]?.length) {
+        const ring = showerObject.footprint[0];
+        const objectLift = showerObject.baseHeightMm - showerObject.recessDepthMm;
+        const highestSurface = showerObject.surfaces.reduce((highest, surface) => {
+          const top = surface.kind === "curb"
+            ? surface.outsideHeightMm ?? surface.heightMm
+            : surface.heightMm;
+          return Math.max(highest, top);
+        }, objectLift + (room.layout?.shower?.maxHeightMm ?? 0));
+        showerObject.edges.forEach((edge, index) => {
+          const start = ring[index], end = ring[(index + 1) % showerObject.edges.length];
+          if (!start || !end) return;
+          const labelCanvas = document.createElement("canvas");
+          labelCanvas.width = 96; labelCanvas.height = 96;
+          const context = labelCanvas.getContext("2d");
+          if (!context) return;
+          context.beginPath(); context.arc(48, 48, 34, 0, Math.PI * 2);
+          context.fillStyle = edge.kind === "wall" ? "#eef0ee" : "#ffffff"; context.fill();
+          context.lineWidth = 6; context.strokeStyle = edge.kind === "wall" ? "#626b66" : "#285f43";
+          context.stroke();
+          context.fillStyle = "#173c2e"; context.font = "700 42px sans-serif";
+          context.textAlign = "center"; context.textBaseline = "middle";
+          context.fillText(String(index + 1), 48, 50);
+          const labelTexture = new THREE.CanvasTexture(labelCanvas);
+          labelTexture.colorSpace = THREE.SRGBColorSpace;
+          labelTextures.push(labelTexture);
+          const labelMaterial = new THREE.SpriteMaterial({ map: labelTexture,
+            transparent: true, depthTest: false, depthWrite: false });
+          materials.push(labelMaterial);
+          const marker = new THREE.Sprite(labelMaterial);
+          marker.name = `shower-side-label-${index + 1}`;
+          marker.userData.showerEdgeId = edge.id;
+          marker.renderOrder = 100;
+          marker.position.set(((start[0] + end[0]) / 2 - cx) / 1000,
+            (highestSurface + 55) / 1000,
+            -((start[1] + end[1]) / 2 - cy) / 1000);
+          const markerSize = Math.min(.12, Math.max(.075, span * .11));
+          marker.scale.set(markerSize, markerSize, 1);
+          scene.add(marker);
+        });
+        renderer.domElement.dataset.showerSideLabels = String(showerObject.edges.length);
+        const signedArea = ring.slice(0, showerObject.edges.length).reduce((sum, point, index) => {
+          const next = ring[(index + 1) % showerObject.edges.length];
+          return sum + point[0] * next[1] - next[0] * point[1];
+        }, 0);
+        let wallIndicators = 0;
+        showerObject.edges.forEach((edge, index) => {
+          if (edge.kind !== "wall") return;
+          const start = ring[index], end = ring[(index + 1) % showerObject.edges.length];
+          if (!start || !end) return;
+          const dx = end[0] - start[0], dy = end[1] - start[1];
+          const length = Math.hypot(dx, dy);
+          if (length < .1) return;
+          if (!wallIndicatorMaterial) {
+            wallIndicatorMaterial = new THREE.MeshStandardMaterial({ color: 0xc9ceca,
+              transparent: true, opacity: .62, roughness: .95, side: THREE.DoubleSide });
+            materials.push(wallIndicatorMaterial);
+          }
+          const wallHeight = Math.max(.24, span * .3);
+          const wallGeometry = new THREE.BoxGeometry(length / 1000, wallHeight, .016);
+          geometries.push(wallGeometry);
+          const wall = new THREE.Mesh(wallGeometry, wallIndicatorMaterial);
+          const outward = signedArea >= 0
+            ? { x: dy / length, y: -dx / length }
+            : { x: -dy / length, y: dx / length };
+          wall.position.set(((start[0] + end[0]) / 2 + outward.x * 12 - cx) / 1000,
+            wallHeight / 2,
+            -((start[1] + end[1]) / 2 + outward.y * 12 - cy) / 1000);
+          wall.rotation.y = Math.atan2(dy, dx);
+          wall.name = `shower-wall-indicator-${index + 1}`;
+          wall.userData.showerEdgeId = edge.id;
+          scene.add(wall);
+          wallIndicators += 1;
+        });
+        renderer.domElement.dataset.showerWallIndicators = String(wallIndicators);
+      }
     });
 
     const wallMaterial = new THREE.MeshStandardMaterial({
@@ -380,6 +500,62 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     keyLight.shadow.camera.bottom = -span;
     scene.add(keyLight);
 
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0));
+    let draggingDrain = false;
+    const setPointer = (event: PointerEvent) => {
+      const bounds = renderer.domElement.getBoundingClientRect();
+      pointer.set((event.clientX - bounds.left) / bounds.width * 2 - 1,
+        -((event.clientY - bounds.top) / bounds.height) * 2 + 1);
+      raycaster.setFromCamera(pointer, camera);
+    };
+    const pointerDown = (event: PointerEvent) => {
+      if (!draggableDrain) return;
+      setPointer(event);
+      if (!raycaster.intersectObject(draggableDrain.mesh, false).length) return;
+      draggingDrain = true;
+      controls.enabled = false;
+      renderer.domElement.setPointerCapture(event.pointerId);
+      renderer.domElement.style.cursor = "grabbing";
+      event.preventDefault(); event.stopPropagation();
+    };
+    const pointerMove = (event: PointerEvent) => {
+      if (!draggableDrain) return;
+      const activeDrain = draggableDrain;
+      setPointer(event);
+      if (!draggingDrain) {
+        renderer.domElement.style.cursor = raycaster.intersectObject(activeDrain.mesh, false).length
+          ? "grab" : "default";
+        return;
+      }
+      dragPlane.constant = -activeDrain.height;
+      const intersection = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(dragPlane, intersection)) return;
+      const world: Point = [intersection.x * 1000 + cx, -intersection.z * 1000 + cy];
+      if (![world, ...activeDrain.frameOffsets.map(([x, y]) =>
+        [world[0] + x, world[1] + y] as Point)]
+        .every(point => pointInRegions(point, activeDrain.regions))) return;
+      activeDrain.mesh.position.x = intersection.x;
+      activeDrain.mesh.position.z = intersection.z;
+      event.preventDefault(); event.stopPropagation();
+    };
+    const pointerUp = (event: PointerEvent) => {
+      if (!draggingDrain || !draggableDrain) return;
+      draggingDrain = false;
+      controls.enabled = true;
+      renderer.domElement.style.cursor = "grab";
+      if (renderer.domElement.hasPointerCapture(event.pointerId))
+        renderer.domElement.releasePointerCapture(event.pointerId);
+      drainMove.current?.(draggableDrain.mesh.position.x * 1000 + cx,
+        -draggableDrain.mesh.position.z * 1000 + cy);
+      event.preventDefault(); event.stopPropagation();
+    };
+    renderer.domElement.addEventListener("pointerdown", pointerDown, true);
+    renderer.domElement.addEventListener("pointermove", pointerMove, true);
+    renderer.domElement.addEventListener("pointerup", pointerUp, true);
+    renderer.domElement.addEventListener("pointercancel", pointerUp, true);
+
     resetView.current = () => {
       camera.position.copy(initialCamera);
       controls.target.set(0, isolateShower ? 0.08 : 0.35, 0);
@@ -409,8 +585,13 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
+      renderer.domElement.removeEventListener("pointerdown", pointerDown, true);
+      renderer.domElement.removeEventListener("pointermove", pointerMove, true);
+      renderer.domElement.removeEventListener("pointerup", pointerUp, true);
+      renderer.domElement.removeEventListener("pointercancel", pointerUp, true);
       controls.dispose();
       texture.dispose();
+      labelTextures.forEach((labelTexture) => labelTexture.dispose());
       geometries.forEach((geometry) => geometry.dispose());
       materials.forEach((material) => material.dispose());
       renderer.dispose();
@@ -457,7 +638,9 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
           </button>
         </div>
       </figcaption>
-      <p className="room-preview-help">Потяните, чтобы осмотреть · прокрутите для масштаба</p>
+      <p className="room-preview-help">{isolateShower
+        ? "Перетащите слив для перемещения · потяните фон, чтобы осмотреть"
+        : "Потяните, чтобы осмотреть · прокрутите для масштаба"}</p>
     </figure>
   );
 }

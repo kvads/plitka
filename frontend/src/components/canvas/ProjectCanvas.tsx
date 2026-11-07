@@ -21,7 +21,7 @@ import { path } from "../../types";
 import { snap } from "../../domain/room/snapping";
 import { selectedWallAngles } from "../../domain/plan/selected-wall-angles";
 import { selectedWallFootprint } from "../../domain/plan/selected-wall-footprint";
-import { roundTenth } from "../../domain/plan/precision";
+import { formatDegrees, roundTenth } from "../../domain/plan/precision";
 import { clampZoom, gridScreenStep, viewportAtAnchor, worldPoint, zoomAroundWorld } from "../../domain/room/viewport";
 export type Tool = EditorTool;
 export default function ProjectCanvas({
@@ -932,7 +932,7 @@ export default function ProjectCanvas({
                   <text data-angle-label transform={`translate(${label.x},${label.y}) scale(1,-1)`} textAnchor="middle"
                     dominantBaseline="middle" fontSize={12 / screenScale()} fill="#333"
                     stroke="#fff" strokeWidth={3 / screenScale()} paintOrder="stroke">
-                    {angle.value.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}°
+                    {formatDegrees(angle.value)}°
                   </text>
                 </g>;
               })}
