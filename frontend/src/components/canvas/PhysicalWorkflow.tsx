@@ -6,6 +6,7 @@ import { deleteV6 } from "../../domain/plan/storage";
 import type { ProjectDocumentV6, ShowerTray } from "../../domain/plan/types";
 import { formatDegrees, isTenth } from "../../domain/plan/precision";
 import { physicalGraphCanonicalJson } from "../../domain/plan/physical-basis";
+import { curbAdjustedTray, showerEdgeFrame, type ShowerEdge } from "../../domain/plan/shower-geometry";
 import { newRoom } from "../../domain/plan/rooms";
 import NumberField from "../workflow/NumberField";
 import { api } from "../../api";
@@ -56,22 +57,23 @@ const pointInRing = (point: [number, number], ring: [number, number][]) => {
 const showerFitsRoom = (tray: ShowerTray, originX: number, originY: number,
   polygon: { outline: number[][]; holes: number[][][] }, clearance = 0) => {
   if (!tray.vertices?.length) return false;
-  const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
-  const cosine = Math.cos(radians), sine = Math.sin(radians);
-  const vertices = tray.vertices.map(([x, y]) => [originX + x * cosine - y * sine,
-    originY + x * sine + y * cosine] as [number, number]);
+  const candidate = { ...tray, originX, originY };
   const outline = polygon.outline as [number, number][];
   const holes = polygon.holes as [number, number][][];
-  for (let index = 0; index < vertices.length; index++) {
-    const start = vertices[index], end = vertices[(index + 1) % vertices.length];
-    for (let step = 0; step <= 16; step++) {
-      const ratio = step / 16;
-      const point: [number, number] = [start[0] + (end[0] - start[0]) * ratio,
-        start[1] + (end[1] - start[1]) * ratio];
-      if (!pointInRing(point, outline) || holes.some(hole => pointInRing(point, hole))) return false;
-      const nearBoundary = (ring: [number, number][]) => ring.some((edgeStart, edgeIndex) =>
-        distanceToSegment(point, edgeStart, ring[(edgeIndex + 1) % ring.length]) < clearance - .05);
-      if (clearance > 0 && (nearBoundary(outline) || holes.some(nearBoundary))) return false;
+  for (let index = 0; index < tray.vertices.length; index++) {
+    const frame = showerEdgeFrame(candidate, index);
+    if (!frame) return false;
+    const boundaries = [[frame.start, frame.end], [frame.outerStart, frame.outerEnd]] as const;
+    for (const [start, end] of boundaries) {
+      for (let step = 0; step <= 16; step++) {
+        const ratio = step / 16;
+        const point: [number, number] = [start[0] + (end[0] - start[0]) * ratio,
+          start[1] + (end[1] - start[1]) * ratio];
+        if (!pointInRing(point, outline) || holes.some(hole => pointInRing(point, hole))) return false;
+        const nearBoundary = (ring: [number, number][]) => ring.some((edgeStart, edgeIndex) =>
+          distanceToSegment(point, edgeStart, ring[(edgeIndex + 1) % ring.length]) < clearance - .05);
+        if (clearance > 0 && (nearBoundary(outline) || holes.some(nearBoundary))) return false;
+      }
     }
   }
   return true;
@@ -125,6 +127,7 @@ const wallAwareShowerEdges = (tray: ShowerTray,
       ring.map((edgeStart, edgeIndex) => distanceToSegment(point, edgeStart,
         ring[(edgeIndex + 1) % ring.length]))))));
     const previous = tray.edges?.[index];
+    if (previous?.kind === "curb") return previous;
     return distance <= clearance + .6
       ? { id: previous?.id ?? `edge-${index + 1}`, kind: "wall" as const }
       : previous ?? { id: `edge-${index + 1}`, kind: "open" as const };
@@ -1017,9 +1020,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
                   const labels = { wall: "у стены · без борта", open: "открытая",
                     curb: "с бортом", entry: "вход" };
                   const updateEdge = (patch: Partial<typeof edge>) => {
-                    const edges = [...room.showerTray!.edges!];
-                    edges[index] = { ...edge, ...patch };
-                    updateShowerTray({ edges });
+                    const nextEdge = { ...edge, ...patch } as ShowerEdge;
+                    updateShowerTray(curbAdjustedTray(room.showerTray!, index, nextEdge,
+                      selectedFace.polygon!));
                   };
                   const edgeStepper = (label: string, key: "curbHeightMm" | "curbWidthMm",
                     fallback: number) => <div className="shower-edge-stepper">

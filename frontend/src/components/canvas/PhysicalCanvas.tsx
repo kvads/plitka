@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { OpenJointAngleV5, PhysicalGraphV5, PhysicalPolygonV5, PhysicalRoomV5, Point, ProjectDocumentV6, ShowerTray } from "../../domain/plan/types";
 import { clampZoom, viewportAtAnchor, worldPoint, zoomAroundWorld } from "../../domain/room/viewport";
 import { formatDegrees, roundTenth } from "../../domain/plan/precision";
@@ -94,6 +94,15 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   doorTool, doorWidthMm, selectedDoorId, onSelectDoor, deleteTool, onDeleteWall,
   onDeleteDoor, onDeleteShower, onPlaceDoor, onResetDoorTool }: Props) {
   const svg = useRef<SVGSVGElement>(null);
+
+  useLayoutEffect(() => {
+    const root = svg.current;
+    if (!root) return;
+    (["object", "overlay"] as const).forEach(layer => {
+      root.querySelectorAll<SVGElement>(`:scope > [data-selection-layer="${layer}"]`)
+        .forEach(node => root.append(node));
+    });
+  });
   const pointers = useRef(new Map<number, Point>());
   const gesture = useRef<Gesture | null>(null);
   const pinch = useRef<{ anchor: Point; distance: number; zoom: number } | null>(null);
@@ -650,6 +659,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       y: points.reduce((sum, point) => sum + point[1], 0) / points.length,
     } : { x: points[vertexIndex][0], y: points[vertexIndex][1] };
     return <g key={`${roomId}:shower-joystick`} data-shower-joystick
+      data-selection-layer="overlay"
       data-shower-control-room={roomId}>
       <circle cx={target.x} cy={-target.y} r={52 / pixelScale}
         fill="#ffffffee" stroke="#9ba99f" strokeWidth={1 / pixelScale} pointerEvents="none" />
@@ -827,6 +837,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
           endY: point[1] + secondUnit.y * radius }];
       }) : [];
       return [<g key={`${roomId}:shower-object`} data-shower-object={roomId}
+        data-selection-layer={selected ? "object" : undefined}
         data-dragging={showerDrag?.roomId === roomId || undefined}
         tabIndex={selected ? 0 : -1} role="button"
         aria-label={deleteTool ? "Удалить душевой поддон"
@@ -841,6 +852,25 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
             : event.key === "ArrowDown" ? { x: 0, y: -10 } : null;
           if (delta) { event.preventDefault(); onMoveShower?.(roomId, delta); }
         }}>
+        {points.map((point, index) => {
+          const edge = tray.edges?.[index];
+          if (edge?.kind !== "curb" || !edge.curbWidthMm) return null;
+          const end = points[(index + 1) % points.length];
+          const dx = end[0] - point[0], dy = end[1] - point[1];
+          const length = Math.hypot(dx, dy);
+          if (length < .1) return null;
+          const outward = orientation > 0 ? { x: dy / length, y: -dx / length }
+            : { x: -dy / length, y: dx / length };
+          const outerStart: [number, number] = [point[0] + outward.x * edge.curbWidthMm,
+            point[1] + outward.y * edge.curbWidthMm];
+          const outerEnd: [number, number] = [end[0] + outward.x * edge.curbWidthMm,
+            end[1] + outward.y * edge.curbWidthMm];
+          const strip = [point, end, outerEnd, outerStart];
+          return <path key={`curb-width-${index}`} data-shower-curb-width={edge.curbWidthMm}
+            d={strip.map(([x, y], stripIndex) => `${stripIndex ? "L" : "M"}${x} ${-y}`).join(" ") + " Z"}
+            fill="#b7792f99" stroke="#7b4b14"
+            strokeWidth={Math.max(1.2 / pixelScale, .2)} pointerEvents="none" />;
+        })}
         <path d={d} fill="#dce9e1" fillOpacity=".72" stroke={selected ? "#176044" : "#527263"}
           strokeWidth={Math.max((selected ? 3 : 2) / pixelScale, .25)} />
         {points.map(([x, y], index) => {
@@ -981,6 +1011,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       {previewAngles.map((angle, index) => jointAngleMark(angle, `${angle.junctionId}:${index}`, true))}
     </g>
     {graph.walls.map(wall => <path key={wall.id} data-wall-id={wall.id}
+      data-selection-layer={wall.id === selectedWallId ? "object" : undefined}
       tabIndex={wallTool || doorTool ? -1 : 0} role="button"
       aria-label={doorTool ? "Разместить дверной проём" : deleteTool ? "Удалить стену" : "Выбрать стену"}
       aria-pressed={wall.id === selectedWallId}
@@ -1015,6 +1046,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       const openedVector = { x: openedSvg.x - hingeSvg.x, y: openedSvg.y - hingeSvg.y };
       const sweep = closedVector.x * openedVector.y - closedVector.y * openedVector.x > 0 ? 1 : 0;
       return <g key={opening.id} data-door-id={opening.id} data-wall-id={opening.wallId}
+        data-selection-layer={opening.id === selectedDoorId ? "object" : undefined}
         pointerEvents="bounding-box"
         role="button" tabIndex={wallTool || doorTool ? -1 : 0}
         aria-label={`Дверной проём ${displayTenth(opening.widthMm)} мм`}
@@ -1042,7 +1074,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       </g>;
     })}
     {handlePoints && !wallTool && !doorTool && Object.entries(handlePoints).map(([handle, point]) =>
-      <g key={handle} data-wall-handle={handle} role="button" tabIndex={0}
+      <g key={handle} data-wall-handle={handle} data-selection-layer="overlay" role="button" tabIndex={0}
         aria-label={`Точка стены: ${handle === "start" ? "начало" : handle === "end" ? "конец" : "середина"}`}
         onKeyDown={event => { if (event.key === "Enter" || event.key === " ") {
           event.preventDefault(); onSelectHandle?.(handle as Handle);
@@ -1059,6 +1091,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       const point = handlePoints[selectedHandle];
       const x = point.x + offsetX / pixelScale, y = -point.y + offsetY / pixelScale;
       return <g key={`${axis}${direction}`} data-nudge-axis={axis} data-nudge-direction={direction}
+        data-selection-layer="overlay"
         role="button" tabIndex={0} aria-label={`Сдвинуть ${selectedHandle === "center" ? "стену" : "точку стены"} ${label} на 1 мм`}
         onKeyDown={event => { if (event.key === "Enter" || event.key === " ") {
           event.preventDefault(); onNudge?.(selectedHandle, axis, direction);
@@ -1069,7 +1102,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
           fontSize={17 / pixelScale} fill="#333" pointerEvents="none">{label}</text>
       </g>;
     })}
-    <g pointerEvents="none" textAnchor="middle">
+    <g pointerEvents="none" textAnchor="middle"
+      data-selection-layer={selectedWallId || selectedRoomKey ? "overlay" : undefined}>
       {shownSplitDimensions.map((dimension, index) => <text key={`segment-${index}`}
         data-wall-segment-length={dimension.wallId}
         x={dimension.anchor.x} y={-dimension.anchor.y}

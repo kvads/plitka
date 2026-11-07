@@ -8,12 +8,32 @@ import { openingCorners, openingOffset } from "../src/domain/plan/physical-openi
 import { alignCubeAttachmentToGuides, alignToWallEndProjection, centeredWallGeometry, immediateJointAngles,
   nearestCubeAttachment } from "../src/domain/plan/physical-draw";
 import { newRoom } from "../src/domain/plan/rooms";
+import { curbAdjustedTray } from "../src/domain/plan/shower-geometry";
 import { readFile } from "node:fs/promises";
 
 test("project angles are displayed as whole degrees", () => {
   expect(formatDegrees(89.49)).toBe("89");
   expect(formatDegrees(89.5)).toBe("90");
   expect(formatDegrees(-89.5)).toBe("-90");
+});
+
+test("curb thickness keeps its outer face attached to the room wall", () => {
+  const polygon = { outline: [[0, 0], [1200, 0], [1200, 1200], [0, 1200]], holes: [] };
+  const base = { id: "tray", originX: 0, originY: 0, rotationDeg: 0,
+    baseHeightMm: 150, recessDepthMm: 40,
+    vertices: [[0, 0], [900, 0], [900, 900], [0, 900]] as Point[],
+    edges: [0, 1, 2, 3].map(index => ({ id: `edge-${index}`, kind: "wall" as const })),
+    drainType: "linear" as const, drainX: 450, drainY: 140, drainWidth: 70,
+    drainLength: 700, drainOrientation: "horizontal" as const, slopePercent: 2 };
+  const curb = { id: "edge-0", kind: "curb" as const, curbHeightMm: 80, curbWidthMm: 100 };
+  const added = curbAdjustedTray(base, 0, curb, polygon);
+  expect(added.originY).toBe(100);
+  const thicker = curbAdjustedTray(added, 0, { ...curb, curbWidthMm: 150 }, polygon);
+  expect(thicker.originY).toBe(150);
+  const thinner = curbAdjustedTray(thicker, 0, { ...curb, curbWidthMm: 80 }, polygon);
+  expect(thinner.originY).toBe(80);
+  const removed = curbAdjustedTray(thinner, 0, { id: "edge-0", kind: "open" }, polygon);
+  expect(removed.originY).toBe(0);
 });
 
 test("physical v6 measures both exposed spans of a wall touched by a branch", () => {
@@ -1027,9 +1047,15 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.locator("[data-room-key]")).toHaveAttribute("fill", "#fff");
   await expect.poll(() => page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms.length)).toBe(1);
-  const joinedWall = page.locator("[data-wall-id]").first();
+  const joinedWallId = await page.locator("[data-wall-id]").first().getAttribute("data-wall-id");
+  const joinedWall = page.locator(`[data-wall-id="${joinedWallId}"]`).first();
   await joinedWall.click();
   await expect(joinedWall).toHaveAttribute("fill", "#f2c94c88");
+  await expect.poll(() => joinedWall.evaluate(node => {
+    const root = node.ownerSVGElement!;
+    const walls = [...root.querySelectorAll(":scope > [data-wall-id]")];
+    return walls.at(-1) === node;
+  })).toBe(true);
   await expect(page.locator("[data-selected-wall-length]")).toBeVisible();
   await expect(page.locator("[data-selected-wall-angle]")).toHaveCount(2);
   await page.getByRole("button", { name: "Раскладка", exact: true }).click();
@@ -1100,6 +1126,13 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
       .filter((edge: { kind: string }) => edge.kind === "wall").length)).toBeGreaterThanOrEqual(2);
   await showerObject.click();
   await expect(page.getByRole("heading", { name: "Поддон на плане" })).toBeVisible();
+  await expect.poll(() => showerObject.evaluate(node => {
+    const root = node.ownerSVGElement!;
+    const children = [...root.children];
+    const showerIndex = children.indexOf(node);
+    return [...root.querySelectorAll(":scope > [data-wall-id]")]
+      .every(wall => children.indexOf(wall) < showerIndex);
+  })).toBe(true);
   await expect(page.getByRole("button", { name: "Удалить поддон" })).toHaveCount(0);
   await expect(page.getByLabel("Форма поддона")).toHaveCount(0);
   await expect(page.getByRole("spinbutton")).toHaveCount(0);
@@ -1195,10 +1228,14 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
       document.rooms[0].showerTray.edges[0].kind,
       document.rooms[0].showerTray.edges[0].curbWidthMm];
   })).toEqual([6, "curb", 90]);
+  await expect(page.locator('[data-shower-curb-width="90"]')).toHaveCount(1);
   if (process.env.PW_VISUAL_OUTPUT) await page.screenshot({
     path: process.env.PW_VISUAL_OUTPUT.replace(/\.png$/, "-shower-curb-wall.png"), fullPage: true,
   });
   await showerDialog.getByRole("button", { name: "Закрыть настройку поддона" }).click();
+  if (process.env.PW_VISUAL_OUTPUT) await page.screenshot({
+    path: process.env.PW_VISUAL_OUTPUT.replace(/\.png$/, "-shower-curb-plan.png"), fullPage: true,
+  });
   await page.getByRole("button", { name: "Раскладка", exact: true }).click();
   await page.getByRole("button", { name: "Подобрать раскладку" }).click();
   await expect(page.getByText(/Плиток:/)).toBeVisible();

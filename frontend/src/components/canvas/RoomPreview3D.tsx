@@ -343,10 +343,10 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
         let middleX = (surface.start[0] + surface.end[0]) / 2;
         let middleY = (surface.start[1] + surface.end[1]) / 2;
         if (isCurb) {
-          const footprint = room.layout?.shower?.object?.footprint[0] ?? [];
-          const direction = signedArea(footprint) >= 0 ? 1 : -1;
-          middleX += -dy / length * surface.widthMm / 2 * direction;
-          middleY += dx / length * surface.widthMm / 2 * direction;
+          const floorRing = room.layout?.shower?.object?.floorRegions[0]?.[0] ?? [];
+          const direction = signedArea(floorRing) >= 0 ? 1 : -1;
+          middleX += dy / length * surface.widthMm / 2 * direction;
+          middleY += -dx / length * surface.widthMm / 2 * direction;
         }
         mesh.position.set((middleX - cx) / 1000,
           height / 2,
@@ -357,7 +357,7 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
       });
       const showerObject = room.layout?.shower?.object;
       if (isolateShower && showerObject?.footprint[0]?.length) {
-        const ring = showerObject.footprint[0];
+        const ring = showerObject.floorRegions[0]?.[0] ?? showerObject.footprint[0];
         const objectLift = showerObject.baseHeightMm - showerObject.recessDepthMm;
         const highestSurface = showerObject.surfaces.reduce((highest, surface) => {
           const top = surface.kind === "curb"

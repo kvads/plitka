@@ -113,6 +113,25 @@ def _drain_polygon(shower):
                shower.drainX + length / 2, shower.drainY + width / 2)
 
 
+def _object_outer_footprint(shower, local):
+    if shower.edges is None:
+        return local
+    coords = list(local.exterior.coords)[:-1]
+    outward_sign = -1 if local.exterior.is_ccw else 1
+    walls = [local]
+    for index, edge in enumerate(shower.edges):
+        if edge.kind != 'curb' or not edge.curbWidthMm:
+            continue
+        start, end = coords[index], coords[(index + 1) % len(coords)]
+        walls.append(LineString([start, end]).buffer(
+            outward_sign * edge.curbWidthMm,
+            single_sided=True,
+            cap_style='square',
+            join_style='mitre',
+        ))
+    return _snap_geometry(unary_union(walls))
+
+
 def _object_geometry(shower, room_region):
     if shower.vertices is None:
         return shower, None, None
@@ -121,7 +140,8 @@ def _object_geometry(shower, room_region):
         raise ValueError('Контур душевого поддона должен быть простым и иметь площадь.')
     angle = shower.rotationDeg or 0
     origin_x, origin_y = shower.originX or 0, shower.originY or 0
-    footprint = translate(rotate(local, angle, origin=(0, 0)), origin_x, origin_y)
+    outer = _object_outer_footprint(shower, local)
+    footprint = translate(rotate(outer, angle, origin=(0, 0)), origin_x, origin_y)
     footprint = _snap_geometry(footprint)
     if not room_region.covers(footprint):
         raise ValueError('Контур душевого поддона выходит за границы помещения.')
@@ -135,33 +155,6 @@ def _object_geometry(shower, room_region):
 def _object_transform(geometry, shower):
     return translate(rotate(geometry, shower.rotationDeg or 0, origin=(0, 0)),
                      shower.originX or 0, shower.originY or 0)
-
-
-def _object_floor_region(shower, local):
-    """Return the usable bowl floor after curb walls occupy space inside the contour."""
-    if shower.edges is None:
-        return local
-    coords = list(local.exterior.coords)[:-1]
-    inward_sign = 1 if local.exterior.is_ccw else -1
-    wall_strips = []
-    for index, edge in enumerate(shower.edges):
-        if edge.kind != 'curb' or not edge.curbWidthMm:
-            continue
-        start, end = coords[index], coords[(index + 1) % len(coords)]
-        strip = LineString([start, end]).buffer(
-            inward_sign * edge.curbWidthMm,
-            single_sided=True,
-            cap_style='flat',
-            join_style='mitre',
-        )
-        wall_strips.append(shapely.intersection(strip, local, grid_size=.1))
-    if not wall_strips:
-        return local
-    walls = unary_union(wall_strips)
-    floor = shapely.difference(local, walls, grid_size=.1)
-    if floor.is_empty or floor.area <= EPS:
-        raise ValueError('Стенки поддона не оставляют полезной площади пола.')
-    return _snap_geometry(floor)
 
 
 def _object_shower_zones(shower, local):
@@ -322,14 +315,16 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True,
     drain = None
     object_footprint = None
     object_floor_local = None
+    object_floor_world = None
     effective_shower = project.shower
     object_local = None
     if project.shower is not None:
         shower_room = _snap_geometry(Polygon(project.outline, project.holes))
         effective_shower, object_footprint, object_local = _object_geometry(project.shower, shower_room)
         if object_footprint is not None:
-            object_floor_local = _object_floor_region(project.shower, object_local)
-            region = _snap_geometry(_object_transform(object_floor_local, project.shower))
+            object_floor_local = object_local
+            object_floor_world = _snap_geometry(_object_transform(object_floor_local, project.shower))
+            region = object_floor_world
         drain = (_object_transform(_drain_polygon(project.shower), project.shower)
                  if object_footprint is not None else _drain_polygon(effective_shower))
         if not region.covers(drain):
@@ -467,7 +462,7 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True,
             'rotationDeg': tenth(project.shower.rotationDeg or 0)},
             'zones': zone_results, 'maxHeightMm': tenth(max_height)}
         if object_footprint is not None:
-            surfaces = _object_surfaces(project.shower, object_footprint)
+            surfaces = _object_surfaces(project.shower, object_floor_world)
             result['shower']['object'] = {
                 'id': project.shower.id or 'shower-object',
                 'originX': tenth(project.shower.originX or 0),
@@ -482,7 +477,7 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True,
                 'surfaces': surfaces,
             }
     if object_footprint is not None and project.shower is not None and _compose_object:
-        surfaces = _object_surfaces(project.shower, object_footprint)
+        surfaces = _object_surfaces(project.shower, object_floor_world)
         surface_parts = _object_surface_parts(project.shower, surfaces, project)
         floor_region = shapely.difference(room_region, object_footprint, grid_size=.1)
         floor_result = None

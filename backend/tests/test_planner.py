@@ -1,7 +1,7 @@
 import math
 import pytest
 from fastapi.testclient import TestClient
-from shapely.geometry import Polygon, MultiPolygon, box
+from shapely.geometry import Polygon, MultiPolygon, Point, box
 from shapely.ops import unary_union
 from backend.main import app, Project
 from backend.planner import prepare, calculate, optimize, dominates
@@ -333,7 +333,7 @@ def test_v5_parametric_shower_object_uses_local_shape_and_exposes_surfaces():
     object_result = result['shower']['object']
     assert object_result['id'] == 'shower-1'
     assert object_result['baseHeightMm'] == 150
-    assert object_result['footprint'][0][0] == [100, 100]
+    assert [100, 100] in object_result['footprint'][0]
     assert {surface['kind'] for surface in object_result['surfaces']} == {'fascia', 'curb'}
     assert len([surface for surface in object_result['surfaces'] if surface['kind'] == 'fascia']) == 3
     assert len([surface for surface in object_result['surfaces'] if surface['kind'] == 'curb']) == 1
@@ -345,10 +345,12 @@ def test_v5_parametric_shower_object_uses_local_shape_and_exposes_surfaces():
                if part['surfaceId'] == 'shower-top')
 
 
-def test_v5_parametric_shower_keeps_drain_out_of_curb_wall():
-    with pytest.raises(ValueError, match='полностью находиться'):
-        calculate_v5(project(tile=300,
-                             shower=shower_object(drainX=850, drainY=300)), 0, 0)
+def test_v5_parametric_shower_curb_grows_outside_usable_floor():
+    result = calculate_v5(project(tile=300,
+                          shower=shower_object(drainX=850, drainY=300)), 0, 0)
+    floor_region = unary_union([Polygon(rings[0], rings[1:])
+                                for rings in result['shower']['object']['floorRegions']])
+    assert floor_region.covers(Point(850 + 100, 300 + 100))
 
 
 def test_v5_parametric_shower_can_touch_two_room_walls_despite_tile_gap():
