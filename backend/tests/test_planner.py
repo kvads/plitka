@@ -368,3 +368,21 @@ def test_v5_shower_object_combines_room_floor_top_and_edge_tile_details():
     assert all(part['width'] > 0 and part['height'] > 0 and part['area'] > 0
                for part in surface_parts)
     assert result['metrics']['tiles'] > len({part['source'] for part in result['parts']})
+
+
+def test_v5_recessed_shower_extends_inner_curb_faces_and_validates_depth():
+    result = calculate_v5(project(tile=300,
+                          shower=shower_object(recessDepthMm=40)), 0, 0)
+    object_result = result['shower']['object']
+    assert object_result['recessDepthMm'] == 40
+    curb = next(surface for surface in object_result['surfaces'] if surface['kind'] == 'curb')
+    assert curb['insideHeightMm'] == 120
+    assert curb['outsideHeightMm'] == 80
+    inside = [part for part in object_result['surfaceParts']
+              if part['surfaceKind'] == 'curb-inside']
+    outside = [part for part in object_result['surfaceParts']
+               if part['surfaceKind'] == 'curb-outside']
+    assert sum(part['area'] for part in inside) > sum(part['area'] for part in outside)
+    with pytest.raises(ValueError, match='Глубина чаши'):
+        calculate_v5(project(shower=shower_object(baseHeightMm=30,
+                                                   recessDepthMm=40)), 0, 0)

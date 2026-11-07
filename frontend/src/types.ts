@@ -12,6 +12,7 @@ export type ShowerRequest = {
   originY?: number;
   rotationDeg?: number;
   baseHeightMm?: number;
+  recessDepthMm?: number;
   vertices?: Point[];
   edges?: { id: string; kind: "wall" | "open" | "curb" | "entry";
     curbHeightMm?: number; curbWidthMm?: number }[];
@@ -66,12 +67,14 @@ export type Layout = {
     maxHeightMm: number;
     object?: {
       id: string; originX: number; originY: number; rotationDeg: number; baseHeightMm: number;
+      recessDepthMm: number;
       footprint: Point[][];
       edges: { id: string; kind: "wall" | "open" | "curb" | "entry";
         curbHeightMm?: number; curbWidthMm?: number }[];
       surfaces: { id: string; edgeId: string; kind: "fascia" | "curb";
         edgeKind: "wall" | "open" | "curb" | "entry"; start: Point; end: Point;
-        lengthMm: number; heightMm: number; widthMm: number; areaMm2: number }[];
+        lengthMm: number; heightMm: number; widthMm: number; areaMm2: number;
+        insideHeightMm?: number; outsideHeightMm?: number }[];
       surfaceParts: { id: string; surfaceId: string;
         surfaceKind: "fascia" | "curb-top" | "curb-inside" | "curb-outside";
         width: number; height: number; area: number; full: boolean; issues: string[] }[];

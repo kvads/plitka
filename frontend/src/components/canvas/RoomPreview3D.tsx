@@ -183,7 +183,8 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
       surfaces.forEach(surface => {
         const floorGeometry = new THREE.ShapeGeometry(ringShape(surface.rings, cx, cy));
         elevate(floorGeometry, room.layout, surface.id, cx, cy,
-          room.layout?.shower?.object?.baseHeightMm ?? 0);
+          (room.layout?.shower?.object?.baseHeightMm ?? 0) -
+          (room.layout?.shower?.object?.recessDepthMm ?? 0));
         geometries.push(floorGeometry);
         const floor = new THREE.Mesh(floorGeometry, groutMaterial);
         floor.rotation.x = -Math.PI / 2;
@@ -222,7 +223,8 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
         if (!part.rings[0]?.length) return;
         const geometry = new THREE.ShapeGeometry(ringShape(part.rings, cx, cy));
         const objectLift = part.surfaceId === "shower-top"
-          ? room.layout?.shower?.object?.baseHeightMm ?? 0 : 0;
+          ? (room.layout?.shower?.object?.baseHeightMm ?? 0) -
+            (room.layout?.shower?.object?.recessDepthMm ?? 0) : 0;
         elevate(geometry, room.layout, part.zoneId, cx, cy, objectLift + 2);
         normalizeUvs(geometry);
         geometries.push(geometry);
@@ -244,7 +246,8 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
       });
       const drain = room.layout?.shower?.drain;
       if (drain) {
-        const objectLift = room.layout?.shower?.object?.baseHeightMm ?? 0;
+        const objectLift = (room.layout?.shower?.object?.baseHeightMm ?? 0) -
+          (room.layout?.shower?.object?.recessDepthMm ?? 0);
         const drainWidth = drain.orientation === "horizontal" ? drain.length : drain.width;
         const drainDepth = drain.orientation === "horizontal" ? drain.width : drain.length;
         const drainGeometry = new THREE.BoxGeometry(drainWidth / 1000, .016, drainDepth / 1000);
@@ -259,7 +262,8 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
         scene.add(drainMesh);
       }
       room.layout?.shower?.zones.forEach(zone => zone.rings.forEach(ring => {
-        const objectLift = room.layout?.shower?.object?.baseHeightMm ?? 0;
+        const objectLift = (room.layout?.shower?.object?.baseHeightMm ?? 0) -
+          (room.layout?.shower?.object?.recessDepthMm ?? 0);
         const breakGeometry = new THREE.BufferGeometry().setFromPoints(ring.map(([x, y]) =>
           new THREE.Vector3((x - cx) / 1000,
             (showerHeight(room.layout, zone.id, x, y) + objectLift + 4) / 1000,
@@ -275,7 +279,8 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
         const length = Math.hypot(dx, dy);
         if (length < .1 || surface.heightMm <= 0) return;
         const isCurb = surface.kind === "curb";
-        const height = surface.heightMm / 1000;
+        const surfaceHeight = isCurb ? surface.insideHeightMm ?? surface.heightMm : surface.heightMm;
+        const height = surfaceHeight / 1000;
         const depth = Math.max(isCurb ? surface.widthMm / 1000 : .012, .012);
         const geometry = new THREE.BoxGeometry(length / 1000, height, depth);
         geometries.push(geometry);
@@ -284,7 +289,8 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
         mesh.userData.showerSurface = surface.kind;
         mesh.rotation.y = Math.atan2(dy, dx);
         const base = isCurb
-          ? (room.layout?.shower?.object?.baseHeightMm ?? 0) + room.layout!.shower!.maxHeightMm
+          ? (room.layout?.shower?.object?.baseHeightMm ?? 0) -
+            (room.layout?.shower?.object?.recessDepthMm ?? 0) + room.layout!.shower!.maxHeightMm
           : 0;
         mesh.position.set(((surface.start[0] + surface.end[0]) / 2 - cx) / 1000,
           base / 1000 + height / 2,

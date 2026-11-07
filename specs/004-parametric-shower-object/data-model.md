@@ -11,6 +11,7 @@
 | `vertices` | 3..24 local points, simple polygon, non-zero area |
 | `edges` | exactly one entry for every directed contour edge |
 | `drain` | one point or linear drain in local coordinates |
+| `recessDepthMm` | depth of the sloped bowl below the platform/rim level; `0..baseHeightMm` |
 | `slopePercent` | 0.1..10.0% |
 
 ## ShowerEdge

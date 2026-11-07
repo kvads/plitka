@@ -43,6 +43,7 @@ class ShowerTray(BaseModel):
     originY: float | None = Field(default=None, ge=-100000, le=100000)
     rotationDeg: float | None = Field(default=None, ge=-360, le=360)
     baseHeightMm: float | None = Field(default=None, ge=0, le=1000)
+    recessDepthMm: float = Field(default=0, ge=0, le=1000)
     vertices: list[tuple[float, float]] | None = Field(default=None, min_length=3, max_length=24)
     edges: list[ShowerEdge] | None = Field(default=None, min_length=3, max_length=24)
 

@@ -1007,6 +1007,11 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await page.mouse.click(placementPoint.x, placementPoint.y);
   await expect(page.locator("[data-shower-object]")).toHaveCount(1);
   await expect(page.locator("[data-shower-vertex]")).toHaveCount(4);
+  await page.getByRole("textbox", { name: "Глубина чаши" }).fill("40");
+  await page.getByRole("textbox", { name: "Глубина чаши" }).press("Tab");
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0]
+      .showerTray.recessDepthMm)).toBe(40);
   await expect(page.getByRole("combobox", { name: "Тип слива" })).toHaveValue("linear");
   await expect(page.getByRole("textbox", { name: "Длина слива" })).toHaveValue(/^[4-9]\d\d/);
   await page.getByLabel("Форма поддона").selectOption("l");

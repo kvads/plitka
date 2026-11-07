@@ -141,7 +141,8 @@ export async function api<T>(
         const validObject = v.shower.object === undefined || (() => {
           const object = v.shower.object;
           if (!record(object) || typeof object.id !== 'string' || !points(object.footprint) ||
-              ![object.originX, object.originY, object.rotationDeg, object.baseHeightMm].every(tenth) ||
+              ![object.originX, object.originY, object.rotationDeg, object.baseHeightMm,
+                object.recessDepthMm].every(tenth) ||
               !Array.isArray(object.edges) || !Array.isArray(object.surfaces) ||
               !Array.isArray(object.surfaceParts)) return false;
           return object.edges.every(edge => record(edge) && typeof edge.id === 'string' &&

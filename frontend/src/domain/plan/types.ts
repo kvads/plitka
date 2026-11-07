@@ -180,6 +180,7 @@ export type ShowerTray = {
   originY?: number;
   rotationDeg?: number;
   baseHeightMm?: number;
+  recessDepthMm?: number;
   vertices?: [number, number][];
   edges?: ShowerEdge[];
 };

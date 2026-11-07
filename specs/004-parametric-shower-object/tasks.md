@@ -61,6 +61,15 @@
 - [x] T025 Remove orphan shower objects with their room and cover the lifecycle in browser tests
 - [x] T026 Run backend, build, browser and visual 3D validation; update quickstart and deploy production release
 
+## Phase 8: Recessed shower bowl
+
+- [x] T027 Add failing recessed-depth validation and surface-height tests
+- [x] T028 Add `recessDepthMm` to persisted, request and response contracts with backward-compatible zero default
+- [x] T029 Add controlled «Глубина чаши» editing next to overall tray height
+- [x] T030 Lower the sloped top and drain in 3D while extending curb inner walls through the recess
+- [x] T031 Count recessed inner-wall tile details independently from outer curb faces
+- [x] T032 Run backend, build, browser and visual validation; update docs and deploy production
+
 ## Dependencies
 
 - T002–T004 block all user stories.

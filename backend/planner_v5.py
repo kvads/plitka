@@ -32,7 +32,8 @@ def validate_input(project) -> None:
                        project.shower.slopePercent])
         if project.shower.vertices is not None:
             values.extend([project.shower.originX or 0, project.shower.originY or 0,
-                           project.shower.rotationDeg or 0, project.shower.baseHeightMm or 0])
+                           project.shower.rotationDeg or 0, project.shower.baseHeightMm or 0,
+                           project.shower.recessDepthMm])
             values.extend(v for point in project.shower.vertices for v in point)
             for edge in project.shower.edges or []:
                 values.extend(v for v in (edge.curbHeightMm, edge.curbWidthMm) if v is not None)
@@ -47,6 +48,8 @@ def validate_input(project) -> None:
         for edge in project.shower.edges:
             if edge.kind == 'curb' and (edge.curbHeightMm is None or edge.curbWidthMm is None):
                 raise ValueError('Для борта нужны высота и ширина.')
+        if project.shower.recessDepthMm > (project.shower.baseHeightMm or 0):
+            raise ValueError('Глубина чаши не может превышать высоту поддона.')
 
 
 def offset_ticks(value: float, period: float) -> int:
@@ -157,11 +160,13 @@ def _object_surfaces(shower, footprint):
                 'heightMm': tenth(height), 'widthMm': 0, 'areaMm2': tenth(length * height)})
         if edge.kind == 'curb':
             height, width = edge.curbHeightMm or 0, edge.curbWidthMm or 0
+            inside_height = height + shower.recessDepthMm
             surfaces.append({'id': f'{edge.id}:curb', 'edgeId': edge.id, 'kind': 'curb',
                 'edgeKind': edge.kind, 'start': [tenth(start[0]), tenth(start[1])],
                 'end': [tenth(end[0]), tenth(end[1])], 'lengthMm': tenth(length),
                 'heightMm': tenth(height), 'widthMm': tenth(width),
-                'areaMm2': tenth(length * (width + 2 * height))})
+                'insideHeightMm': tenth(inside_height), 'outsideHeightMm': tenth(height),
+                'areaMm2': tenth(length * (width + inside_height + height))})
     return surfaces
 
 
@@ -202,8 +207,8 @@ def _object_surface_parts(shower, surfaces, project):
                 surface['heightMm'], project.tile, project.grout, project.threshold))
         elif surface['kind'] == 'curb':
             dimensions = [('curb-top', surface['widthMm']),
-                          ('curb-inside', surface['heightMm']),
-                          ('curb-outside', surface['heightMm'])]
+                          ('curb-inside', surface['insideHeightMm']),
+                          ('curb-outside', surface['outsideHeightMm'])]
             for kind, height in dimensions:
                 if height > 0:
                     parts.extend(_tile_rect_surface(f"{surface['edgeId']}:{kind}", kind,
@@ -438,6 +443,7 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True,
                 'originY': tenth(project.shower.originY or 0),
                 'rotationDeg': tenth(project.shower.rotationDeg or 0),
                 'baseHeightMm': tenth(project.shower.baseHeightMm or 0),
+                'recessDepthMm': tenth(project.shower.recessDepthMm),
                 'footprint': rings(object_footprint),
                 'edges': [edge.model_dump(exclude_none=True) for edge in project.shower.edges or []],
                 'surfaces': surfaces,

@@ -699,7 +699,7 @@ export function parseV6(value: unknown): ProjectDocumentV6 {
     if (room.showerTray !== undefined && room.showerTray !== null) {
       const shower = obj(room.showerTray);
       exact(shower, ["drainType", "drainX", "drainY", "drainWidth", "drainLength", "drainOrientation", "slopePercent",
-        "id", "originX", "originY", "rotationDeg", "baseHeightMm", "vertices", "edges"]);
+        "id", "originX", "originY", "rotationDeg", "baseHeightMm", "recessDepthMm", "vertices", "edges"]);
       choice(shower.drainType, ["point", "linear"]);
       choice(shower.drainOrientation, ["horizontal", "vertical"]);
       for (const subject of [shower.drainX, shower.drainY, shower.drainWidth,
@@ -715,6 +715,10 @@ export function parseV6(value: unknown): ProjectDocumentV6 {
         const edges = arr(shower.edges, 24);
         if (vertices.length < 3 || edges.length !== vertices.length || num(shower.baseHeightMm) < 0 ||
             num(shower.baseHeightMm) > 1000) fail();
+        if (shower.recessDepthMm !== undefined) {
+          requireTenth(num(shower.recessDepthMm));
+          if (num(shower.recessDepthMm) < 0 || num(shower.recessDepthMm) > num(shower.baseHeightMm)) fail();
+        }
         vertices.forEach(rawPoint => {
           const point = arr(rawPoint, 2);
           if (point.length !== 2) fail();

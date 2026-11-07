@@ -330,7 +330,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       }))} />;
   const showerField = (key: keyof Pick<ShowerTray, "drainX" | "drainY" | "drainWidth" |
     "drainLength" | "slopePercent" | "originX" | "originY" | "rotationDeg" |
-    "baseHeightMm">, label: string, min: number, max: number, unit: string) =>
+    "baseHeightMm" | "recessDepthMm">, label: string, min: number, max: number, unit: string) =>
     room?.showerTray && <NumberField label={label} value={room.showerTray[key] ?? 0}
       raw={room.fieldInputs[`shower.${key}`]} min={min} max={max} unit={unit}
       onCommit={(number, text) => update(current => ({ ...current,
@@ -339,7 +339,10 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           showerTray: number !== null && isTenth(number) && number >= min && number <= max
             ? { ...item.showerTray, [key]: number,
               ...(key === "drainWidth" && item.showerTray.drainType === "point"
-                ? { drainLength: number } : {}) } : item.showerTray,
+                ? { drainLength: number } : {}),
+              ...(key === "baseHeightMm" ? {
+                recessDepthMm: Math.min(item.showerTray.recessDepthMm ?? 0, number),
+              } : {}) } : item.showerTray,
           fieldInputs: { ...item.fieldInputs, [`shower.${key}`]: text },
         } : item),
       }))} />;
@@ -359,7 +362,8 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     const originX = Math.round(Math.max(minX, Math.min(maxX - width, centerX - width / 2)) * 10) / 10;
     const originY = Math.round(Math.max(minY, Math.min(maxY - height, centerY - height / 2)) * 10) / 10;
     const initialTray: ShowerTray = {
-      id: `shower-${targetRoom.id}`, originX, originY, rotationDeg: 0, baseHeightMm: 150,
+      id: `shower-${targetRoom.id}`, originX, originY, rotationDeg: 0,
+      baseHeightMm: 150, recessDepthMm: 40,
       vertices: [[0, 0], [width, 0], [width, height], [0, height]],
       edges: [0, 1, 2, 3].map(index => ({ id: `edge-${index + 1}`, kind: "open" as const })),
       drainType: "linear", drainX: width / 2, drainY: Math.min(140, height / 3),
@@ -701,7 +705,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
                   {showerField("originX", "Положение X", -100000, 100000, "мм")}
                   {showerField("originY", "Положение Y", -100000, 100000, "мм")}
                   {showerField("rotationDeg", "Поворот", -360, 360, "°")}
-                  {showerField("baseHeightMm", "Высота основания", 0, 1000, "мм")}
+                  {showerField("baseHeightMm", "Высота поддона", 0, 1000, "мм")}
+                  {showerField("recessDepthMm", "Глубина чаши", 0,
+                    room.showerTray.baseHeightMm ?? 1000, "мм")}
                 </div>
                 <label>Форма<select aria-label="Форма поддона" value={room.showerTray.vertices.length === 6 ? "l" : "custom"}
                   onChange={event => {
