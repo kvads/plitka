@@ -353,6 +353,22 @@ def test_v5_parametric_shower_curb_grows_outside_usable_floor():
     assert floor_region.covers(Point(850 + 100, 300 + 100))
 
 
+def test_v5_adjacent_curb_walls_share_a_mitered_outer_corner():
+    settings = shower_object(
+        originX=100, originY=200,
+        vertices=[(0, 0), (900, 0), (900, 900), (0, 900)],
+        edges=[
+            {'id': 'top', 'kind': 'curb', 'curbHeightMm': 80, 'curbWidthMm': 100},
+            {'id': 'right', 'kind': 'curb', 'curbHeightMm': 80, 'curbWidthMm': 100},
+            {'id': 'bottom', 'kind': 'open'},
+            {'id': 'left', 'kind': 'open'},
+        ],
+    )
+    result = calculate_v5(project(tile=300, shower=settings), 0, 0)
+    footprint = result['shower']['object']['footprint'][0]
+    assert [1100, 100] in footprint
+
+
 def test_v5_parametric_shower_can_touch_two_room_walls_despite_tile_gap():
     result = calculate_v5(project(tile=300, gap=10,
                           shower=shower_object(originX=0, originY=0)), 0, 0)

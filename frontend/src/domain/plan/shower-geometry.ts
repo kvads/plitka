@@ -1,6 +1,58 @@
 import type { ShowerTray } from "./types";
 
 export type ShowerEdge = NonNullable<ShowerTray["edges"]>[number];
+type Point = [number, number];
+
+const cross = (a: Point, b: Point) => a[0] * b[1] - a[1] * b[0];
+
+const lineIntersection = (first: Point, firstDirection: Point,
+  second: Point, secondDirection: Point, vertex: Point, limit: number) => {
+  const denominator = cross(firstDirection, secondDirection);
+  if (Math.abs(denominator) < 1e-8) return null;
+  const delta: Point = [second[0] - first[0], second[1] - first[1]];
+  const ratio = cross(delta, secondDirection) / denominator;
+  const point: Point = [first[0] + firstDirection[0] * ratio,
+    first[1] + firstDirection[1] * ratio];
+  return Math.hypot(point[0] - vertex[0], point[1] - vertex[1]) <= limit ? point : null;
+};
+
+export const curbWallShapes = (points: Point[], edges: ShowerEdge[] | undefined) => {
+  if (points.length < 3 || !edges?.length) return [];
+  const area = points.reduce((sum, point, index) => {
+    const next = points[(index + 1) % points.length];
+    return sum + point[0] * next[1] - next[0] * point[1];
+  }, 0);
+  const direction = area >= 0 ? 1 : -1;
+  const frames = points.map((start, index) => {
+    const edge = edges[index], end = points[(index + 1) % points.length];
+    if (edge?.kind !== "curb" || !edge.curbWidthMm || !end) return null;
+    const dx = end[0] - start[0], dy = end[1] - start[1], length = Math.hypot(dx, dy);
+    if (length < .1) return null;
+    const tangent: Point = [dx / length, dy / length];
+    const outward: Point = [dy / length * direction, -dx / length * direction];
+    const width = edge.curbWidthMm;
+    return { index, start, end, tangent, outward, width,
+      baseOuterStart: [start[0] + outward[0] * width,
+        start[1] + outward[1] * width] as Point,
+      baseOuterEnd: [end[0] + outward[0] * width,
+        end[1] + outward[1] * width] as Point };
+  });
+  return frames.flatMap((frame, index) => {
+    if (!frame) return [];
+    const previous = frames[(index - 1 + frames.length) % frames.length];
+    const next = frames[(index + 1) % frames.length];
+    const startLimit = Math.max(frame.width, previous?.width ?? 0) * 10 + .1;
+    const endLimit = Math.max(frame.width, next?.width ?? 0) * 10 + .1;
+    const outerStart = previous ? lineIntersection(previous.baseOuterStart, previous.tangent,
+      frame.baseOuterStart, frame.tangent, frame.start, startLimit) ?? frame.baseOuterStart
+      : frame.baseOuterStart;
+    const outerEnd = next ? lineIntersection(frame.baseOuterStart, frame.tangent,
+      next.baseOuterStart, next.tangent, frame.end, endLimit) ?? frame.baseOuterEnd
+      : frame.baseOuterEnd;
+    return [{ ...frame, outerStart, outerEnd,
+      points: [frame.start, frame.end, outerEnd, outerStart] as Point[] }];
+  });
+};
 
 const distanceToSegment = (point: [number, number], start: [number, number], end: [number, number]) => {
   const dx = end[0] - start[0], dy = end[1] - start[1];

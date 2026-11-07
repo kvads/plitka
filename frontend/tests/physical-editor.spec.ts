@@ -8,7 +8,7 @@ import { openingCorners, openingOffset } from "../src/domain/plan/physical-openi
 import { alignCubeAttachmentToGuides, alignToWallEndProjection, centeredWallGeometry, immediateJointAngles,
   nearestCubeAttachment } from "../src/domain/plan/physical-draw";
 import { newRoom } from "../src/domain/plan/rooms";
-import { curbAdjustedTray } from "../src/domain/plan/shower-geometry";
+import { curbAdjustedTray, curbWallShapes } from "../src/domain/plan/shower-geometry";
 import { readFile } from "node:fs/promises";
 
 test("project angles are displayed as whole degrees", () => {
@@ -34,6 +34,20 @@ test("curb thickness keeps its outer face attached to the room wall", () => {
   expect(thinner.originY).toBe(80);
   const removed = curbAdjustedTray(thinner, 0, { id: "edge-0", kind: "open" }, polygon);
   expect(removed.originY).toBe(0);
+});
+
+test("adjacent curb walls share one square outer corner", () => {
+  const points: Point[] = [[0, 0], [900, 0], [900, 900], [0, 900]];
+  const edges = [
+    { id: "top", kind: "curb" as const, curbHeightMm: 80, curbWidthMm: 100 },
+    { id: "right", kind: "curb" as const, curbHeightMm: 80, curbWidthMm: 100 },
+    { id: "bottom", kind: "open" as const },
+    { id: "left", kind: "open" as const },
+  ];
+  const shapes = curbWallShapes(points, edges);
+  expect(shapes).toHaveLength(2);
+  expect(shapes[0].outerEnd).toEqual([1000, -100]);
+  expect(shapes[1].outerStart).toEqual([1000, -100]);
 });
 
 test("physical v6 measures both exposed spans of a wall touched by a branch", () => {
@@ -1228,7 +1242,7 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
       document.rooms[0].showerTray.edges[0].kind,
       document.rooms[0].showerTray.edges[0].curbWidthMm];
   })).toEqual([6, "curb", 90]);
-  await expect(page.locator('[data-shower-curb-width="90"]')).toHaveCount(1);
+  await expect(page.locator("[data-shower-curb-width]")).toHaveCount(1);
   if (process.env.PW_VISUAL_OUTPUT) await page.screenshot({
     path: process.env.PW_VISUAL_OUTPUT.replace(/\.png$/, "-shower-curb-wall.png"), fullPage: true,
   });

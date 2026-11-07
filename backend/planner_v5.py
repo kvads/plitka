@@ -5,7 +5,7 @@ import math
 import numpy as np
 import shapely
 from shapely.affinity import rotate, translate
-from shapely.geometry import Polygon, MultiPolygon, LineString, box
+from shapely.geometry import Polygon, MultiPolygon, box
 from shapely.ops import unary_union
 
 from .planner import EPS, dominates, features, objectives, prepare, rings
@@ -113,22 +113,61 @@ def _drain_polygon(shower):
                shower.drainX + length / 2, shower.drainY + width / 2)
 
 
-def _object_outer_footprint(shower, local):
+def _line_intersection(first, first_direction, second, second_direction, vertex, limit):
+    denominator = (first_direction[0] * second_direction[1] -
+                   first_direction[1] * second_direction[0])
+    if abs(denominator) < 1e-8:
+        return None
+    delta = (second[0] - first[0], second[1] - first[1])
+    ratio = (delta[0] * second_direction[1] -
+             delta[1] * second_direction[0]) / denominator
+    point = (first[0] + first_direction[0] * ratio,
+             first[1] + first_direction[1] * ratio)
+    return point if math.dist(point, vertex) <= limit else None
+
+
+def _object_curb_shapes(shower, local):
     if shower.edges is None:
-        return local
+        return []
     coords = list(local.exterior.coords)[:-1]
-    outward_sign = -1 if local.exterior.is_ccw else 1
-    walls = [local]
+    direction = 1 if local.exterior.is_ccw else -1
+    frames = []
     for index, edge in enumerate(shower.edges):
         if edge.kind != 'curb' or not edge.curbWidthMm:
+            frames.append(None)
             continue
         start, end = coords[index], coords[(index + 1) % len(coords)]
-        walls.append(LineString([start, end]).buffer(
-            outward_sign * edge.curbWidthMm,
-            single_sided=True,
-            cap_style='square',
-            join_style='mitre',
-        ))
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        length = math.hypot(dx, dy)
+        tangent = (dx / length, dy / length)
+        outward = (dy / length * direction, -dx / length * direction)
+        width = edge.curbWidthMm
+        frames.append({'index': index, 'start': start, 'end': end, 'tangent': tangent,
+            'width': width,
+            'base_start': (start[0] + outward[0] * width,
+                           start[1] + outward[1] * width),
+            'base_end': (end[0] + outward[0] * width,
+                         end[1] + outward[1] * width)})
+    shapes = []
+    for index, frame in enumerate(frames):
+        if frame is None:
+            continue
+        previous = frames[(index - 1) % len(frames)]
+        following = frames[(index + 1) % len(frames)]
+        start_limit = max(frame['width'], previous['width'] if previous else 0) * 10 + .1
+        end_limit = max(frame['width'], following['width'] if following else 0) * 10 + .1
+        outer_start = (_line_intersection(previous['base_start'], previous['tangent'],
+            frame['base_start'], frame['tangent'], frame['start'], start_limit)
+            if previous else None) or frame['base_start']
+        outer_end = (_line_intersection(frame['base_start'], frame['tangent'],
+            following['base_start'], following['tangent'], frame['end'], end_limit)
+            if following else None) or frame['base_end']
+        shapes.append(Polygon([frame['start'], frame['end'], outer_end, outer_start]))
+    return shapes
+
+
+def _object_outer_footprint(shower, local):
+    walls = [local, *_object_curb_shapes(shower, local)]
     return _snap_geometry(unary_union(walls))
 
 

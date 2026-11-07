@@ -5,6 +5,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import textureUrl from "../../assets/tile-texture.svg";
 import type { Layout, Point } from "../../types";
 import type { PhysicalGraphV5, PhysicalPolygonV5 } from "../../domain/plan/types";
+import { curbWallShapes } from "../../domain/plan/shower-geometry";
 
 export type RoomPreview3DRoom = {
   id: string;
@@ -33,11 +34,6 @@ const pointInRing = (point: Point, ring: Point[]) => {
   }
   return inside;
 };
-
-const signedArea = (ring: Point[]) => ring.reduce((sum, [x, y], index) => {
-  const [nextX, nextY] = ring[(index + 1) % ring.length];
-  return sum + x * nextY - nextX * y;
-}, 0) / 2;
 
 const pointInRegions = (point: Point, regions: Point[][][]) => regions.some((rings) =>
   Boolean(rings[0]?.length) && pointInRing(point, rings[0]) &&
@@ -325,7 +321,13 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
         line.userData.showerBreak = zone.id;
         scene.add(line);
       }));
-      room.layout?.shower?.object?.surfaces.forEach(surface => {
+      const showerObject = room.layout?.shower?.object;
+      const floorRing = showerObject?.floorRegions[0]?.[0]
+        ?.slice(0, showerObject.edges.length) ?? [];
+      const curbShapes = curbWallShapes(floorRing, showerObject?.edges);
+      const curbShapeByEdge = new Map(curbShapes.map(shape =>
+        [showerObject!.edges[shape.index].id, shape]));
+      showerObject?.surfaces.forEach(surface => {
         const dx = surface.end[0] - surface.start[0];
         const dy = surface.end[1] - surface.start[1];
         const length = Math.hypot(dx, dy);
@@ -333,29 +335,37 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
         const isCurb = surface.kind === "curb";
         const surfaceHeight = isCurb ? surface.outsideHeightMm ?? surface.heightMm : surface.heightMm;
         const height = surfaceHeight / 1000;
-        const depth = Math.max(isCurb ? surface.widthMm / 1000 : .012, .012);
-        const geometry = new THREE.BoxGeometry(length / 1000, height, depth);
+        const curbShape = isCurb ? curbShapeByEdge.get(surface.edgeId) : undefined;
+        let geometry: THREE.BufferGeometry;
+        if (curbShape) {
+          const shape = new THREE.Shape();
+          curbShape.points.forEach(([x, y], index) => {
+            const px = (x - cx) / 1000, py = (y - cy) / 1000;
+            if (index === 0) shape.moveTo(px, py); else shape.lineTo(px, py);
+          });
+          shape.closePath();
+          geometry = new THREE.ExtrudeGeometry(shape,
+            { depth: height, bevelEnabled: false, steps: 1 });
+          geometry.rotateX(-Math.PI / 2);
+        } else {
+          geometry = new THREE.BoxGeometry(length / 1000, height, .012);
+        }
         geometries.push(geometry);
         const mesh = new THREE.Mesh(geometry, tileMaterial);
         mesh.name = `shower-${surface.kind}-${surface.edgeId}`;
         mesh.userData.showerSurface = surface.kind;
-        mesh.rotation.y = Math.atan2(dy, dx);
-        let middleX = (surface.start[0] + surface.end[0]) / 2;
-        let middleY = (surface.start[1] + surface.end[1]) / 2;
-        if (isCurb) {
-          const floorRing = room.layout?.shower?.object?.floorRegions[0]?.[0] ?? [];
-          const direction = signedArea(floorRing) >= 0 ? 1 : -1;
-          middleX += dy / length * surface.widthMm / 2 * direction;
-          middleY += -dx / length * surface.widthMm / 2 * direction;
+        if (curbShape) {
+          mesh.position.set(0, 0, 0);
+        } else {
+          mesh.rotation.y = Math.atan2(dy, dx);
+          mesh.position.set(((surface.start[0] + surface.end[0]) / 2 - cx) / 1000,
+            height / 2,
+            -((surface.start[1] + surface.end[1]) / 2 - cy) / 1000);
         }
-        mesh.position.set((middleX - cx) / 1000,
-          height / 2,
-          -(middleY - cy) / 1000);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
         scene.add(mesh);
       });
-      const showerObject = room.layout?.shower?.object;
       if (isolateShower && showerObject?.footprint[0]?.length) {
         const ring = showerObject.floorRegions[0]?.[0] ?? showerObject.footprint[0];
         const objectLift = showerObject.baseHeightMm - showerObject.recessDepthMm;

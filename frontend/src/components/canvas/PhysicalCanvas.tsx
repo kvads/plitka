@@ -9,6 +9,7 @@ import { alignCubeAttachmentToGuides, alignToWallEndProjection, centeredWallGeom
   immediateJointAngles, nearestCubeAttachment, type PhysicalAttachment,
   type WallEndAlignment } from "../../domain/plan/physical-draw";
 import { openingCorners, openingOffset } from "../../domain/plan/physical-openings";
+import { curbWallShapes } from "../../domain/plan/shower-geometry";
 
 type Viewport = ProjectDocumentV6["viewport"];
 type Handle = "start" | "center" | "end";
@@ -786,6 +787,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         return sum + point[0] * next[1] - next[0] * point[1];
       }, 0) / 2;
       const orientation = signedArea >= 0 ? 1 : -1;
+      const curbShapes = curbWallShapes(points, tray.edges);
       const selectedVertexIndex = selectedShowerVertex?.roomId === roomId
         ? selectedShowerVertex.index : null;
       const edgeMeasurements = selected ? points.map((point, index) => {
@@ -852,25 +854,11 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
             : event.key === "ArrowDown" ? { x: 0, y: -10 } : null;
           if (delta) { event.preventDefault(); onMoveShower?.(roomId, delta); }
         }}>
-        {points.map((point, index) => {
-          const edge = tray.edges?.[index];
-          if (edge?.kind !== "curb" || !edge.curbWidthMm) return null;
-          const end = points[(index + 1) % points.length];
-          const dx = end[0] - point[0], dy = end[1] - point[1];
-          const length = Math.hypot(dx, dy);
-          if (length < .1) return null;
-          const outward = orientation > 0 ? { x: dy / length, y: -dx / length }
-            : { x: -dy / length, y: dx / length };
-          const outerStart: [number, number] = [point[0] + outward.x * edge.curbWidthMm,
-            point[1] + outward.y * edge.curbWidthMm];
-          const outerEnd: [number, number] = [end[0] + outward.x * edge.curbWidthMm,
-            end[1] + outward.y * edge.curbWidthMm];
-          const strip = [point, end, outerEnd, outerStart];
-          return <path key={`curb-width-${index}`} data-shower-curb-width={edge.curbWidthMm}
-            d={strip.map(([x, y], stripIndex) => `${stripIndex ? "L" : "M"}${x} ${-y}`).join(" ") + " Z"}
+        {curbShapes.map(shape =>
+          <path key={`curb-width-${shape.index}`} data-shower-curb-width={shape.width}
+            d={shape.points.map(([x, y], stripIndex) => `${stripIndex ? "L" : "M"}${x} ${-y}`).join(" ") + " Z"}
             fill="#b7792f99" stroke="#7b4b14"
-            strokeWidth={Math.max(1.2 / pixelScale, .2)} pointerEvents="none" />;
-        })}
+            strokeWidth={Math.max(1.2 / pixelScale, .2)} pointerEvents="none" />)}
         <path d={d} fill="#dce9e1" fillOpacity=".72" stroke={selected ? "#176044" : "#527263"}
           strokeWidth={Math.max((selected ? 3 : 2) / pixelScale, .25)} />
         {points.map(([x, y], index) => {
