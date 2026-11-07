@@ -67,6 +67,7 @@ const wallPath = (corners: Point[]) =>
 const displayTenth = (value: number) => value.toLocaleString("ru-RU", {
   minimumFractionDigits: 1, maximumFractionDigits: 1,
 });
+const displayMillimeters = (value: number) => Math.round(value).toLocaleString("ru-RU");
 
 const precisePoint = (point: Point): Point =>
   ({ x: roundTenth(point.x), y: roundTenth(point.y) });
@@ -477,7 +478,29 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   const selectedFace = faces.find(face => face.topologyKey === selectedRoomKey);
   const splitDimensions = splitWallDimensions(
     acceptedPreview?.graph ?? graph, acceptedPreview?.wallArea ?? wallArea, 17 / pixelScale);
-  const shownSplitDimensions = highlightRooms ? [] : splitDimensions;
+  const selectedWallLengthDimension = selectedWallId && selectedHandle ? (() => {
+    const wall = graph.walls.find(candidate => candidate.id === selectedWallId);
+    if (!wall) return null;
+    const [start, end] = wall.drawnEdge;
+    const dx = end.x - start.x, dy = end.y - start.y;
+    const lengthMm = Math.hypot(dx, dy);
+    if (lengthMm < .1) return null;
+    const midpoint = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+    const normal = { x: -dy / lengthMm, y: dx / lengthMm };
+    const wallCenter = wall.corners.reduce((sum, corner) => ({
+      x: sum.x + corner.x / wall.corners.length,
+      y: sum.y + corner.y / wall.corners.length,
+    }), { x: 0, y: 0 });
+    const towardWall = (wallCenter.x - midpoint.x) * normal.x +
+      (wallCenter.y - midpoint.y) * normal.y;
+    const outward = towardWall >= 0 ? -1 : 1;
+    return { lengthMm, anchor: {
+      x: midpoint.x + normal.x * outward * 17 / pixelScale,
+      y: midpoint.y + normal.y * outward * 17 / pixelScale,
+    } };
+  })() : null;
+  const shownSplitDimensions = highlightRooms ? [] : selectedWallLengthDimension
+    ? splitDimensions.filter(dimension => dimension.wallId !== selectedWallId) : splitDimensions;
   const selectedFaceDimensions = highlightRooms ? selectedFace?.freeDimensions ?? [] : [];
   const previewLength = previewStart && previewEnd && wallTool
     ? Math.hypot(previewEnd.x - previewStart.x, previewEnd.y - previewStart.y) : 0;
@@ -580,14 +603,14 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
           y={-(hoverAlignment.from.y + hoverAlignment.to.y) / 2 - 10 / pixelScale}
           textAnchor="middle" fontSize={12 / pixelScale} fontWeight={600}
           fill="#7b371c" stroke="#fff" strokeWidth={3 / pixelScale} paintOrder="stroke">
-          {displayTenth(Math.hypot(hoverAlignment.to.x - hoverAlignment.from.x,
+          {displayMillimeters(Math.hypot(hoverAlignment.to.x - hoverAlignment.from.x,
             hoverAlignment.to.y - hoverAlignment.from.y))} мм
         </text>
       </g>}
       {start && wallTool && mobile && guideLabels.map((point, index) =>
         <text key={`ruler-${index}`} x={point.x + 10 / pixelScale}
           y={-point.y - 9 / pixelScale} fontSize={11 / pixelScale} fill="#444">
-          {displayTenth(Math.hypot(point.x - start.x, point.y - start.y))} мм · {displayTenth(measuredGuideAngle(point))}°
+          {displayMillimeters(Math.hypot(point.x - start.x, point.y - start.y))} мм · {displayTenth(measuredGuideAngle(point))}°
         </text>)}
     </g>
     {mobile && wallTool && <g pointerEvents="none">
@@ -725,7 +748,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         y={-(previewStart.y + previewEnd.y) / 2 - 18 / pixelScale}
         textAnchor="middle" fontSize={13 / pixelScale} fontWeight={600}
         fill="#222" stroke="#fff" strokeWidth={3 / pixelScale} paintOrder="stroke">
-        {displayTenth(previewLength)} мм
+        {displayMillimeters(previewLength)} мм
       </text>}
       {previewAngles.map((angle, index) => jointAngleMark(angle, `${angle.junctionId}:${index}`, true))}
     </g>
@@ -824,8 +847,14 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         x={dimension.anchor.x} y={-dimension.anchor.y}
         fill="#333" fontSize={12 / pixelScale}
         stroke="#fff" strokeWidth={3 / pixelScale} paintOrder="stroke">
-        {displayTenth(dimension.lengthMm)} мм
+        {displayMillimeters(dimension.lengthMm)} мм
       </text>)}
+      {selectedWallLengthDimension && <text data-selected-wall-length
+        x={selectedWallLengthDimension.anchor.x} y={-selectedWallLengthDimension.anchor.y}
+        fill="#333" fontSize={12 / pixelScale} fontWeight={650}
+        stroke="#fff" strokeWidth={3 / pixelScale} paintOrder="stroke">
+        {displayMillimeters(selectedWallLengthDimension.lengthMm)} мм
+      </text>}
       {selectedWallId && openJointAngles.filter(angle => angle.wallId === selectedWallId)
         .map((angle, index) => jointAngleMark(angle,
           `${angle.junctionId}:${angle.adjacentWallId}:${index}`))}
@@ -841,7 +870,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         y={-dimension.anchor.y}
         fill="#213d33" fontSize={13 / pixelScale} fontWeight={650}
         stroke="#fff" strokeWidth={4 / pixelScale} paintOrder="stroke">
-        {displayTenth(dimension.valueMm)} мм
+        {displayMillimeters(dimension.valueMm)} мм
       </text>)}
     </g>
   </svg>

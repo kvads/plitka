@@ -421,7 +421,7 @@ test("physical v6 draws at free coordinates and previews wall and branch lengths
   const end = await clientPoint(510.3, 453.7);
   await page.mouse.click(start.x, start.y);
   await page.mouse.move(end.x, end.y);
-  await expect(canvas.locator("[data-wall-preview-length]")).toContainText("410,3 мм");
+  await expect(canvas.locator("[data-wall-preview-length]")).toContainText("410 мм");
   await expect(canvas.locator('[data-wall-segment-length="host"]')).toHaveCount(2);
   await page.mouse.click(end.x, end.y);
   await expect.poll(() => page.evaluate(() =>
@@ -432,8 +432,32 @@ test("physical v6 draws at free coordinates and previews wall and branch lengths
   expect(edge[1].y).toBe(403.7);
   await expect(canvas.locator('[data-wall-segment-length="host"]')).toHaveCount(2);
   const lengths = await canvas.locator('[data-wall-segment-length="host"]').allTextContents();
-  expect(lengths).toContain("403,7 мм");
-  expect(lengths).toContain("496,3 мм");
+  expect(lengths).toContain("404 мм");
+  expect(lengths).toContain("496 мм");
+});
+
+test("physical v6 rounds wall lengths and keeps the full length visible for a selected point", async ({ page }) => {
+  const document = v6PhysicalDocument() as unknown as ProjectDocumentV6;
+  document.plan.draft = { walls: [{ id: "precise-wall",
+    drawnEdge: [{ x: 0, y: 0 }, { x: 0, y: 1901.7 }], side: "right", thicknessMm: 100,
+    corners: [{ x: 0, y: 0 }, { x: 0, y: 1901.7 },
+      { x: 100, y: 1901.7 }, { x: 100, y: 0 }],
+  }], junctions: [] };
+  document.plan.pendingEdit = null;
+  document.plan.restorePoint = null;
+  document.viewport = { centerX: 50, centerY: 950, zoom: 4, gridStepMm: 100 };
+  await page.goto("/");
+  await page.evaluate(doc => localStorage.setItem("plitka-projects-v6",
+    JSON.stringify({ schemaVersion: 6, projects: [doc] })), document);
+  await page.goto("/#project/physical-v6-fixture");
+  await page.locator('[data-wall-id="precise-wall"]').click();
+  await page.getByRole("button", { name: "Конец", exact: true }).click();
+  const label = page.locator("[data-selected-wall-length]");
+  await expect(label).toBeVisible();
+  await expect.poll(async () => (await label.textContent())?.replace(/\s/g, " ").trim()).toBe("1 902 мм");
+  await page.getByRole("group", { name: "Сдвиг точки стены" })
+    .getByRole("button", { name: "Сдвинуть точку стены ↑ на 1 мм" }).click();
+  await expect.poll(async () => (await label.textContent())?.replace(/\s/g, " ").trim()).toBe("1 903 мм");
 });
 
 test("physical v6 replays a saved pending wall command", async ({ page }) => {
