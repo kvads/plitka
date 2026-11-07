@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Check, ChevronsLeft, ChevronsRight, Cuboid, DoorOpen, FolderOpen, Grid3X3, LoaderCircle, MousePointer2, PencilRuler, RotateCcw, Trash2, X } from "lucide-react";
+import { ArrowLeft, Bath, Check, ChevronsLeft, ChevronsRight, Cuboid, DoorOpen, FolderOpen, Grid3X3, LoaderCircle, MousePointer2, PencilRuler, RotateCcw, Trash2, X } from "lucide-react";
 import PhysicalCanvas from "./PhysicalCanvas";
 import ProjectMenu from "./ProjectMenu";
 import { usePhysicalProject } from "../../domain/plan/usePhysicalProject";
@@ -81,6 +81,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
   const [layoutScope, setLayoutScope] = useState<"room" | "through">(
     () => initial.sharedGrid ? "through" : "room");
   const [room3D, setRoom3D] = useState(false);
+  const [showerTool, setShowerTool] = useState(false);
   const [compactView, setCompactView] = useState(() => window.matchMedia(compactViewQuery).matches);
   const [viewRoomId, setViewRoomId] = useState(initial.selectedRoomId);
   const [viewViewport, setViewViewport] = useState(initial.viewport);
@@ -342,28 +343,33 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           fieldInputs: { ...item.fieldInputs, [`shower.${key}`]: text },
         } : item),
       }))} />;
-  const toggleShowerTray = (enabled: boolean) => {
-    if (!room) return;
-    const outline = (selectedFace?.polygon?.outline ?? []) as [number, number][];
+  const toggleShowerTray = (enabled: boolean, placement?: { x: number; y: number },
+    targetRoom = room, targetFace = selectedFace) => {
+    if (!targetRoom) return;
+    const outline = (targetFace?.polygon?.outline ?? []) as [number, number][];
     const xs = outline.map(point => point[0]), ys = outline.map(point => point[1]);
-    const centerX = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0;
-    const centerY = ys.length ? (Math.min(...ys) + Math.max(...ys)) / 2 : 0;
+    const minX = xs.length ? Math.min(...xs) : 0, maxX = xs.length ? Math.max(...xs) : 1200;
+    const minY = ys.length ? Math.min(...ys) : 0, maxY = ys.length ? Math.max(...ys) : 1200;
+    const centerX = placement?.x ?? (minX + maxX) / 2;
+    const centerY = placement?.y ?? (minY + maxY) / 2;
     const roomWidth = xs.length ? Math.max(...xs) - Math.min(...xs) : 1200;
     const roomHeight = ys.length ? Math.max(...ys) - Math.min(...ys) : 1200;
     const width = Math.max(300, Math.min(900, Math.floor(roomWidth * .7 / 10) * 10));
     const height = Math.max(300, Math.min(900, Math.floor(roomHeight * .7 / 10) * 10));
-    const originX = Math.round((centerX - width / 2) * 10) / 10;
-    const originY = Math.round((centerY - height / 2) * 10) / 10;
+    const originX = Math.round(Math.max(minX, Math.min(maxX - width, centerX - width / 2)) * 10) / 10;
+    const originY = Math.round(Math.max(minY, Math.min(maxY - height, centerY - height / 2)) * 10) / 10;
     const initialTray: ShowerTray = {
-      id: `shower-${room.id}`, originX, originY, rotationDeg: 0, baseHeightMm: 150,
+      id: `shower-${targetRoom.id}`, originX, originY, rotationDeg: 0, baseHeightMm: 150,
       vertices: [[0, 0], [width, 0], [width, height], [0, height]],
       edges: [0, 1, 2, 3].map(index => ({ id: `edge-${index + 1}`, kind: "open" as const })),
-      drainType: "point", drainX: width / 2, drainY: height / 2,
-      drainWidth: 100, drainLength: 100, drainOrientation: "horizontal", slopePercent: 2,
+      drainType: "linear", drainX: width / 2, drainY: Math.min(140, height / 3),
+      drainWidth: 70, drainLength: Math.max(200, Math.min(700, width - 100)),
+      drainOrientation: "horizontal", slopePercent: 2,
     };
     setLayoutScope("room");
     update(current => ({ ...current, sharedGrid: enabled ? null : current.sharedGrid,
-      rooms: current.rooms.map(item => item.id === room.id
+      selectedRoomId: targetRoom.id,
+      rooms: current.rooms.map(item => item.id === targetRoom.id
         ? { ...item, showerTray: enabled ? item.showerTray ?? initialTray : null } : item) }));
   };
   const updateShowerTray = (change: Partial<ShowerTray>) => {
@@ -373,20 +379,24 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         ? { ...item, showerTray: { ...item.showerTray, ...change } } : item) }));
   };
   useEffect(() => {
-    if (!response || response.status === "invalid" || !responseMatchesDraft) return;
+    if (!response || !responseMatchesDraft) return;
     const faceKeys = new Set(response.faces.map(face => face.topologyKey));
     const known = new Set(doc.rooms.map(item => item.topologyKey));
     const missing = response.faces.filter(face => !known.has(face.topologyKey));
     const rebinding = doc.rooms.some(item => (item.binding === "attached") !== faceKeys.has(item.topologyKey ?? ""));
-    if (!missing.length && !rebinding) return;
+    const orphanShower = doc.rooms.some(item => item.showerTray && !faceKeys.has(item.topologyKey ?? ""));
+    if (!missing.length && !rebinding && !orphanShower) return;
     update(current => {
-      const next = current.rooms.map(item => ({ ...item,
-        binding: faceKeys.has(item.topologyKey ?? "") ? "attached" as const : "detached" as const }));
+      const next = current.rooms.map(item => {
+        const attached = faceKeys.has(item.topologyKey ?? "");
+        return { ...item, binding: attached ? "attached" as const : "detached" as const,
+          showerTray: attached ? item.showerTray : null };
+      });
       let suffix = Math.max(0, ...next.map(item => Number(/^Помещение (\d+)$/.exec(item.name)?.[1] ?? 0)));
       for (const face of missing) {
         if (next.some(item => item.topologyKey === face.topologyKey)) continue;
         const created = newRoom(face.topologyKey, `Помещение ${++suffix}`);
-        next.push({ ...created, confirmed: null });
+        next.push({ ...created, showerTray: created.showerTray ?? null, confirmed: null });
       }
       return { ...current, rooms: next };
     });
@@ -398,6 +408,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     setProjectMenu(false);
     setWallTool(false);
     setDoorTool(false);
+    setShowerTool(false);
     setInteractionTool("select");
   };
   const showRoomPreview = () => {
@@ -408,6 +419,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
     setProjectMenu(false);
     setWallTool(false);
     setDoorTool(false);
+    setShowerTool(false);
     setInteractionTool("select");
   };
   useEffect(() => {
@@ -473,9 +485,16 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
       highlightRooms={layoutMode} roomMissing={roomMissing}
       roomNames={Object.fromEntries(doc.rooms.filter(item => item.topologyKey).map(item => [item.topologyKey!, item.name]))}
       layouts={layoutMode ? visibleLayouts : []}
-      showerObjects={layoutMode ? doc.rooms.flatMap(candidate => candidate.showerTray?.vertices
+      showerObjects={layoutMode ? doc.rooms.flatMap(candidate => candidate.binding === "attached" && candidate.showerTray?.vertices
         ? [{ roomId: candidate.id, tray: candidate.showerTray, selected: candidate.id === room?.id }]
         : []) : []}
+      showerTool={!compactView && layoutMode && showerTool}
+      onPlaceShower={(roomKey, point) => {
+        const targetRoom = doc.rooms.find(candidate => candidate.topologyKey === roomKey);
+        const targetFace = response?.faces.find(candidate => candidate.topologyKey === roomKey);
+        if (targetRoom && targetFace) toggleShowerTray(true, point, targetRoom, targetFace);
+        setShowerTool(false);
+      }}
       onSelectRoom={key => {
         const id = doc.rooms.find(item => item.topologyKey === key)?.id ?? null;
         if (compactView) setViewRoomId(id);
@@ -560,6 +579,13 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         onClick={() => activateInteractionTool("delete")}>
         {deleteWallLoading ? <LoaderCircle className="is-loading" aria-hidden="true" />
           : <Trash2 aria-hidden="true" />}
+      </button>
+    </div>}
+    {!compactView && layoutMode && !room3D && <div className="physical-interaction-tools shower-placement-tools"
+      role="toolbar" aria-label="Инструменты раскладки" data-overlay>
+      <button type="button" aria-label="Поддон" title="Разместить душевой поддон"
+        aria-pressed={showerTool} onClick={() => setShowerTool(value => !value)}>
+        <Bath aria-hidden="true" />
       </button>
     </div>}
     {deleteWallError && <div className="physical-delete-error" role="alert" data-overlay>
@@ -666,11 +692,9 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
           {(layoutScope === "through" || !linked) && roomField("rules", "angle", "Угол раскладки", 0, 89.9, "°")}
           <fieldset className="shower-tray-fields">
             <legend>Душевой поддон</legend>
-            <label className="shower-tray-toggle">
-              <input type="checkbox" checked={!!room.showerTray}
-                onChange={event => toggleShowerTray(event.target.checked)} />
-              <span>Добавить отдельный поддон</span>
-            </label>
+            {!room.showerTray && <p className="muted">Выберите инструмент «Поддон» и укажите место внутри помещения.</p>}
+            {room.showerTray && <button type="button" className="shower-remove"
+              onClick={() => toggleShowerTray(false)}><Trash2 aria-hidden="true" />Удалить поддон</button>}
             {room.showerTray && <>
               {room.showerTray.vertices && <>
                 <div className="shower-object-grid">
@@ -691,7 +715,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
                     updateShowerTray({ vertices, edges: vertices.map((_, index) => ({
                       id: `edge-${index + 1}`, kind: "open",
                     })), ...(event.target.value === "l"
-                      ? { drainX: Math.round(width * .3 * 10) / 10,
+                      ? { drainX: Math.round(width * .5 * 10) / 10,
                         drainY: Math.round(height * .3 * 10) / 10 } : {}) });
                   }}>
                   <option value="custom">Прямоугольник / своя</option>

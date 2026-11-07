@@ -42,6 +42,7 @@ export type Part = {
   zoneId?: string | null;
   surfaceWidth?: number;
   surfaceHeight?: number;
+  surfaceId?: "room-floor" | "shower-top";
 };
 export type SlopeZone = {
   id: string;
@@ -71,6 +72,9 @@ export type Layout = {
       surfaces: { id: string; edgeId: string; kind: "fascia" | "curb";
         edgeKind: "wall" | "open" | "curb" | "entry"; start: Point; end: Point;
         lengthMm: number; heightMm: number; widthMm: number; areaMm2: number }[];
+      surfaceParts: { id: string; surfaceId: string;
+        surfaceKind: "fascia" | "curb-top" | "curb-inside" | "curb-outside";
+        width: number; height: number; area: number; full: boolean; issues: string[] }[];
     };
   };
   metrics: {

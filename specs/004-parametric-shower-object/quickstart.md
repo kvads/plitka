@@ -12,6 +12,8 @@ Baseline before implementation: backend `111 passed`; frontend production build 
 
 Result after implementation (2026-11-07): backend `113 passed`; frontend production build passed; targeted Playwright create/configure/calculate/3D/export scenario passed.
 
+Placement-tool follow-up (2026-11-07): backend `114 passed`; production build and targeted Playwright scenario passed. The scenario places the object by clicking inside the room, uses an off-centre 70 × 460 mm linear drain, combines room-floor and tray-top layouts, exports fascia and three curb surface families, and verifies that clearing the owning room removes its shower object. Visual 3D output was inspected at `/tmp/shower-tool-compound-3d.png`.
+
 ## Scenario A: separate raised rectangle
 
 Create a room, add a 1200 × 900 × 150 mm shower object and place it near two walls. Confirm the room floor remains separate, two exposed fascias appear, save/reload preserves the object, and 3D shows a raised platform.

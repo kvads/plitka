@@ -49,6 +49,18 @@
 
 - [x] T017 Update `README.md` and complete all automated and visual scenarios from `specs/004-parametric-shower-object/quickstart.md`
 
+## Phase 7: Placement tool and compound material calculation
+
+- [x] T018 Add failing compound floor/top/fascia/curb material tests in `backend/tests/test_planner.py`
+- [x] T019 Add failing browser coverage for the «Поддон» placement tool, off-centre linear drain and room deletion lifecycle in `frontend/tests/physical-editor.spec.ts`
+- [x] T020 Implement the canvas placement tool in `frontend/src/components/canvas/PhysicalWorkflow.tsx` and `frontend/src/components/canvas/PhysicalCanvas.tsx`
+- [x] T021 Make the default and editable drain narrow, linear and independently positioned in object-local coordinates
+- [x] T022 Calculate room floor minus footprint together with tray top in `backend/planner_v5.py`
+- [x] T023 Generate tile details for fascia, curb top, inside and outside surfaces in `backend/planner_v5.py`
+- [x] T024 Extend response validation, metrics, CSV and 3D rendering for compound surface details
+- [x] T025 Remove orphan shower objects with their room and cover the lifecycle in browser tests
+- [x] T026 Run backend, build, browser and visual 3D validation; update quickstart and deploy production release
+
 ## Dependencies
 
 - T002–T004 block all user stories.

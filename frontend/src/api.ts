@@ -127,7 +127,8 @@ export async function api<T>(
       ['tiles', 'full', 'cut', 'fragments', 'warnings'].every(key =>
         Number.isSafeInteger(metrics[key]) && (metrics[key] as number) >= 0) &&
       parts.every(p => points(p.rings) && Array.isArray(p.center) && p.center.every(isTenth) &&
-        (p.zoneId === null || typeof p.zoneId === 'string')) &&
+        (p.zoneId === null || typeof p.zoneId === 'string') &&
+        (p.surfaceId === undefined || ['room-floor', 'shower-top'].includes(String(p.surfaceId)))) &&
       Array.isArray(v.region) && v.region.every(points) &&
       (v.shower === undefined || (() => {
         if (!record(v.shower) || !record(v.shower.drain) || !Array.isArray(v.shower.zones) ||
@@ -141,12 +142,18 @@ export async function api<T>(
           const object = v.shower.object;
           if (!record(object) || typeof object.id !== 'string' || !points(object.footprint) ||
               ![object.originX, object.originY, object.rotationDeg, object.baseHeightMm].every(tenth) ||
-              !Array.isArray(object.edges) || !Array.isArray(object.surfaces)) return false;
+              !Array.isArray(object.edges) || !Array.isArray(object.surfaces) ||
+              !Array.isArray(object.surfaceParts)) return false;
           return object.edges.every(edge => record(edge) && typeof edge.id === 'string' &&
             ['wall', 'open', 'curb', 'entry'].includes(String(edge.kind))) &&
             object.surfaces.every(surface => record(surface) && typeof surface.id === 'string' &&
               typeof surface.edgeId === 'string' && ['fascia', 'curb'].includes(String(surface.kind)) &&
-              [surface.lengthMm, surface.heightMm, surface.widthMm, surface.areaMm2].every(tenth));
+              [surface.lengthMm, surface.heightMm, surface.widthMm, surface.areaMm2].every(tenth)) &&
+            object.surfaceParts.every(part => record(part) && typeof part.id === 'string' &&
+              typeof part.surfaceId === 'string' &&
+              ['fascia', 'curb-top', 'curb-inside', 'curb-outside'].includes(String(part.surfaceKind)) &&
+              [part.width, part.height, part.area].every(tenth) && typeof part.full === 'boolean' &&
+              Array.isArray(part.issues));
         })();
         return validObject && v.shower.zones.every(zone => record(zone) && typeof zone.id === 'string' &&
           ['east', 'west', 'north', 'south'].includes(String(zone.axis)) && points(zone.rings) &&

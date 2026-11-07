@@ -337,7 +337,8 @@ def test_v5_parametric_shower_object_uses_local_shape_and_exposes_surfaces():
     assert {surface['kind'] for surface in object_result['surfaces']} == {'fascia', 'curb'}
     assert len([surface for surface in object_result['surfaces'] if surface['kind'] == 'fascia']) == 4
     assert len([surface for surface in object_result['surfaces'] if surface['kind'] == 'curb']) == 1
-    assert all(part['zoneId'] for part in result['parts'])
+    assert all(part['zoneId'] for part in result['parts']
+               if part['surfaceId'] == 'shower-top')
 
 
 def test_v5_parametric_shower_object_rotates_and_rejects_invalid_geometry():
@@ -351,3 +352,19 @@ def test_v5_parametric_shower_object_rotates_and_rejects_invalid_geometry():
             {'id': 'a', 'kind': 'open'}, {'id': 'b', 'kind': 'open'},
             {'id': 'c', 'kind': 'open'},
         ])), 0, 0)
+
+
+def test_v5_shower_object_combines_room_floor_top_and_edge_tile_details():
+    result = calculate_v5(project(tile=300, shower=shower_object()), 0, 0)
+    surface_ids = {part['surfaceId'] for part in result['parts']}
+    assert surface_ids == {'room-floor', 'shower-top'}
+    floor = unary_union([Polygon(part['rings'][0], part['rings'][1:])
+                         for part in result['parts'] if part['surfaceId'] == 'room-floor'])
+    footprint = Polygon(result['shower']['object']['footprint'][0])
+    assert floor.intersection(footprint).area < .01
+    surface_parts = result['shower']['object']['surfaceParts']
+    assert {'fascia', 'curb-top', 'curb-inside', 'curb-outside'} <= {
+        part['surfaceKind'] for part in surface_parts}
+    assert all(part['width'] > 0 and part['height'] > 0 and part['area'] > 0
+               for part in surface_parts)
+    assert result['metrics']['tiles'] > len({part['source'] for part in result['parts']})

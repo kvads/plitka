@@ -221,7 +221,8 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
       room.layout?.parts.forEach((part) => {
         if (!part.rings[0]?.length) return;
         const geometry = new THREE.ShapeGeometry(ringShape(part.rings, cx, cy));
-        const objectLift = room.layout?.shower?.object?.baseHeightMm ?? 0;
+        const objectLift = part.surfaceId === "shower-top"
+          ? room.layout?.shower?.object?.baseHeightMm ?? 0 : 0;
         elevate(geometry, room.layout, part.zoneId, cx, cy, objectLift + 2);
         normalizeUvs(geometry);
         geometries.push(geometry);

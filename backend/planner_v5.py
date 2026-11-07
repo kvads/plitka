@@ -165,6 +165,52 @@ def _object_surfaces(shower, footprint):
     return surfaces
 
 
+def _tile_rect_surface(surface_id: str, surface_kind: str, width: float, height: float,
+                       tile: float, grout: float, threshold: float):
+    parts = []
+    step = tile + grout
+    row = 0
+    y = 0.0
+    while y < height - EPS:
+        piece_height = min(tile, height - y)
+        column = 0
+        x = 0.0
+        while x < width - EPS:
+            piece_width = min(tile, width - x)
+            if piece_width > EPS and piece_height > EPS:
+                issues = [] if min(piece_width, piece_height) >= threshold else ['Узкая подрезка']
+                parts.append({'id': f'{surface_id}:{row + 1}.{column + 1}',
+                    'surfaceId': surface_id, 'surfaceKind': surface_kind,
+                    'width': tenth(piece_width), 'height': tenth(piece_height),
+                    'area': _area(piece_width * piece_height, 'Деталь поверхности'),
+                    'full': math.isclose(piece_width, tile, abs_tol=EPS) and
+                            math.isclose(piece_height, tile, abs_tol=EPS),
+                    'issues': issues})
+            x += step
+            column += 1
+        y += step
+        row += 1
+    return parts
+
+
+def _object_surface_parts(shower, surfaces, project):
+    parts = []
+    for surface in surfaces:
+        length = surface['lengthMm']
+        if surface['kind'] == 'fascia' and surface['heightMm'] > 0:
+            parts.extend(_tile_rect_surface(surface['id'], 'fascia', length,
+                surface['heightMm'], project.tile, project.grout, project.threshold))
+        elif surface['kind'] == 'curb':
+            dimensions = [('curb-top', surface['widthMm']),
+                          ('curb-inside', surface['heightMm']),
+                          ('curb-outside', surface['heightMm'])]
+            for kind, height in dimensions:
+                if height > 0:
+                    parts.extend(_tile_rect_surface(f"{surface['edgeId']}:{kind}", kind,
+                        length, height, project.tile, project.grout, project.threshold))
+    return parts
+
+
 def _shower_height(shower, x: float, y: float) -> float:
     if shower.vertices is not None:
         x -= shower.originX or 0
@@ -232,10 +278,11 @@ def _canonical_region(project, region):
     return room, canonical, area
 
 
-def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
+def calculate_v5(project, dx: float, dy: float, *, detail: bool = True,
+                 _region_override=None, _compose_object: bool = True):
     validate_input(project)
     try:
-        region, _ = prepare(project)
+        region, _ = prepare(project) if _region_override is None else (_region_override, None)
     except ValueError as exc:
         raise ValueError('Некорректная область помещения или параметры раскладки.') from exc
     room_region = region
@@ -384,6 +431,7 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
             'rotationDeg': tenth(project.shower.rotationDeg or 0)},
             'zones': zone_results, 'maxHeightMm': tenth(max_height)}
         if object_footprint is not None:
+            surfaces = _object_surfaces(project.shower, object_footprint)
             result['shower']['object'] = {
                 'id': project.shower.id or 'shower-object',
                 'originX': tenth(project.shower.originX or 0),
@@ -392,8 +440,59 @@ def calculate_v5(project, dx: float, dy: float, *, detail: bool = True):
                 'baseHeightMm': tenth(project.shower.baseHeightMm or 0),
                 'footprint': rings(object_footprint),
                 'edges': [edge.model_dump(exclude_none=True) for edge in project.shower.edges or []],
-                'surfaces': _object_surfaces(project.shower, object_footprint),
+                'surfaces': surfaces,
             }
+    if object_footprint is not None and project.shower is not None and _compose_object:
+        surfaces = _object_surfaces(project.shower, object_footprint)
+        surface_parts = _object_surface_parts(project.shower, surfaces, project)
+        floor_region = shapely.difference(room_region, object_footprint, grid_size=.1)
+        floor_result = None
+        if not floor_region.is_empty and floor_region.area > EPS:
+            floor_project = project.model_copy(update={'shower': None})
+            floor_result = calculate_v5(floor_project, dx, dy, detail=detail,
+                                        _region_override=floor_region, _compose_object=False)
+        if detail:
+            top_parts = [{**part, 'id': f"top:{part['id']}", 'surfaceId': 'shower-top'}
+                         for part in result['parts']]
+            floor_parts = [] if floor_result is None else [
+                {**part, 'id': f"floor:{part['id']}", 'surfaceId': 'room-floor'}
+                for part in floor_result['parts']]
+            result['parts'] = floor_parts + top_parts
+            result['region'] = ([] if floor_result is None else floor_result['region']) + result['region']
+            result['shower']['object']['surfaceParts'] = surface_parts
+        top_metrics = result['metrics']
+        floor_metrics = floor_result['metrics'] if floor_result is not None else {
+            key: 0 for key in top_metrics}
+        surface_tiles = len(surface_parts)
+        surface_full = sum(part['full'] for part in surface_parts)
+        surface_covered = sum(part['area'] for part in surface_parts)
+        surface_laying = sum(surface['areaMm2'] for surface in surfaces)
+        surface_waste = surface_tiles * project.tile ** 2 - surface_covered
+        total_tiles = floor_metrics['tiles'] + top_metrics['tiles'] + surface_tiles
+        total_waste = floor_metrics['waste_area'] + top_metrics['waste_area'] + surface_waste
+        result['metrics'] = {
+            'tiles': total_tiles,
+            'full': floor_metrics['full'] + top_metrics['full'] + surface_full,
+            'cut': floor_metrics['cut'] + top_metrics['cut'] + surface_tiles - surface_full,
+            'fragments': floor_metrics['fragments'] + top_metrics['fragments'] + surface_tiles,
+            'warnings': floor_metrics['warnings'] + top_metrics['warnings'] +
+                        sum(bool(part['issues']) for part in surface_parts),
+            'min_width': tenth(min(floor_metrics['min_width'] or project.tile,
+                                   top_metrics['min_width'] or project.tile,
+                                   *(min(part['width'], part['height']) for part in surface_parts),
+                                   project.tile)),
+            'symmetry': None,
+            'room_area': floor_metrics['room_area'] or top_metrics['room_area'],
+            'laying_area': tenth(floor_metrics['laying_area'] + top_metrics['laying_area'] +
+                                 surface_laying),
+            'covered_area': tenth(floor_metrics['covered_area'] + top_metrics['covered_area'] +
+                                  surface_covered),
+            'grout_area': tenth(floor_metrics['grout_area'] + top_metrics['grout_area'] +
+                                max(0, surface_laying - surface_covered)),
+            'waste_area': tenth(total_waste),
+            'waste_percent': tenth(100 * total_waste / (total_tiles * project.tile ** 2))
+                             if total_tiles else 0,
+        }
     return result
 
 

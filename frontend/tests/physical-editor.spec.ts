@@ -996,9 +996,19 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.getByText("800 000,0 мм²")).toBeVisible();
   await expect(page.locator("[data-physical-canvas]").getByText("90,0°").first()).toBeVisible();
   await expect(page.locator("[data-physical-canvas]").getByText("800,0 мм").first()).toBeVisible();
-  await page.getByRole("checkbox", { name: "Добавить отдельный поддон" }).check();
+  await page.getByRole("button", { name: "Поддон", exact: true }).click();
+  const roomCanvas = page.locator("[data-physical-canvas]");
+  const placementPoint = await roomCanvas.evaluate(node => {
+    const svg = node as SVGSVGElement;
+    const point = svg.createSVGPoint(); point.x = 500; point.y = -500;
+    const screen = point.matrixTransform(svg.getScreenCTM()!);
+    return { x: screen.x, y: screen.y };
+  });
+  await page.mouse.click(placementPoint.x, placementPoint.y);
   await expect(page.locator("[data-shower-object]")).toHaveCount(1);
   await expect(page.locator("[data-shower-vertex]")).toHaveCount(4);
+  await expect(page.getByRole("combobox", { name: "Тип слива" })).toHaveValue("linear");
+  await expect(page.getByRole("textbox", { name: "Длина слива" })).toHaveValue(/^[4-9]\d\d/);
   await page.getByLabel("Форма поддона").selectOption("l");
   await expect(page.locator("[data-shower-vertex]")).toHaveCount(6);
   await page.getByText("Контур и борта (6 углов)").click();
@@ -1010,9 +1020,9 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   })).toEqual([6, "curb"]);
   await page.getByRole("button", { name: "Подобрать раскладку" }).click();
   await expect(page.getByText(/Плиток:/)).toBeVisible();
-  await expect(page.locator("[data-shower-zone]")).toHaveCount(4);
+  await expect(page.locator("[data-shower-zone]")).toHaveCount(2);
   await expect(page.locator("[data-shower-drain]")).toHaveCount(1);
-  await expect(page.getByText(/Поддон: 4 уклонных зон/)).toBeVisible();
+  await expect(page.getByText(/Поддон: 2 уклонных зон/)).toBeVisible();
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await expect(page.getByRole("img", { name: /душевым поддоном, уклонными плоскостями и сливом/ })).toBeVisible();
   if (process.env.PW_VISUAL_OUTPUT) await page.screenshot({ path: process.env.PW_VISUAL_OUTPUT,
@@ -1025,22 +1035,22 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   const csv = await csvDownload;
   const csvText = await readFile(await csv.path(), "utf8");
   expect(csvText).toContain("Площадь мм²");
-  expect(csvText).toContain("Поверхность edge-1:curb");
+  expect(csvText).toContain("Поверхность edge-1:curb-top");
+  expect(csvText).toContain("Внутренняя сторона борта");
   await page.getByRole("button", { name: "Сбросить раскладку" }).click();
   await expect(page.getByText("Раскладка помещения сброшена. Параметры и стены сохранены.")).toBeVisible();
   await expect(page.locator("[data-layout-room-id]")).toHaveCount(0);
   await expect(page.locator("[data-room-key]")).toHaveAttribute("fill", "#fff4bb");
   await expect(page.locator("[data-room-key]")).toHaveCount(1);
-  await page.getByRole("checkbox", { name: "Добавить отдельный поддон" }).uncheck();
-  await expect(page.locator("[data-shower-object]")).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() =>
-    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray)).toBeNull();
   const roomId = await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].id);
   await page.getByRole("button", { name: "Раскрыть меню" }).click();
   await page.getByRole("button", { name: "Проект", exact: true }).click();
   await page.getByRole("button", { name: "Очистить проект" }).first().click();
   await page.getByRole("dialog", { name: "Очистить проект" }).getByRole("button", { name: "Очистить проект" }).click();
   await expect(page.locator("[data-room-key]")).toHaveCount(0);
+  await expect(page.locator("[data-shower-object]")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray)).toBeNull();
   await page.getByRole("button", { name: "Вернуть план к сохранённому снимку" }).click();
   await expect(page.locator("[data-room-key]")).toHaveCount(1);
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].id)).toBe(roomId);

@@ -72,10 +72,12 @@ export function exportResult(kind: "svg" | "csv", layout: Layout) {
       [p.id, p.zoneId ?? "", manufacturingMillimetres(p.surfaceWidth ?? p.width),
         manufacturingMillimetres(p.surfaceHeight ?? p.height), format(p.area),
         p.issues.join(", ")].join(";"));
-    const surfaceRows = (layout.shower?.object?.surfaces ?? []).map(surface =>
-      [`Поверхность ${surface.id}`, surface.kind === "curb" ? "Борт" : "Торец",
-        manufacturingMillimetres(surface.lengthMm), manufacturingMillimetres(surface.heightMm),
-        format(surface.areaMm2), ""].join(";"));
+    const surfaceNames = { fascia: "Торец", "curb-top": "Верх борта",
+      "curb-inside": "Внутренняя сторона борта", "curb-outside": "Внешняя сторона борта" };
+    const surfaceRows = (layout.shower?.object?.surfaceParts ?? []).map(part =>
+      [`Поверхность ${part.id}`, surfaceNames[part.surfaceKind],
+        manufacturingMillimetres(part.width), manufacturingMillimetres(part.height),
+        format(part.area), part.issues.join(", ")].join(";"));
     download(
       "plitka-details.csv",
       "\uFEFFДеталь;Зона уклона;Ширина по поверхности мм;Высота по поверхности мм;Площадь мм²;Предупреждения\n" +

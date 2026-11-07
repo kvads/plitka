@@ -29,6 +29,8 @@ type Props = {
   roomNames?: Record<string, string>;
   layouts?: { roomId: string; layout: Layout }[];
   showerObjects?: { roomId: string; tray: ShowerTray; selected: boolean }[];
+  showerTool?: boolean;
+  onPlaceShower?: (roomKey: string, point: Point) => void;
   viewport: Viewport;
   onViewport: (viewport: Viewport) => void;
   selectedWallId: string | null;
@@ -68,7 +70,8 @@ const precisePoint = (point: Point): Point =>
 
 export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces = [], openJointAngles = [],
   selectedRoomKey, onSelectRoom,
-  highlightRooms = false, roomMissing = {}, roomNames = {}, layouts = [], showerObjects = [], viewport, onViewport,
+  highlightRooms = false, roomMissing = {}, roomNames = {}, layouts = [], showerObjects = [],
+  showerTool = false, onPlaceShower, viewport, onViewport,
   selectedWallId, onSelectWall, selectedHandle, onSelectHandle, onNudge,
   wallTool, thicknessMm, onDrawWall, onResetWallTool,
   doorTool, doorWidthMm, selectedDoorId, onSelectDoor, deleteTool, onDeleteWall,
@@ -397,7 +400,10 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       onSelectHandle?.(current.handle);
       return;
     }
-    if (wallTool) {
+    if (showerTool) {
+      const point = current.roomKey ? world(event.clientX, event.clientY) : null;
+      if (current.roomKey && point) onPlaceShower?.(current.roomKey, precisePoint(point));
+    } else if (wallTool) {
       const point = world(event.clientX, event.clientY);
       if (!point) return;
       const selected = target(point);
@@ -517,7 +523,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     return lines;
   };
   return <><svg ref={svg} data-geometry data-physical-canvas data-door-tool={doorTool || undefined}
-    data-delete-tool={deleteTool || undefined} tabIndex={0}
+    data-delete-tool={deleteTool || undefined} data-shower-tool={showerTool || undefined} tabIndex={0}
     role="application" aria-label="Полотно проекта" viewBox={viewBox}
     style={{ width: "100%", height: "100%", touchAction: "none", display: "block", background: "#fff" }}
     onPointerDown={begin} onPointerMove={move} onPointerUp={event => finish(event)}
@@ -589,10 +595,34 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         (tray.originX ?? 0) + x * cosine - y * sine,
         (tray.originY ?? 0) + x * sine + y * cosine,
       ] as [number, number]);
+      const drainPlanWidth = tray.drainOrientation === "horizontal" ? tray.drainLength : tray.drainWidth;
+      const drainPlanHeight = tray.drainOrientation === "horizontal" ? tray.drainWidth : tray.drainLength;
+      const drainLocal: [number, number][] = [
+        [tray.drainX - drainPlanWidth / 2, tray.drainY - drainPlanHeight / 2],
+        [tray.drainX + drainPlanWidth / 2, tray.drainY - drainPlanHeight / 2],
+        [tray.drainX + drainPlanWidth / 2, tray.drainY + drainPlanHeight / 2],
+        [tray.drainX - drainPlanWidth / 2, tray.drainY + drainPlanHeight / 2],
+      ];
+      const drainPoints = drainLocal.map(([x, y]) => [
+        (tray.originX ?? 0) + x * cosine - y * sine,
+        (tray.originY ?? 0) + x * sine + y * cosine,
+      ] as [number, number]);
       const d = points.map(([x, y], index) => `${index ? "L" : "M"}${x} ${-y}`).join(" ") + " Z";
       return [<g key={`${roomId}:shower-object`} data-shower-object={roomId}>
         <path d={d} fill="#dce9e1" fillOpacity=".72" stroke={selected ? "#176044" : "#527263"}
           strokeWidth={Math.max((selected ? 3 : 2) / pixelScale, .25)} />
+        {points.map(([x, y], index) => {
+          const end = points[(index + 1) % points.length];
+          const kind = tray.edges?.[index]?.kind ?? "open";
+          const color = kind === "wall" ? "#56605b" : kind === "curb" ? "#9a5d16"
+            : kind === "entry" ? "#397bb5" : "#176044";
+          return <line key={`edge-${index}`} data-shower-edge={kind} x1={x} y1={-y}
+            x2={end[0]} y2={-end[1]} stroke={color}
+            strokeWidth={Math.max(4 / pixelScale, .4)} />;
+        })}
+        <path data-shower-object-drain d={drainPoints.map(([x, y], index) =>
+          `${index ? "L" : "M"}${x} ${-y}`).join(" ") + " Z"}
+          fill="#4c5b53" stroke="#17241e" strokeWidth={Math.max(1.5 / pixelScale, .2)} />
         {points.map(([x, y], index) => <circle key={index} data-shower-vertex={index}
           cx={x} cy={-y} r={(selected ? 5 : 3.5) / pixelScale} fill="#fff" stroke="#176044"
           strokeWidth={1.5 / pixelScale} />)}
