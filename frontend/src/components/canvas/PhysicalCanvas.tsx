@@ -347,7 +347,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     const doorId = (event.target as Element).closest("[data-door-id]")?.getAttribute("data-door-id") ?? null;
     const roomKey = (event.target as Element).closest("[data-room-key]")?.getAttribute("data-room-key") ?? null;
     const showerRoomId = (event.target as Element).closest("[data-shower-object]")
-      ?.getAttribute("data-shower-object") ?? null;
+      ?.getAttribute("data-shower-object") ?? (event.target as Element)
+      .closest("[data-shower-control-room]")?.getAttribute("data-shower-control-room") ?? null;
     const showerVertexNode = (event.target as Element).closest("[data-shower-vertex]");
     const showerVertexIndex = showerVertexNode
       ? Number(showerVertexNode.getAttribute("data-shower-vertex")) : null;
@@ -628,6 +629,57 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         lines.push(<line key={`y${step}-${y}`} x1={left} x2={right} y1={-y} y2={-y} stroke={color} strokeWidth={width / pixelScale} />);
     return lines;
   };
+  const showerJoystick = (roomId: string, tray: ShowerTray) => {
+    if (!tray.vertices?.length) return null;
+    const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
+    const cosine = Math.cos(radians), sine = Math.sin(radians);
+    const drag = showerDrag?.roomId === roomId ? showerDrag.delta : { x: 0, y: 0 };
+    const vertexDrag = showerVertexDrag?.roomId === roomId ? showerVertexDrag : null;
+    const points = tray.vertices.map(([x, y], index) => {
+      const point: [number, number] = [
+        (tray.originX ?? 0) + drag.x + x * cosine - y * sine,
+        (tray.originY ?? 0) + drag.y + x * sine + y * cosine,
+      ];
+      return vertexDrag?.index === index
+        ? [point[0] + vertexDrag.delta.x, point[1] + vertexDrag.delta.y] as [number, number]
+        : point;
+    });
+    const vertexIndex = selectedShowerVertex?.roomId === roomId ? selectedShowerVertex.index : null;
+    const target = vertexIndex === null ? {
+      x: points.reduce((sum, point) => sum + point[0], 0) / points.length,
+      y: points.reduce((sum, point) => sum + point[1], 0) / points.length,
+    } : { x: points[vertexIndex][0], y: points[vertexIndex][1] };
+    return <g key={`${roomId}:shower-joystick`} data-shower-joystick
+      data-shower-control-room={roomId}>
+      <circle cx={target.x} cy={-target.y} r={52 / pixelScale}
+        fill="#ffffffee" stroke="#9ba99f" strokeWidth={1 / pixelScale} pointerEvents="none" />
+      {([ ["x", -1, "←", -34, 0], ["x", 1, "→", 34, 0],
+        ["y", 1, "↑", 0, -34], ["y", -1, "↓", 0, 34] ] as const)
+        .map(([axis, direction, label, offsetX, offsetY]) =>
+          <g key={`${axis}${direction}`} data-shower-nudge-axis={axis}
+            data-shower-nudge-direction={direction}
+            data-shower-nudge-vertex={vertexIndex === null ? undefined : vertexIndex}
+            role="button" tabIndex={0}
+            aria-label={`Сдвинуть ${vertexIndex === null ? "поддон" : `вершину ${vertexIndex + 1}`} ${label} на 1 мм`}
+            onKeyDown={event => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault(); event.stopPropagation();
+              const delta = axis === "x" ? { x: direction, y: 0 } : { x: 0, y: direction };
+              if (vertexIndex === null) onMoveShower?.(roomId, delta);
+              else onNudgeShowerVertex?.(roomId, vertexIndex, delta);
+            }}>
+            <circle cx={target.x + offsetX / pixelScale} cy={-target.y + offsetY / pixelScale}
+              r={22 / pixelScale} fill="transparent" />
+            <circle cx={target.x + offsetX / pixelScale} cy={-target.y + offsetY / pixelScale}
+              r={15 / pixelScale} fill="#fff" stroke="#cad4cd" strokeWidth={1 / pixelScale}
+              pointerEvents="none" />
+            <text x={target.x + offsetX / pixelScale}
+              y={-target.y + offsetY / pixelScale + 5 / pixelScale}
+              textAnchor="middle" fontSize={15 / pixelScale} fill="#294f3e"
+              pointerEvents="none">{label}</text>
+          </g>)}
+    </g>;
+  };
   return <><svg ref={svg} data-geometry data-physical-canvas data-door-tool={doorTool || undefined}
     data-delete-tool={deleteTool || undefined} data-shower-tool={showerTool || undefined} tabIndex={0}
     role="application" aria-label="Полотно проекта" viewBox={viewBox}
@@ -735,8 +787,13 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         return { index, length, x: (point[0] + next[0]) / 2 + inward.x * 18 / pixelScale,
           y: (point[1] + next[1]) / 2 + inward.y * 18 / pixelScale };
       }).filter(item => item.length >= .1) : [];
+      const visibleAngleIndexes = selectedVertexIndex === null ? null : new Set([
+        selectedVertexIndex,
+        (selectedVertexIndex - 1 + points.length) % points.length,
+        (selectedVertexIndex + 1) % points.length,
+      ]);
       const vertexAngles = selected ? points.flatMap((point, index) => {
-        if (selectedVertexIndex !== null && selectedVertexIndex !== index) return [];
+        if (visibleAngleIndexes && !visibleAngleIndexes.has(index)) return [];
         const previous = points[(index - 1 + points.length) % points.length];
         const next = points[(index + 1) % points.length];
         const first = { x: previous[0] - point[0], y: previous[1] - point[1] };
@@ -760,7 +817,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
           bisectorLength = 1;
         }
         const radius = 28 / pixelScale;
-        return [{ index, value, x: point[0], y: point[1], radius,
+        return [{ index, value, primary: index === selectedVertexIndex,
+          x: point[0], y: point[1], radius,
           labelX: point[0] + bisector.x / bisectorLength * 55 / pixelScale,
           labelY: point[1] + bisector.y / bisectorLength * 55 / pixelScale,
           startX: point[0] + firstUnit.x * radius,
@@ -828,42 +886,6 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
               fontSize={17 / pixelScale} fill="#176044" pointerEvents="none">+</text>
           </g>;
         })}
-        {selected && !showerAddVertex && (() => {
-          const vertexIndex = selectedVertexIndex;
-          const target = vertexIndex === null ? {
-            x: points.reduce((sum, point) => sum + point[0], 0) / points.length,
-            y: points.reduce((sum, point) => sum + point[1], 0) / points.length,
-          } : { x: points[vertexIndex][0], y: points[vertexIndex][1] };
-          return <g data-shower-joystick>
-            <circle cx={target.x} cy={-target.y} r={52 / pixelScale}
-              fill="#ffffffdd" stroke="#9ba99f" strokeWidth={1 / pixelScale} pointerEvents="none" />
-            {([ ["x", -1, "←", -34, 0], ["x", 1, "→", 34, 0],
-              ["y", 1, "↑", 0, -34], ["y", -1, "↓", 0, 34] ] as const)
-              .map(([axis, direction, label, offsetX, offsetY]) =>
-                <g key={`${axis}${direction}`} data-shower-nudge-axis={axis}
-                  data-shower-nudge-direction={direction}
-                  data-shower-nudge-vertex={vertexIndex === null ? undefined : vertexIndex}
-                  role="button" tabIndex={0}
-                  aria-label={`Сдвинуть ${vertexIndex === null ? "поддон" : `вершину ${vertexIndex + 1}`} ${label} на 1 мм`}
-                  onKeyDown={event => {
-                    if (event.key !== "Enter" && event.key !== " ") return;
-                    event.preventDefault(); event.stopPropagation();
-                    const delta = axis === "x" ? { x: direction, y: 0 } : { x: 0, y: direction };
-                    if (vertexIndex === null) onMoveShower?.(roomId, delta);
-                    else onNudgeShowerVertex?.(roomId, vertexIndex, delta);
-                  }}>
-                  <circle cx={target.x + offsetX / pixelScale} cy={-target.y + offsetY / pixelScale}
-                    r={22 / pixelScale} fill="transparent" />
-                  <circle cx={target.x + offsetX / pixelScale} cy={-target.y + offsetY / pixelScale}
-                    r={15 / pixelScale} fill="#fff" stroke="#cad4cd" strokeWidth={1 / pixelScale}
-                    pointerEvents="none" />
-                  <text x={target.x + offsetX / pixelScale}
-                    y={-target.y + offsetY / pixelScale + 5 / pixelScale}
-                    textAnchor="middle" fontSize={15 / pixelScale} fill="#294f3e"
-                    pointerEvents="none">{label}</text>
-                </g>)}
-          </g>;
-        })()}
         {selected && <g pointerEvents="none" textAnchor="middle">
           {edgeMeasurements.map(measurement => <text key={`length-${measurement.index}`}
             data-shower-edge-length={measurement.index}
@@ -875,10 +897,13 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
           {vertexAngles.map(angle => <g key={`angle-${angle.index}`}>
             <path data-shower-angle-arc={angle.index}
               d={`M${angle.startX} ${-angle.startY} A${angle.radius} ${angle.radius} 0 ${angle.value > 180 ? 1 : 0} ${orientation > 0 ? 1 : 0} ${angle.endX} ${-angle.endY}`}
-              fill="none" stroke="#9b3f30" strokeWidth={1.5 / pixelScale} />
+              fill="none" stroke={angle.primary ? "#9b3f30" : "#8a6338"}
+              strokeWidth={(angle.primary ? 1.7 : 1.3) / pixelScale} />
             <text data-shower-vertex-angle={angle.index}
               x={angle.labelX} y={-angle.labelY}
-              fill="#8f2929" fontSize={13 / pixelScale} fontWeight={700}
+              fill={angle.primary ? "#8f2929" : "#76512e"}
+              fontSize={(angle.primary ? 13 : 12) / pixelScale}
+              fontWeight={angle.primary ? 700 : 650}
               stroke="#fff" strokeWidth={4 / pixelScale} paintOrder="stroke">
               {displayTenth(angle.value)}°
             </text>
@@ -1076,6 +1101,8 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         {displayMillimeters(dimension.valueMm)} мм
       </text>)}
     </g>
+    {!showerAddVertex && showerObjects.flatMap(({ roomId, tray, selected }) =>
+      selected ? [showerJoystick(roomId, tray)] : [])}
   </svg>
     {start && wallTool && <button type="button" className="physical-cancel-wall-start"
       onClick={() => {

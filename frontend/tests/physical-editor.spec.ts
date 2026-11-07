@@ -1096,11 +1096,30 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.getByRole("button", { name: "Удалить поддон" })).toHaveCount(0);
   await expect(page.getByLabel("Форма поддона")).toHaveCount(0);
   await expect(page.getByRole("spinbutton")).toHaveCount(0);
+  const firstVertex = page.locator("[data-shower-vertex]").first();
+  await firstVertex.click();
+  const firstVertexBox = (await firstVertex.boundingBox())!;
+  const nearRoomCorner = await roomCanvas.evaluate(node => {
+    const svg = node as SVGSVGElement;
+    const point = svg.createSVGPoint(); point.x = 115; point.y = -15;
+    const screen = point.matrixTransform(svg.getScreenCTM()!);
+    return { x: screen.x, y: screen.y };
+  });
+  await page.mouse.move(firstVertexBox.x + firstVertexBox.width / 2,
+    firstVertexBox.y + firstVertexBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(nearRoomCorner.x, nearRoomCorner.y);
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => {
+    const tray = JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray;
+    return [tray.originX + tray.vertices[0][0], tray.originY + tray.vertices[0][1]];
+  })).toEqual([100, 0]);
   await page.locator("[data-shower-vertex]").last().click();
   await expect(page.getByText("Вершина 4", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-physical-canvas] > [data-shower-joystick]")).toHaveCount(1);
   await expect(page.locator("[data-shower-edge-length]")).toHaveCount(4);
-  await expect(page.locator("[data-shower-vertex-angle]")).toHaveCount(1);
-  await expect(page.locator("[data-shower-vertex-angle]")).toContainText("°");
+  await expect(page.locator("[data-shower-vertex-angle]")).toHaveCount(3);
+  await expect(page.locator("[data-shower-vertex-angle]")).toContainText(["°", "°", "°"]);
   const vertexX = await page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.vertices[3][0]);
   await page.getByRole("button", { name: /Сдвинуть вершину 4 → на 1 мм/ }).click();

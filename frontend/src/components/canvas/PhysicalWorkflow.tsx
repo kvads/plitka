@@ -141,9 +141,21 @@ const showerWorldVertices = (tray: ShowerTray) => {
 };
 const nearestBoundaryPoint = (point: [number, number],
   polygon: { outline: number[][]; holes: number[][][] }) => {
+  const boundaries = [polygon.outline as [number, number][],
+    ...(polygon.holes as [number, number][][])];
+  let nearestCorner = point, cornerDistance = Number.POSITIVE_INFINITY;
+  boundaries.forEach(ring => ring.forEach(candidate => {
+    const candidateDistance = Math.hypot(point[0] - candidate[0], point[1] - candidate[1]);
+    if (candidateDistance < cornerDistance) {
+      cornerDistance = candidateDistance;
+      nearestCorner = candidate;
+    }
+  }));
+  // At a joint, snapping to either individual wall can leave the adjacent
+  // tray edge just outside the room. Give the shared corner priority.
+  if (cornerDistance <= 28) return { point: nearestCorner, distance: cornerDistance, corner: true };
   let nearest = point, distance = Number.POSITIVE_INFINITY;
-  for (const ring of [polygon.outline as [number, number][],
-    ...(polygon.holes as [number, number][][])]) {
+  for (const ring of boundaries) {
     ring.forEach((start, index) => {
       const end = ring[(index + 1) % ring.length];
       const dx = end[0] - start[0], dy = end[1] - start[1];
@@ -155,7 +167,7 @@ const nearestBoundaryPoint = (point: [number, number],
       if (candidateDistance < distance) { distance = candidateDistance; nearest = candidate; }
     });
   }
-  return { point: nearest, distance };
+  return { point: nearest, distance, corner: false };
 };
 const constrainedShowerVertexDelta = (tray: ShowerTray, index: number,
   delta: { x: number; y: number }, polygon: { outline: number[][]; holes: number[][][] },
@@ -179,7 +191,7 @@ const constrainedShowerVertexDelta = (tray: ShowerTray, index: number,
   }
   let desired: [number, number] = [current[0] + movement.x, current[1] + movement.y];
   const boundary = nearestBoundaryPoint(desired, polygon);
-  if (boundary.distance <= 20) desired = boundary.point;
+  if (boundary.distance <= (boundary.corner ? 28 : 20)) desired = boundary.point;
   const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
   const cosine = Math.cos(radians), sine = Math.sin(radians);
   const candidateVertices = (tray.vertices ?? []).map(point => [...point] as [number, number]);
