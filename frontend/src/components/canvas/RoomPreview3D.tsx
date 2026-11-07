@@ -20,6 +20,7 @@ type Props = {
   through: boolean;
   multiRoom: boolean;
   graph: PhysicalGraphV5;
+  isolateShower?: boolean;
 };
 
 const ringShape = (rings: Point[][], cx: number, cy: number) => {
@@ -102,19 +103,24 @@ const roomCountText = (count: number) => {
   return `${count} ${noun}`;
 };
 
-export default function RoomPreview3D({ rooms, title, tileSize, through, multiRoom, graph }: Props) {
+export default function RoomPreview3D({ rooms, title, tileSize, through, multiRoom, graph,
+  isolateShower = false }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const resetView = useRef<() => void>(() => undefined);
-  const [showWalls, setShowWalls] = useState(() => !multiRoom);
+  const [showWalls, setShowWalls] = useState(() => !multiRoom && !isolateShower);
 
-  useEffect(() => setShowWalls(!multiRoom), [multiRoom]);
+  useEffect(() => setShowWalls(!multiRoom && !isolateShower), [multiRoom, isolateShower]);
 
   useEffect(() => {
     const container = host.current;
     const visibleRooms = rooms.filter(room => room.polygon.outline.length >= 3);
     if (!container || !visibleRooms.length) return;
 
-    const points = visibleRooms.flatMap(room => room.polygon.outline);
+    const showerPoints = visibleRooms.flatMap(room =>
+      room.layout?.shower?.object?.footprint.flatMap(ring => ring) ??
+      room.layout?.shower?.zones.flatMap(zone => zone.rings.flatMap(ring => ring)) ?? []);
+    const points = isolateShower && showerPoints.length
+      ? showerPoints : visibleRooms.flatMap(room => room.polygon.outline);
     const xs = points.map((point) => point[0]);
     const ys = points.map((point) => point[1]);
     const minX = Math.min(...xs);
@@ -125,12 +131,14 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     const cy = (minY + maxY) / 2;
     const width = (maxX - minX) / 1000;
     const depth = (maxY - minY) / 1000;
-    const span = Math.max(width, depth, 2);
+    const span = Math.max(width, depth, isolateShower ? .6 : 2);
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xeff1ee);
     const camera = new THREE.PerspectiveCamera(47, 1, 0.1, 100);
-    const initialCamera = new THREE.Vector3(span * 0.72, span * 0.82, span * 0.92);
+    const initialCamera = isolateShower
+      ? new THREE.Vector3(span * 0.95, span * 1.05, span * 1.35)
+      : new THREE.Vector3(span * 0.72, span * 0.82, span * 0.92);
     camera.position.copy(initialCamera);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -144,7 +152,9 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     const hasShower = visibleRooms.some(room => room.layout?.shower);
     renderer.domElement.setAttribute(
       "aria-label",
-      through
+      isolateShower
+        ? "Интерактивная 3D-модель с душевым поддоном как отдельным объектом, уклонными плоскостями, бортами и сливом."
+        : through
         ? `Интерактивная 3D-модель сквозной раскладки. В сцене ${roomCountText(visibleRooms.length)} с общей сеткой плитки.`
         : hasShower
           ? `Интерактивная 3D-модель помещения с душевым поддоном, уклонными плоскостями и сливом.`
@@ -162,7 +172,7 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     controls.maxDistance = span * 3.2;
     controls.minPolarAngle = 0.2;
     controls.maxPolarAngle = Math.PI / 2.08;
-    controls.target.set(0, 0.35, 0);
+    controls.target.set(0, isolateShower ? 0.08 : 0.35, 0);
 
     const geometries: THREE.BufferGeometry[] = [];
     const materials: THREE.Material[] = [];
@@ -172,13 +182,15 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     });
     materials.push(groutMaterial);
     visibleRooms.forEach(room => {
-      const roomFloorGeometry = new THREE.ShapeGeometry(ringShape([room.polygon.outline as Point[],
-        ...(room.polygon.holes as Point[][])], cx, cy));
-      geometries.push(roomFloorGeometry);
-      const roomFloor = new THREE.Mesh(roomFloorGeometry, groutMaterial);
-      roomFloor.rotation.x = -Math.PI / 2;
-      roomFloor.receiveShadow = true;
-      scene.add(roomFloor);
+      if (!isolateShower) {
+        const roomFloorGeometry = new THREE.ShapeGeometry(ringShape([room.polygon.outline as Point[],
+          ...(room.polygon.holes as Point[][])], cx, cy));
+        geometries.push(roomFloorGeometry);
+        const roomFloor = new THREE.Mesh(roomFloorGeometry, groutMaterial);
+        roomFloor.rotation.x = -Math.PI / 2;
+        roomFloor.receiveShadow = true;
+        scene.add(roomFloor);
+      }
       const surfaces = room.layout?.shower?.zones.map(zone => ({ id: zone.id, rings: zone.rings })) ?? [];
       surfaces.forEach(surface => {
         const floorGeometry = new THREE.ShapeGeometry(ringShape(surface.rings, cx, cy));
@@ -219,7 +231,8 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     });
 
     visibleRooms.forEach(room => {
-      room.layout?.parts.forEach((part) => {
+      room.layout?.parts.filter(part => !isolateShower || part.surfaceId === "shower-top")
+        .forEach((part) => {
         if (!part.rings[0]?.length) return;
         const geometry = new THREE.ShapeGeometry(ringShape(part.rings, cx, cy));
         const objectLift = part.surfaceId === "shower-top"
@@ -308,7 +321,7 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
     materials.push(wallMaterial);
     const wallHeight = Math.min(1.2, Math.max(0.65, span * 0.24));
     const edgeTolerance = Math.max(5, span * 5);
-    if (showWalls) graph.walls.forEach(sourceWall => {
+    if (showWalls && !isolateShower) graph.walls.forEach(sourceWall => {
       const [start, end] = sourceWall.drawnEdge;
       const dx = end.x - start.x, dy = end.y - start.y;
       const sourceLength = Math.hypot(dx, dy);
@@ -369,7 +382,7 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
 
     resetView.current = () => {
       camera.position.copy(initialCamera);
-      controls.target.set(0, 0.35, 0);
+      controls.target.set(0, isolateShower ? 0.08 : 0.35, 0);
       controls.update();
     };
 
@@ -403,11 +416,13 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [rooms, through, multiRoom, graph, showWalls]);
+  }, [rooms, through, multiRoom, graph, showWalls, isolateShower]);
 
   const readyLayouts = rooms.filter(room => room.layout).length;
   const details = readyLayouts === rooms.length && rooms.length
-    ? through
+      ? isolateShower
+        ? "Отдельный объект поддона"
+        : through
       ? `${roomCountText(rooms.length)} · Плитка ${tileSize} × ${tileSize} мм`
       : multiRoom
         ? `${roomCountText(rooms.length)} · раскладки рассчитаны`
@@ -425,11 +440,11 @@ export default function RoomPreview3D({ rooms, title, tileSize, through, multiRo
           <span>{details}</span>
         </div>
         <div className="room-preview-actions">
-          <button type="button" className="room-preview-walls" aria-pressed={showWalls}
+          {!isolateShower && <button type="button" className="room-preview-walls" aria-pressed={showWalls}
             onClick={() => setShowWalls(value => !value)}>
             {showWalls ? <EyeOff size={17} aria-hidden="true" /> : <Eye size={17} aria-hidden="true" />}
             {showWalls ? "Скрыть стены" : "Показать стены"}
-          </button>
+          </button>}
           <button
             type="button"
             className="room-preview-reset"

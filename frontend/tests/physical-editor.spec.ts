@@ -985,6 +985,7 @@ test("physical v6 shows a joined wall and angles before the server preview", asy
 });
 
 test("physical v6 selects a room from its usable floor", async ({ page, request }) => {
+  test.setTimeout(30_000);
   let graph: unknown = { walls: [], junctions: [] };
   const walls: [number[][], "left" | "right"][] = [
     [[[0, 0], [1000, 0]], "right"],
@@ -1097,6 +1098,9 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(page.getByRole("spinbutton")).toHaveCount(0);
   await page.locator("[data-shower-vertex]").last().click();
   await expect(page.getByText("Вершина 4", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-shower-edge-length]")).toHaveCount(4);
+  await expect(page.locator("[data-shower-vertex-angle]")).toHaveCount(1);
+  await expect(page.locator("[data-shower-vertex-angle]")).toContainText("°");
   const vertexX = await page.evaluate(() =>
     JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.vertices[3][0]);
   await page.getByRole("button", { name: /Сдвинуть вершину 4 → на 1 мм/ }).click();
@@ -1132,7 +1136,8 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(showerDialog.getByRole("spinbutton")).toHaveCount(0);
   const preview = showerDialog.locator(".shower-settings-preview");
   await expect(preview).toHaveAttribute("data-shower-preview-key", /.+/, { timeout: 10_000 });
-  await expect(showerDialog.getByRole("img", { name: /душевым поддоном/ })).toBeVisible();
+  await expect(showerDialog.getByRole("img", { name: /душевым поддоном как отдельным объектом/ })).toBeVisible();
+  await expect(showerDialog.getByRole("button", { name: /^(Скрыть|Показать) стены$/ })).toHaveCount(0);
   const previewKey = await preview.getAttribute("data-shower-preview-key");
   if (process.env.PW_VISUAL_OUTPUT) await page.screenshot({
     path: process.env.PW_VISUAL_OUTPUT.replace(/\.png$/, "-shower-modal.png"), fullPage: true,
@@ -1145,11 +1150,20 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await expect(showerDialog.getByRole("img", { name: /душевым поддоном/ })).toBeVisible();
   await showerDialog.getByRole("button", { name: /Сторона 1:/ }).click();
   await showerDialog.getByRole("button", { name: /Сторона 1:/ }).click();
+  await expect(showerDialog.getByText("Толщина борта", { exact: true })).toBeVisible();
+  await expect(preview).toHaveAttribute("data-shower-preview-key", /.+/);
+  const thicknessPreviewKey = await preview.getAttribute("data-shower-preview-key");
+  await showerDialog.getByRole("button", { name: "Увеличить: толщина борта стороны 1" }).click();
+  await expect.poll(async () => {
+    const key = await preview.getAttribute("data-shower-preview-key");
+    return key && key !== thicknessPreviewKey ? key : null;
+  }).not.toBeNull();
   await expect.poll(() => page.evaluate(() => {
     const document = JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0];
     return [document.rooms[0].showerTray.vertices.length,
-      document.rooms[0].showerTray.edges[0].kind];
-  })).toEqual([6, "curb"]);
+      document.rooms[0].showerTray.edges[0].kind,
+      document.rooms[0].showerTray.edges[0].curbWidthMm];
+  })).toEqual([6, "curb", 110]);
   await showerDialog.getByRole("button", { name: "Закрыть настройку поддона" }).click();
   await page.getByRole("button", { name: "Раскладка", exact: true }).click();
   await page.getByRole("button", { name: "Подобрать раскладку" }).click();

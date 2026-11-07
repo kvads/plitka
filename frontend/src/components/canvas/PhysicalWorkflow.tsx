@@ -950,7 +950,7 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
               <Suspense fallback={<div role="status">Загружаем 3D…</div>}>
                 <RoomPreview3D rooms={[{ id: room.id, name: room.name, polygon: selectedFace.polygon,
                   layout: showerPreviewLayout }]} title={room.name} tileSize={room.material.tile}
-                  through={false} multiRoom={false} graph={doc.plan.draft} />
+                  through={false} multiRoom={false} graph={doc.plan.draft} isolateShower />
               </Suspense>
               {showerPreviewLoading && <div className="shower-preview-loading" role="status">
                 Обновляем модель…
@@ -994,14 +994,34 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
                   const kinds = ["wall", "open", "curb", "entry"] as const;
                   const labels = { wall: "у стены · без борта", open: "открытая",
                     curb: "с бортом", entry: "вход" };
-                  return <button type="button" key={edge.id} onClick={() => {
-                    const kind = kinds[(kinds.indexOf(edge.kind) + 1) % kinds.length];
+                  const updateEdge = (patch: Partial<typeof edge>) => {
                     const edges = [...room.showerTray!.edges!];
-                    edges[index] = { id: edge.id, kind, ...(kind === "curb"
-                      ? { curbHeightMm: edge.curbHeightMm ?? 80, curbWidthMm: edge.curbWidthMm ?? 100 }
-                      : {}) };
+                    edges[index] = { ...edge, ...patch };
                     updateShowerTray({ edges });
-                  }}>Сторона {index + 1}: {labels[edge.kind]}</button>;
+                  };
+                  const edgeStepper = (label: string, key: "curbHeightMm" | "curbWidthMm",
+                    fallback: number) => <div className="shower-edge-stepper">
+                    <span>{label}</span><div>
+                      <button type="button" aria-label={`Уменьшить: ${label.toLowerCase()} стороны ${index + 1}`}
+                        onClick={() => updateEdge({ [key]: Math.max(10, (edge[key] ?? fallback) - 10) })}>−</button>
+                      <strong>{displayTenth(edge[key] ?? fallback)} мм</strong>
+                      <button type="button" aria-label={`Увеличить: ${label.toLowerCase()} стороны ${index + 1}`}
+                        onClick={() => updateEdge({ [key]: Math.min(500, (edge[key] ?? fallback) + 10) })}>+</button>
+                    </div>
+                  </div>;
+                  return <div className="shower-edge-control" key={edge.id}>
+                    <button type="button" onClick={() => {
+                      const kind = kinds[(kinds.indexOf(edge.kind) + 1) % kinds.length];
+                      updateEdge({ kind, ...(kind === "curb"
+                        ? { curbHeightMm: edge.curbHeightMm ?? 80,
+                          curbWidthMm: edge.curbWidthMm ?? 100 }
+                        : { curbHeightMm: undefined, curbWidthMm: undefined }) });
+                    }}>Сторона {index + 1}: {labels[edge.kind]}</button>
+                    {edge.kind === "curb" && <div className="shower-edge-properties">
+                      {edgeStepper("Высота борта", "curbHeightMm", 80)}
+                      {edgeStepper("Толщина борта", "curbWidthMm", 100)}
+                    </div>}
+                  </div>;
                 })}
               </div>
             </aside>

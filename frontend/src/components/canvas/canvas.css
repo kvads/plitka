@@ -580,6 +580,11 @@
 .shower-stepper strong { text-align: center; }
 .shower-settings-group { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid #d7ded9; }
 .shower-settings-group p { margin: 0; color: #5d6962; font-size: 13px; }
+.shower-edge-control { display: grid; gap: 8px; }
+.shower-edge-properties { display: grid; gap: 10px; padding: 10px; border: 1px solid #d7ded9; border-radius: 9px; background: #f8faf8; }
+.shower-edge-stepper { display: grid; gap: 5px; font-size: 13px; }
+.shower-edge-stepper > div { display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; gap: 6px; }
+.shower-edge-stepper strong { text-align: center; }
 .shower-choice-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .shower-choice-row button[aria-pressed="true"] { background: #294f3e; color: #fff; }
 .shower-drain-nudge { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }

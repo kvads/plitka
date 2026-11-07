@@ -719,6 +719,55 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         (tray.originY ?? 0) + drag.y + x * sine + y * cosine,
       ] as [number, number]);
       const d = points.map(([x, y], index) => `${index ? "L" : "M"}${x} ${-y}`).join(" ") + " Z";
+      const signedArea = points.reduce((sum, point, index) => {
+        const next = points[(index + 1) % points.length];
+        return sum + point[0] * next[1] - next[0] * point[1];
+      }, 0) / 2;
+      const orientation = signedArea >= 0 ? 1 : -1;
+      const selectedVertexIndex = selectedShowerVertex?.roomId === roomId
+        ? selectedShowerVertex.index : null;
+      const edgeMeasurements = selected ? points.map((point, index) => {
+        const next = points[(index + 1) % points.length];
+        const dx = next[0] - point[0], dy = next[1] - point[1];
+        const length = Math.hypot(dx, dy);
+        const inward = orientation > 0 ? { x: -dy / length, y: dx / length }
+          : { x: dy / length, y: -dx / length };
+        return { index, length, x: (point[0] + next[0]) / 2 + inward.x * 18 / pixelScale,
+          y: (point[1] + next[1]) / 2 + inward.y * 18 / pixelScale };
+      }).filter(item => item.length >= .1) : [];
+      const vertexAngles = selected ? points.flatMap((point, index) => {
+        if (selectedVertexIndex !== null && selectedVertexIndex !== index) return [];
+        const previous = points[(index - 1 + points.length) % points.length];
+        const next = points[(index + 1) % points.length];
+        const first = { x: previous[0] - point[0], y: previous[1] - point[1] };
+        const second = { x: next[0] - point[0], y: next[1] - point[1] };
+        const firstLength = Math.hypot(first.x, first.y), secondLength = Math.hypot(second.x, second.y);
+        if (firstLength < .1 || secondLength < .1) return [];
+        const firstUnit = { x: first.x / firstLength, y: first.y / firstLength };
+        const secondUnit = { x: second.x / secondLength, y: second.y / secondLength };
+        const smallAngle = Math.acos(Math.max(-1, Math.min(1,
+          firstUnit.x * secondUnit.x + firstUnit.y * secondUnit.y))) * 180 / Math.PI;
+        const cross = firstUnit.x * secondUnit.y - firstUnit.y * secondUnit.x;
+        const convex = orientation * cross < 0;
+        const value = convex ? smallAngle : 360 - smallAngle;
+        let bisector = { x: firstUnit.x + secondUnit.x, y: firstUnit.y + secondUnit.y };
+        if (!convex) bisector = { x: -bisector.x, y: -bisector.y };
+        let bisectorLength = Math.hypot(bisector.x, bisector.y);
+        if (bisectorLength < .01) {
+          bisector = orientation > 0
+            ? { x: -secondUnit.y, y: secondUnit.x }
+            : { x: secondUnit.y, y: -secondUnit.x };
+          bisectorLength = 1;
+        }
+        const radius = 28 / pixelScale;
+        return [{ index, value, x: point[0], y: point[1], radius,
+          labelX: point[0] + bisector.x / bisectorLength * 55 / pixelScale,
+          labelY: point[1] + bisector.y / bisectorLength * 55 / pixelScale,
+          startX: point[0] + firstUnit.x * radius,
+          startY: point[1] + firstUnit.y * radius,
+          endX: point[0] + secondUnit.x * radius,
+          endY: point[1] + secondUnit.y * radius }];
+      }) : [];
       return [<g key={`${roomId}:shower-object`} data-shower-object={roomId}
         data-dragging={showerDrag?.roomId === roomId || undefined}
         tabIndex={selected ? 0 : -1} role="button"
@@ -780,16 +829,16 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
           </g>;
         })}
         {selected && !showerAddVertex && (() => {
-          const vertexIndex = selectedShowerVertex?.roomId === roomId ? selectedShowerVertex.index : null;
+          const vertexIndex = selectedVertexIndex;
           const target = vertexIndex === null ? {
             x: points.reduce((sum, point) => sum + point[0], 0) / points.length,
             y: points.reduce((sum, point) => sum + point[1], 0) / points.length,
           } : { x: points[vertexIndex][0], y: points[vertexIndex][1] };
           return <g data-shower-joystick>
-            <circle cx={target.x} cy={-target.y} r={38 / pixelScale}
+            <circle cx={target.x} cy={-target.y} r={52 / pixelScale}
               fill="#ffffffdd" stroke="#9ba99f" strokeWidth={1 / pixelScale} pointerEvents="none" />
-            {([ ["x", -1, "←", -25, 0], ["x", 1, "→", 25, 0],
-              ["y", 1, "↑", 0, -25], ["y", -1, "↓", 0, 25] ] as const)
+            {([ ["x", -1, "←", -34, 0], ["x", 1, "→", 34, 0],
+              ["y", 1, "↑", 0, -34], ["y", -1, "↓", 0, 34] ] as const)
               .map(([axis, direction, label, offsetX, offsetY]) =>
                 <g key={`${axis}${direction}`} data-shower-nudge-axis={axis}
                   data-shower-nudge-direction={direction}
@@ -804,14 +853,37 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
                     else onNudgeShowerVertex?.(roomId, vertexIndex, delta);
                   }}>
                   <circle cx={target.x + offsetX / pixelScale} cy={-target.y + offsetY / pixelScale}
-                    r={12 / pixelScale} fill="#fff" stroke="#cad4cd" strokeWidth={1 / pixelScale} />
+                    r={22 / pixelScale} fill="transparent" />
+                  <circle cx={target.x + offsetX / pixelScale} cy={-target.y + offsetY / pixelScale}
+                    r={15 / pixelScale} fill="#fff" stroke="#cad4cd" strokeWidth={1 / pixelScale}
+                    pointerEvents="none" />
                   <text x={target.x + offsetX / pixelScale}
-                    y={-target.y + offsetY / pixelScale + 4 / pixelScale}
-                    textAnchor="middle" fontSize={13 / pixelScale} fill="#294f3e"
+                    y={-target.y + offsetY / pixelScale + 5 / pixelScale}
+                    textAnchor="middle" fontSize={15 / pixelScale} fill="#294f3e"
                     pointerEvents="none">{label}</text>
                 </g>)}
           </g>;
         })()}
+        {selected && <g pointerEvents="none" textAnchor="middle">
+          {edgeMeasurements.map(measurement => <text key={`length-${measurement.index}`}
+            data-shower-edge-length={measurement.index}
+            x={measurement.x} y={-measurement.y}
+            fill="#203d32" fontSize={12 / pixelScale} fontWeight={650}
+            stroke="#fff" strokeWidth={4 / pixelScale} paintOrder="stroke">
+            {displayMillimeters(measurement.length)} мм
+          </text>)}
+          {vertexAngles.map(angle => <g key={`angle-${angle.index}`}>
+            <path data-shower-angle-arc={angle.index}
+              d={`M${angle.startX} ${-angle.startY} A${angle.radius} ${angle.radius} 0 ${angle.value > 180 ? 1 : 0} ${orientation > 0 ? 1 : 0} ${angle.endX} ${-angle.endY}`}
+              fill="none" stroke="#9b3f30" strokeWidth={1.5 / pixelScale} />
+            <text data-shower-vertex-angle={angle.index}
+              x={angle.labelX} y={-angle.labelY}
+              fill="#8f2929" fontSize={13 / pixelScale} fontWeight={700}
+              stroke="#fff" strokeWidth={4 / pixelScale} paintOrder="stroke">
+              {displayTenth(angle.value)}°
+            </text>
+          </g>)}
+        </g>}
       </g>];
     })}
     {layouts.flatMap(({ roomId, layout }) => (layout.shower?.zones ?? []).map(zone => <path
