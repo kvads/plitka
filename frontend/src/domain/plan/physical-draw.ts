@@ -119,28 +119,36 @@ export function alignToWallEndProjection(graph: PhysicalGraphV5, start: Point, p
                                          directions: readonly Point[], snapDistance: number
                                          ): WallEndAlignment | null {
   const ends = graph.walls.flatMap(wall => [
-    rounded({ x: (wall.corners[0].x + wall.corners[3].x) / 2,
-      y: (wall.corners[0].y + wall.corners[3].y) / 2 }),
-    rounded({ x: (wall.corners[1].x + wall.corners[2].x) / 2,
-      y: (wall.corners[1].y + wall.corners[2].y) / 2 }),
-  ]).filter((point, index, all) =>
-    all.findIndex(other => other.x === point.x && other.y === point.y) === index);
+    { center: rounded({ x: (wall.corners[0].x + wall.corners[3].x) / 2,
+        y: (wall.corners[0].y + wall.corners[3].y) / 2 }),
+      corners: [wall.corners[0], wall.corners[3]] },
+    { center: rounded({ x: (wall.corners[1].x + wall.corners[2].x) / 2,
+        y: (wall.corners[1].y + wall.corners[2].y) / 2 }),
+      corners: [wall.corners[1], wall.corners[2]] },
+  ]).filter((end, index, all) => all.findIndex(other =>
+    other.center.x === end.center.x && other.center.y === end.center.y) === index);
   let best: WallEndAlignment | null = null;
   for (const rawDirection of directions) {
     const length = Math.hypot(rawDirection.x, rawDirection.y);
     if (length < .001) continue;
     const direction = { x: rawDirection.x / length, y: rawDirection.y / length };
     for (const end of ends) {
-      const along = dot(difference(end, start), direction);
+      const along = dot(difference(end.center, start), direction);
       if (Math.abs(along) < .1) continue;
-      const point = rounded(add(start, direction, along));
-      const guideLength = Math.hypot(end.x - point.x, end.y - point.y);
+      const guidePoint = rounded(add(start, direction, along));
+      const guideLength = Math.hypot(end.center.x - guidePoint.x,
+        end.center.y - guidePoint.y);
       if (guideLength < .1) continue;
-      const distance = Math.hypot(pointer.x - point.x, pointer.y - point.y);
+      const distance = Math.hypot(pointer.x - guidePoint.x, pointer.y - guidePoint.y);
       if (distance > snapDistance || (best && (distance > best.distance + 1e-7 ||
           Math.abs(distance - best.distance) <= 1e-7 && guideLength >=
             Math.hypot(best.from.x - best.to.x, best.from.y - best.to.y)))) continue;
-      best = { point, from: end, to: point, distance };
+      const travel = { x: direction.x * Math.sign(along),
+        y: direction.y * Math.sign(along) };
+      const edgeOffset = Math.max(0, ...end.corners.map(corner =>
+        dot(difference(corner, end.center), travel)));
+      const point = rounded(add(guidePoint, travel, edgeOffset));
+      best = { point, from: end.center, to: guidePoint, distance };
     }
   }
   return best;

@@ -103,6 +103,24 @@ test("a free wall end aligns across the gap with a neighboring wall end", () => 
   expect(alignment?.to).toEqual({ x: 1000, y: 0 });
 });
 
+test("a wall aligned to a miter center extends to its physical outer edge", () => {
+  const graph = { walls: [{ id: "mitered", drawnEdge: [{ x: 0, y: 0 }, { x: 1000, y: 0 }],
+    side: "left" as const, thicknessMm: 100,
+    corners: [{ x: 0, y: 0 }, { x: 1000, y: 0 }, { x: 900, y: 100 }, { x: 0, y: 100 }],
+  }], junctions: [] };
+  const alignment = alignToWallEndProjection(graph, { x: 0, y: -500 },
+    { x: 951, y: -498 }, [{ x: 1, y: 0 }, { x: 0, y: 1 }], 20);
+
+  expect(alignment).not.toBeNull();
+  expect(alignment?.from).toEqual({ x: 950, y: 50 });
+  expect(alignment?.to).toEqual({ x: 950, y: -500 });
+  expect(alignment?.point).toEqual({ x: 1000, y: -500 });
+  const geometry = centeredWallGeometry(graph, { x: 0, y: -500 },
+    alignment!.point, 100)!;
+  expect(geometry.corners[1].x).toBe(1000);
+  expect(geometry.corners[2].x).toBe(1000);
+});
+
 test("a free wall begins at the cursor boundary opposite its draw direction", () => {
   const geometry = centeredWallGeometry({ walls: [], junctions: [] },
     { x: 0, y: 0 }, { x: 0, y: -1000 }, 100)!;
