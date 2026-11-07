@@ -16,6 +16,8 @@ Placement-tool follow-up (2026-11-07): backend `114 passed`; production build an
 
 Recessed-bowl follow-up (2026-11-07): backend `115 passed`; production build and targeted Playwright scenario passed. A 40 mm recess was persisted and inspected in `/tmp/shower-recessed-3d.png`; the sloped top and drain sit below the rim, while the inner curb face extends through the recess and is counted separately from the outside face.
 
+Direct-manipulation follow-up (2026-11-07): production build and targeted Playwright scenario passed. X/Y fields are absent; pointer dragging moves the object with a live preview, a far drag stops at the room wall plus configured gap, and arrow keys provide 10 mm keyboard movement. Per-edge choices explicitly distinguish wall contact without a curb from a curb along the wall.
+
 ## Scenario A: separate raised rectangle
 
 Create a room, add a 1200 × 900 × 150 mm shower object and place it near two walls. Confirm the room floor remains separate, two exposed fascias appear, save/reload preserves the object, and 3D shows a raised platform.

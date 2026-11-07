@@ -1007,6 +1007,34 @@ test("physical v6 selects a room from its usable floor", async ({ page, request 
   await page.mouse.click(placementPoint.x, placementPoint.y);
   await expect(page.locator("[data-shower-object]")).toHaveCount(1);
   await expect(page.locator("[data-shower-vertex]")).toHaveCount(4);
+  await expect(page.getByRole("textbox", { name: "Положение X" })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Положение Y" })).toHaveCount(0);
+  const showerObject = page.locator("[data-shower-object]");
+  const originBeforeDrag = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.originX);
+  const showerBox = (await showerObject.boundingBox())!;
+  await page.mouse.move(showerBox.x + showerBox.width / 2, showerBox.y + showerBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(showerBox.x + showerBox.width / 2 + 40, showerBox.y + showerBox.height / 2);
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.originX)
+  ).toBeGreaterThan(originBeforeDrag);
+  const originBeforeKeyboard = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.originX);
+  await showerObject.focus();
+  await showerObject.press("ArrowRight");
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.originX)
+  ).toBe(originBeforeKeyboard + 10);
+  const movedBox = (await showerObject.boundingBox())!;
+  await page.mouse.move(movedBox.x + movedBox.width / 2, movedBox.y + movedBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(movedBox.x + movedBox.width / 2 + 1000, movedBox.y + movedBox.height / 2);
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("plitka-projects-v6")!).projects[0].rooms[0].showerTray.originX)
+  ).toBeLessThanOrEqual(340);
   await page.getByRole("textbox", { name: "Глубина чаши" }).fill("40");
   await page.getByRole("textbox", { name: "Глубина чаши" }).press("Tab");
   await expect.poll(() => page.evaluate(() =>

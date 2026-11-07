@@ -22,6 +22,71 @@ const compactViewQuery = "(max-width: 700px), (hover: none) and (pointer: coarse
 const displayTenth = (value: number) => value.toLocaleString("ru-RU", {
   minimumFractionDigits: 1, maximumFractionDigits: 1,
 });
+const pointOnSegment = (point: [number, number], start: [number, number], end: [number, number]) => {
+  const dx = end[0] - start[0], dy = end[1] - start[1];
+  const length = Math.hypot(dx, dy);
+  if (length < .001) return Math.hypot(point[0] - start[0], point[1] - start[1]) < .2;
+  const cross = Math.abs((point[0] - start[0]) * dy - (point[1] - start[1]) * dx) / length;
+  const dot = (point[0] - start[0]) * dx + (point[1] - start[1]) * dy;
+  return cross <= .2 && dot >= -.2 && dot <= length * length + .2;
+};
+const distanceToSegment = (point: [number, number], start: [number, number], end: [number, number]) => {
+  const dx = end[0] - start[0], dy = end[1] - start[1];
+  const squared = dx * dx + dy * dy;
+  if (squared < .001) return Math.hypot(point[0] - start[0], point[1] - start[1]);
+  const ratio = Math.max(0, Math.min(1,
+    ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / squared));
+  return Math.hypot(point[0] - start[0] - ratio * dx, point[1] - start[1] - ratio * dy);
+};
+const pointInRing = (point: [number, number], ring: [number, number][]) => {
+  if (ring.some((start, index) => pointOnSegment(point, start, ring[(index + 1) % ring.length]))) return true;
+  let inside = false;
+  for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index++) {
+    const a = ring[index], b = ring[previous];
+    if ((a[1] > point[1]) !== (b[1] > point[1]) &&
+        point[0] < (b[0] - a[0]) * (point[1] - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside;
+  }
+  return inside;
+};
+const showerFitsRoom = (tray: ShowerTray, originX: number, originY: number,
+  polygon: { outline: number[][]; holes: number[][][] }, clearance = 0) => {
+  if (!tray.vertices?.length) return false;
+  const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
+  const cosine = Math.cos(radians), sine = Math.sin(radians);
+  const vertices = tray.vertices.map(([x, y]) => [originX + x * cosine - y * sine,
+    originY + x * sine + y * cosine] as [number, number]);
+  const outline = polygon.outline as [number, number][];
+  const holes = polygon.holes as [number, number][][];
+  for (let index = 0; index < vertices.length; index++) {
+    const start = vertices[index], end = vertices[(index + 1) % vertices.length];
+    for (let step = 0; step <= 16; step++) {
+      const ratio = step / 16;
+      const point: [number, number] = [start[0] + (end[0] - start[0]) * ratio,
+        start[1] + (end[1] - start[1]) * ratio];
+      if (!pointInRing(point, outline) || holes.some(hole => pointInRing(point, hole))) return false;
+      const nearBoundary = (ring: [number, number][]) => ring.some((edgeStart, edgeIndex) =>
+        distanceToSegment(point, edgeStart, ring[(edgeIndex + 1) % ring.length]) < clearance - .05);
+      if (clearance > 0 && (nearBoundary(outline) || holes.some(nearBoundary))) return false;
+    }
+  }
+  return true;
+};
+const constrainedShowerOrigin = (tray: ShowerTray, delta: { x: number; y: number },
+  polygon: { outline: number[][]; holes: number[][][] }, clearance = 0) => {
+  const startX = tray.originX ?? 0, startY = tray.originY ?? 0;
+  const desiredX = Math.round((startX + delta.x) * 10) / 10;
+  const desiredY = Math.round((startY + delta.y) * 10) / 10;
+  if (showerFitsRoom(tray, desiredX, desiredY, polygon, clearance)) return { x: desiredX, y: desiredY };
+  let low = 0, high = 1;
+  for (let iteration = 0; iteration < 24; iteration++) {
+    const ratio = (low + high) / 2;
+    const x = startX + delta.x * ratio, y = startY + delta.y * ratio;
+    if (showerFitsRoom(tray, x, y, polygon, clearance)) low = ratio;
+    else high = ratio;
+  }
+  return { x: Math.round((startX + delta.x * low) * 10) / 10,
+    y: Math.round((startY + delta.y * low) * 10) / 10 };
+};
 const roomCountText = (count: number) => {
   const mod100 = count % 100;
   const mod10 = count % 10;
@@ -499,6 +564,26 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
         if (targetRoom && targetFace) toggleShowerTray(true, point, targetRoom, targetFace);
         setShowerTool(false);
       }}
+      onMoveShower={(roomId, delta) => {
+        const targetRoom = doc.rooms.find(candidate => candidate.id === roomId);
+        const targetFace = response?.faces.find(candidate => candidate.topologyKey === targetRoom?.topologyKey);
+        if (!targetRoom?.showerTray || !targetFace?.polygon) return;
+        const origin = constrainedShowerOrigin(targetRoom.showerTray, delta, targetFace.polygon,
+          targetRoom.rules.gap);
+        if (origin.x === targetRoom.showerTray.originX && origin.y === targetRoom.showerTray.originY) return;
+        update(current => ({ ...current, rooms: current.rooms.map(candidate =>
+          candidate.id === roomId && candidate.showerTray ? { ...candidate,
+            showerTray: { ...candidate.showerTray, originX: origin.x, originY: origin.y } } : candidate) }));
+      }}
+      constrainShowerMove={(roomId, delta) => {
+        const targetRoom = doc.rooms.find(candidate => candidate.id === roomId);
+        const targetFace = response?.faces.find(candidate => candidate.topologyKey === targetRoom?.topologyKey);
+        if (!targetRoom?.showerTray || !targetFace?.polygon) return { x: 0, y: 0 };
+        const origin = constrainedShowerOrigin(targetRoom.showerTray, delta, targetFace.polygon,
+          targetRoom.rules.gap);
+        return { x: origin.x - (targetRoom.showerTray.originX ?? 0),
+          y: origin.y - (targetRoom.showerTray.originY ?? 0) };
+      }}
       onSelectRoom={key => {
         const id = doc.rooms.find(item => item.topologyKey === key)?.id ?? null;
         if (compactView) setViewRoomId(id);
@@ -702,8 +787,6 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
             {room.showerTray && <>
               {room.showerTray.vertices && <>
                 <div className="shower-object-grid">
-                  {showerField("originX", "Положение X", -100000, 100000, "мм")}
-                  {showerField("originY", "Положение Y", -100000, 100000, "мм")}
                   {showerField("rotationDeg", "Поворот", -360, 360, "°")}
                   {showerField("baseHeightMm", "Высота поддона", 0, 1000, "мм")}
                   {showerField("recessDepthMm", "Глубина чаши", 0,
@@ -757,8 +840,10 @@ export default function PhysicalWorkflow({ initial, onSaved, onRemoved, onBack }
                               curbWidthMm: edges[index]?.curbWidthMm ?? 100 } : {}) };
                           updateShowerTray({ edges });
                         }}>
-                        <option value="wall">У стены</option><option value="open">Открытый торец</option>
-                        <option value="curb">Борт</option><option value="entry">Вход без борта</option>
+                        <option value="wall">Примыкание к стене — без борта</option>
+                        <option value="open">Открытый торец</option>
+                        <option value="curb">Борт, включая сторону у стены</option>
+                        <option value="entry">Вход без борта</option>
                       </select></label>
                       {room.showerTray!.edges?.[index]?.kind === "curb" && <>
                         <label>Высота борта, мм<input type="number" min="10" max="500" step="0.1"

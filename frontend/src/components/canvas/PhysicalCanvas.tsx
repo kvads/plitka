@@ -13,7 +13,8 @@ import { openingCorners, openingOffset } from "../../domain/plan/physical-openin
 type Viewport = ProjectDocumentV6["viewport"];
 type Handle = "start" | "center" | "end";
 type Gesture = { id: number; client: Point; viewport: Viewport; moved: boolean;
-  wallId: string | null; doorId: string | null; roomKey: string | null; handle: Handle | null;
+  wallId: string | null; doorId: string | null; roomKey: string | null; showerRoomId: string | null;
+  handle: Handle | null;
   arrow: { axis: "x" | "y"; direction: -1 | 1 } | null };
 type WallTarget = { point: Point; attachment: PhysicalAttachment | null; alignment?: WallEndAlignment };
 type Props = {
@@ -31,6 +32,8 @@ type Props = {
   showerObjects?: { roomId: string; tray: ShowerTray; selected: boolean }[];
   showerTool?: boolean;
   onPlaceShower?: (roomKey: string, point: Point) => void;
+  onMoveShower?: (roomId: string, delta: Point) => void;
+  constrainShowerMove?: (roomId: string, delta: Point) => Point;
   viewport: Viewport;
   onViewport: (viewport: Viewport) => void;
   selectedWallId: string | null;
@@ -71,7 +74,7 @@ const precisePoint = (point: Point): Point =>
 export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces = [], openJointAngles = [],
   selectedRoomKey, onSelectRoom,
   highlightRooms = false, roomMissing = {}, roomNames = {}, layouts = [], showerObjects = [],
-  showerTool = false, onPlaceShower, viewport, onViewport,
+  showerTool = false, onPlaceShower, onMoveShower, constrainShowerMove, viewport, onViewport,
   selectedWallId, onSelectWall, selectedHandle, onSelectHandle, onNudge,
   wallTool, thicknessMm, onDrawWall, onResetWallTool,
   doorTool, doorWidthMm, selectedDoorId, onSelectDoor, deleteTool, onDeleteWall,
@@ -93,6 +96,7 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
   const [cursorFace, setCursorFace] = useState<{ normal: Point } | null>(null);
   const [serverPreview, setServerPreview] = useState<{ key: string; response: PhysicalPreviewResponse } | null>(null);
   const [doorCursor, setDoorCursor] = useState<{ wallId: string; offsetMm: number } | null>(null);
+  const [showerDrag, setShowerDrag] = useState<{ roomId: string; delta: Point } | null>(null);
   const mobile = window.matchMedia("(hover: none) and (pointer: coarse)").matches;
   const shown = liveViewport ?? viewport;
   const span = 9000 / shown.zoom;
@@ -326,12 +330,14 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     const wallId = (event.target as Element).closest("[data-wall-id]")?.getAttribute("data-wall-id") ?? null;
     const doorId = (event.target as Element).closest("[data-door-id]")?.getAttribute("data-door-id") ?? null;
     const roomKey = (event.target as Element).closest("[data-room-key]")?.getAttribute("data-room-key") ?? null;
+    const showerRoomId = (event.target as Element).closest("[data-shower-object]")
+      ?.getAttribute("data-shower-object") ?? null;
     const handle = (event.target as Element).closest("[data-wall-handle]")?.getAttribute("data-wall-handle") as Handle | null;
     const arrowNode = (event.target as Element).closest("[data-nudge-axis]");
     const arrow = arrowNode ? { axis: arrowNode.getAttribute("data-nudge-axis") as "x" | "y",
       direction: Number(arrowNode.getAttribute("data-nudge-direction")) as -1 | 1 } : null;
     gesture.current = { id: event.pointerId, client: { x: event.clientX, y: event.clientY },
-      viewport: shown, moved: false, wallId, doorId, roomKey, handle, arrow };
+      viewport: shown, moved: false, wallId, doorId, roomKey, showerRoomId, handle, arrow };
   };
   const move = (event: React.PointerEvent<SVGSVGElement>) => {
     if (pointers.current.has(event.pointerId))
@@ -351,10 +357,20 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       const dx = event.clientX - current.client.x, dy = event.clientY - current.client.y;
       if (Math.hypot(dx, dy) > 5) current.moved = true;
       if (current.moved) {
-        const units = 9000 / current.viewport.zoom / Math.max(1, size.width);
-        setLiveViewport({ ...current.viewport,
-          centerX: current.viewport.centerX - dx * units,
-          centerY: current.viewport.centerY + dy * units });
+        if (current.showerRoomId && !showerTool) {
+          const from = world(current.client.x, current.client.y);
+          const to = world(event.clientX, event.clientY);
+          if (from && to) {
+            const raw = precisePoint({ x: to.x - from.x, y: to.y - from.y });
+            setShowerDrag({ roomId: current.showerRoomId,
+              delta: constrainShowerMove?.(current.showerRoomId, raw) ?? raw });
+          }
+        } else {
+          const units = 9000 / current.viewport.zoom / Math.max(1, size.width);
+          setLiveViewport({ ...current.viewport,
+            centerX: current.viewport.centerX - dx * units,
+            centerY: current.viewport.centerY + dy * units });
+        }
       }
     } else if (wallTool && event.pointerType === "mouse") {
       const point = world(event.clientX, event.clientY);
@@ -387,6 +403,11 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
     gesture.current = null;
     if (!current || current.id !== event.pointerId) return;
     if (current.moved) {
+      if (current.showerRoomId && showerDrag && !showerTool) {
+        onMoveShower?.(current.showerRoomId, showerDrag.delta);
+        setShowerDrag(null);
+        return;
+      }
       if (liveViewport) onViewport(liveViewport);
       setLiveViewport(null);
       return;
@@ -591,9 +612,10 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
       if (!tray.vertices?.length) return [];
       const radians = (tray.rotationDeg ?? 0) * Math.PI / 180;
       const cosine = Math.cos(radians), sine = Math.sin(radians);
+      const drag = showerDrag?.roomId === roomId ? showerDrag.delta : { x: 0, y: 0 };
       const points = tray.vertices.map(([x, y]) => [
-        (tray.originX ?? 0) + x * cosine - y * sine,
-        (tray.originY ?? 0) + x * sine + y * cosine,
+        (tray.originX ?? 0) + drag.x + x * cosine - y * sine,
+        (tray.originY ?? 0) + drag.y + x * sine + y * cosine,
       ] as [number, number]);
       const drainPlanWidth = tray.drainOrientation === "horizontal" ? tray.drainLength : tray.drainWidth;
       const drainPlanHeight = tray.drainOrientation === "horizontal" ? tray.drainWidth : tray.drainLength;
@@ -604,11 +626,21 @@ export default function PhysicalCanvas({ graph, draftRevision, wallArea, faces =
         [tray.drainX - drainPlanWidth / 2, tray.drainY + drainPlanHeight / 2],
       ];
       const drainPoints = drainLocal.map(([x, y]) => [
-        (tray.originX ?? 0) + x * cosine - y * sine,
-        (tray.originY ?? 0) + x * sine + y * cosine,
+        (tray.originX ?? 0) + drag.x + x * cosine - y * sine,
+        (tray.originY ?? 0) + drag.y + x * sine + y * cosine,
       ] as [number, number]);
       const d = points.map(([x, y], index) => `${index ? "L" : "M"}${x} ${-y}`).join(" ") + " Z";
-      return [<g key={`${roomId}:shower-object`} data-shower-object={roomId}>
+      return [<g key={`${roomId}:shower-object`} data-shower-object={roomId}
+        data-dragging={showerDrag?.roomId === roomId || undefined}
+        tabIndex={selected ? 0 : -1} role="button"
+        aria-label="Душевой поддон. Перетащите мышью или перемещайте стрелками."
+        onKeyDown={event => {
+          const delta = event.key === "ArrowLeft" ? { x: -10, y: 0 }
+            : event.key === "ArrowRight" ? { x: 10, y: 0 }
+            : event.key === "ArrowUp" ? { x: 0, y: 10 }
+            : event.key === "ArrowDown" ? { x: 0, y: -10 } : null;
+          if (delta) { event.preventDefault(); onMoveShower?.(roomId, delta); }
+        }}>
         <path d={d} fill="#dce9e1" fillOpacity=".72" stroke={selected ? "#176044" : "#527263"}
           strokeWidth={Math.max((selected ? 3 : 2) / pixelScale, .25)} />
         {points.map(([x, y], index) => {

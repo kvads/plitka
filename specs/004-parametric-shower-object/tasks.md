@@ -70,6 +70,14 @@
 - [x] T031 Count recessed inner-wall tile details independently from outer curb faces
 - [x] T032 Run backend, build, browser and visual validation; update docs and deploy production
 
+## Phase 9: Wall-aware direct manipulation
+
+- [x] T033 Add browser coverage for pointer drag, wall containment, keyboard movement and removal of X/Y fields
+- [x] T034 Add live shower drag state and accessible keyboard movement to `PhysicalCanvas.tsx`
+- [x] T035 Constrain every move to the owning room polygon and holes in `PhysicalWorkflow.tsx`
+- [x] T036 Clarify per-edge wall-without-curb and curb choices in the editor
+- [x] T037 Run backend, build, browser and visual validation; update docs and deploy production
+
 ## Dependencies
 
 - T002–T004 block all user stories.

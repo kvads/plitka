@@ -447,6 +447,9 @@
 .shower-remove { display: inline-flex; align-items: center; gap: 8px; color: #7b2d2d; }
 .shower-remove svg { width: 18px; height: 18px; }
 svg[data-shower-tool="true"] [data-room-key] { cursor: crosshair; }
+[data-shower-object] { cursor: grab; outline: none; }
+[data-shower-object][data-dragging="true"] { cursor: grabbing; }
+[data-shower-object]:focus > path:first-of-type { stroke: #0b6b48; stroke-width: 4px; }
 @media (max-width: 700px) {
   .shower-object-grid, .shower-vertex-row { grid-template-columns: 1fr; }
   .shower-vertex-row > label:last-child { grid-column: auto; }
